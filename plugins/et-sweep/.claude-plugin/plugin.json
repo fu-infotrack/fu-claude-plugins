@@ -4,6 +4,5 @@
   "description": "Sweep a service's Datadog Error Tracking into de-duped GitHub issues with drafted root-cause writeups. Run via /loop for a self-paced watch.",
   "author": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
   "keywords": ["datadog", "error-tracking", "github", "observability"],
-  "commands": "./commands/",
-  "agents": "./agents/"
+  "commands": "./commands/"
 }
