@@ -1,0 +1,10 @@
+{
+  "name": "ce-compound",
+  "version": "0.1.0",
+  "description": "Document a recently solved problem to compound your team's knowledge. Fork of EveryInc's ce-compound.",
+  "author": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
+  "homepage": "https://github.com/EveryInc/compound-engineering-plugin",
+  "license": "MIT",
+  "keywords": ["documentation", "knowledge-base", "compound-engineering"],
+  "skills": "./skills/"
+}
