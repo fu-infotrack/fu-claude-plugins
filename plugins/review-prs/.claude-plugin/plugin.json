@@ -1,0 +1,8 @@
+{
+  "name": "review-prs",
+  "version": "0.1.0",
+  "description": "Automated PR review orchestrator.",
+  "author": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
+  "keywords": ["github", "pull-request", "code-review"],
+  "commands": "./commands/"
+}
