@@ -78,3 +78,45 @@ test('buildTitle: long message truncated, title stays <= 80 chars', () => {
   assert.ok(t.length <= 80, `len ${t.length}`);
   assert.ok(t.endsWith('…'));
 });
+
+import {
+  parseRepoFromRemote, collectServices, buildServiceQuery, mergeConfig,
+} from './sweep-lib.mjs';
+
+test('parseRepoFromRemote: https github', () => {
+  assert.equal(parseRepoFromRemote('https://github.com/InfoTrackGlobal/EntityPlatform.git'), 'InfoTrackGlobal/EntityPlatform');
+});
+test('parseRepoFromRemote: ssh github', () => {
+  assert.equal(parseRepoFromRemote('git@github.com:InfoTrackGlobal/EntityPlatform.git'), 'InfoTrackGlobal/EntityPlatform');
+});
+test('parseRepoFromRemote: non-github -> null', () => {
+  assert.equal(parseRepoFromRemote('https://dev.azure.com/InfoTrackAU/_git/Thing'), null);
+});
+test('parseRepoFromRemote: empty -> null', () => {
+  assert.equal(parseRepoFromRemote(''), null);
+});
+test('collectServices: distinct, order-preserving', () => {
+  assert.deepEqual(collectServices(['entityplatform-api', 'entityplatform-ui', 'entityplatform-api']), ['entityplatform-api', 'entityplatform-ui']);
+});
+test('collectServices: drops empties', () => {
+  assert.deepEqual(collectServices(['a', '', null, undefined, 'b']), ['a', 'b']);
+});
+test('buildServiceQuery: single', () => {
+  assert.equal(buildServiceQuery(['entityplatform-api'], 'prod'), 'service:entityplatform-api env:prod');
+});
+test('buildServiceQuery: multiple uses OR group', () => {
+  assert.equal(buildServiceQuery(['a', 'b'], 'prod'), 'service:(a OR b) env:prod');
+});
+test('mergeConfig: precedence cli > project > auto > user', () => {
+  const user = { 'et-sweep': { env: 'stage', repo: 'u/r', mcpName: 'au-datadog-mcp' } };
+  const project = { 'et-sweep': { env: 'prod' } };
+  const auto = { repo: 'a/r', services: ['s1'] };
+  const cli = { repo: 'c/r' };
+  assert.deepEqual(
+    mergeConfig(user, project, auto, cli, 'et-sweep'),
+    { env: 'prod', repo: 'c/r', mcpName: 'au-datadog-mcp', services: ['s1'] },
+  );
+});
+test('mergeConfig: missing layers tolerated', () => {
+  assert.deepEqual(mergeConfig(null, null, { services: ['s'] }, {}, 'et-sweep'), { services: ['s'] });
+});

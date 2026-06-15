@@ -47,3 +47,35 @@ export function buildTitle(errorType, message) {
   const msg = oneLine.length > budget ? `${oneLine.slice(0, budget - 1).trimEnd()}…` : oneLine;
   return prefix + msg;
 }
+
+// Parse a git remote URL to "owner/name" — github only, else null.
+export function parseRepoFromRemote(url) {
+  if (!url) return null;
+  const m = url.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/i);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+
+// Distinct, order-preserving, empties removed.
+export function collectServices(appNames) {
+  const seen = new Set();
+  const out = [];
+  for (const n of appNames || []) {
+    if (n && !seen.has(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
+}
+
+// Datadog query across one or more services for an env.
+export function buildServiceQuery(services, env) {
+  const svc = services.length === 1 ? `service:${services[0]}` : `service:(${services.join(' OR ')})`;
+  return `${svc} env:${env}`;
+}
+
+// Merge config layers for a tool: user < auto < project < cli (later wins).
+export function mergeConfig(userObj, projectObj, autoObj, cliObj, tool) {
+  const u = (userObj && userObj[tool]) || {};
+  const p = (projectObj && projectObj[tool]) || {};
+  const a = autoObj || {};
+  const c = cliObj || {};
+  return { ...u, ...a, ...p, ...c };
+}
