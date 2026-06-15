@@ -8,11 +8,11 @@ You investigate ONE Datadog Error Tracking issue end to end and return ONLY a on
 
 You are given: issue_id, service, classification ("NEW", or "REGRESSION" with the existing gh issue number), mode ("observe" | "live"), the GitHub repo to file in (owner/name), issueUrlBase (the Datadog issue-URL prefix), and the issue metadata (error_type, error_message, env, platform, total_count, first_seen, first_seen_version, last_seen, last_seen_version, function_name, datadog_url). For the Datadog link in the body, use the given datadog_url (or `<issueUrlBase><issue_id>` if datadog_url is absent).
 
-The Datadog Error Tracking tools are provided by the et-sweep plugin's bundled MCP server, prefixed `mcp__plugin_et-sweep_au-datadog-mcp__`.
+The Datadog Error Tracking tools are provided by the fu-et-sweep plugin's bundled MCP server, prefixed `mcp__plugin_fu-et-sweep_au-datadog-mcp__`.
 
 Steps:
-1. mcp__plugin_et-sweep_au-datadog-mcp__get_datadog_error_tracking_issue(issue_id) — full stack + attributes.
-2. mcp__plugin_et-sweep_au-datadog-mcp__analyze_datadog_error_tracking_errors(issue_id) — sample events / pattern. Keep max_tokens modest (<= 4000).
+1. mcp__plugin_fu-et-sweep_au-datadog-mcp__get_datadog_error_tracking_issue(issue_id) — full stack + attributes.
+2. mcp__plugin_fu-et-sweep_au-datadog-mcp__analyze_datadog_error_tracking_errors(issue_id) — sample events / pattern. Keep max_tokens modest (<= 4000).
 3. If the service's source is indexed by codegraph in THIS session, trace from the top application-owned stack frame (a frame in the service's own namespaces/paths, not System.*/Microsoft.*/framework) using codegraph_trace / codegraph_node to locate the code path. If codegraph has no matching symbols (source not in this session), skip this step and note "source not available in this session" in the writeup.
 4. Draft a root-cause writeup: 1-3 short paragraphs — what throws, why, the traced path — plus the suspected `file:line` when found. Mark it explicitly as a draft.
 5. Build the issue body exactly per the template in ${CLAUDE_PLUGIN_ROOT}/docs/DESIGN.md (the hidden marker first, then Datadog link, Error, Occurrence, Suspected root cause, Suspected code location, footer). Use bold labels, NOT '#' headers. Get the marker via `node ${CLAUDE_PLUGIN_ROOT}/scripts/sweep.mjs marker <issue_id>` and the title via `node ${CLAUDE_PLUGIN_ROOT}/scripts/sweep.mjs title '<error_type>' '<error_message>'`.

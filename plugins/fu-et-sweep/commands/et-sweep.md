@@ -26,7 +26,7 @@ Procedure:
 
 2. Compute window: `node "$LIB" window <last_successful_tick|null>`. Capture startMs, startIso, nowMs.
 
-3. Search: mcp__plugin_et-sweep_au-datadog-mcp__search_datadog_error_tracking_issues with query=QUERY, from=startIso, to="now", order_by="TOTAL_COUNT", max_tokens=8000. One call covers every monitored service. If the result is truncated, remember remaining_items for the summary. (The Datadog Error Tracking tools are provided by this plugin's bundled MCP server, prefixed `mcp__plugin_et-sweep_au-datadog-mcp__`.)
+3. Search: mcp__plugin_fu-et-sweep_au-datadog-mcp__search_datadog_error_tracking_issues with query=QUERY, from=startIso, to="now", order_by="TOTAL_COUNT", max_tokens=8000. One call covers every monitored service. If the result is truncated, remember remaining_items for the summary. (The Datadog Error Tracking tools are provided by this plugin's bundled MCP server, prefixed `mcp__plugin_fu-et-sweep_au-datadog-mcp__`.)
 
 4. Map each returned issue to {issueId, service, errorType, errorMessage, firstSeenIso, isRegression, totalCount, firstSeenVersion, lastSeenIso, lastSeenVersion, functionName, platform, datadogUrl}. Then filter: `node "$LIB" filter-batch '<issuesJson>' <startMs> <threshold>`. Survivors = the printed array. (BASELINE mode: skip filtering — take all issues in the window with totalCount >= threshold.)
 

@@ -1,0 +1,16 @@
+{
+  "name": "fu-inspecting-orders-api",
+  "version": "0.1.0",
+  "description": "Inspect an Orders API (orders, request/response payloads, hierarchy) using a config-resolved host + bearer token.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "orders",
+    "api",
+    "http",
+    "debugging"
+  ],
+  "skills": "./skills/"
+}
