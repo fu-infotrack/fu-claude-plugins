@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "fu-claude-plugins",
+  "description": "Personal Claude Code tooling: error-tracking sweep, PR review, orders-API inspection, pg-stage access, and ce-compound.",
+  "owner": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
+  "plugins": [
+    { "name": "et-sweep", "source": "./plugins/et-sweep", "category": "productivity",
+      "description": "Sweep a service's Datadog Error Tracking into de-duped GitHub issues with drafted root-cause writeups." },
+    { "name": "review-prs", "source": "./plugins/review-prs", "category": "productivity",
+      "description": "Automated PR review orchestrator." },
+    { "name": "inspecting-orders-api", "source": "./plugins/inspecting-orders-api", "category": "productivity",
+      "description": "Inspect an Orders API (orders, payloads, hierarchy) from config-resolved host + token." },
+    { "name": "pg-stage", "source": "./plugins/pg-stage", "category": "productivity",
+      "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine." },
+    { "name": "ce-compound", "source": "./plugins/ce-compound", "category": "productivity",
+      "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." }
+  ]
+}
