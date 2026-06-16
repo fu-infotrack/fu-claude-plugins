@@ -1,6 +1,7 @@
 ---
 title: "Orchestrator/sub-agent architecture for a loop-driven PR-review bot"
 date: 2026-06-05
+updated: 2026-06-17
 category: architecture-patterns
 module: "review-prs"
 problem_type: architecture_pattern
@@ -23,6 +24,7 @@ tags:
   - flock-concurrency
   - file-handoff
   - code-review
+  - per-repo-isolation
 ---
 
 # Orchestrator/sub-agent architecture for a loop-driven PR-review bot
@@ -31,7 +33,9 @@ tags:
 
 A working PR-review bot existed the "old way": a cron job that, every few minutes, spawned a fresh `claude -p` headless process to review newly-requested PRs and post a GitHub Review. Fresh process per tick meant each run started with clean context — isolation came for free — but there was no live UI, no shared session, and the bot lived outside the Claude Code session model.
 
-The redesign moves the bot *inside* Claude Code: a `/review-prs` slash command driven on a schedule by `/loop`, delegating the actual review to the `/code-review` plugin command and posting the result as a real GitHub Review. The structure is three files — `commands/review-prs.md` (thin orchestrator), `lib.sh` (all bash helpers), `review-task.md` (sub-agent instructions) — with state and temp files under `state/`.
+The redesign moves the bot *inside* Claude Code: a `/review-prs` slash command driven on a schedule by `/loop`, delegating the actual review to the `/code-review` plugin command and posting the result as a real GitHub Review. The structure is three files — `commands/review-prs.md` (thin orchestrator), `scripts/lib.sh` (all bash helpers), `review-task.md` (sub-agent instructions). These ship together as the `fu-review-prs` plugin and resolve via `${CLAUDE_PLUGIN_ROOT}`; mutable runtime state (locks, logs, per-PR state) lives OUTSIDE the plugin under `~/.claude/pr-review/`, since the plugin cache is wiped on reinstall.
+
+> Update (2026-06-17): originally a standalone repo; now packaged as the `fu-review-prs` plugin, and lock/log/state are namespaced per repo (see guidance #12) so concurrent loops on different remotes don't collide.
 
 The friction that shaped every decision below: **`/loop` shares ONE session.** Context accumulates across ticks and across every PR processed within a tick. It is *not* a fresh process per tick the way cron + `claude -p` was. You trade true per-tick isolation for UI visibility — and that trade forces you to engineer the isolation back in by hand, because an orchestrator that reads diffs and findings into its own context will bloat, compact, and grow expensive over a long-running loop.
 
@@ -43,7 +47,7 @@ Ordered highest-leverage first.
    - Review each PR inside its own `Task` sub-agent so diffs, file reads, and findings live and die in the sub-agent's context, never entering the orchestrator.
    - Move all bash out of the command file into a sourced `lib.sh`. The command file should orchestrate, not contain implementation.
    - Put the sub-agent's full instruction template in a static `review-task.md` that the sub-agent *Reads* — the template then lives only in sub-agent context, not in the orchestrator's prompt.
-   - Have the sub-agent **self-derive** its own commit SHA, tree SHA, and review mode. The orchestrator passes only the PR number. This dropped per-PR orchestrator cost from ~65 lines to ~1.
+   - Have the sub-agent **self-derive** its own commit SHA, tree SHA, and review mode. The orchestrator passes only the PR number plus the per-repo absolute state paths the sub-agent can't safely reconstruct (see #12). This dropped per-PR orchestrator cost from ~65 lines to ~1.
 
 2. **Make irreversible / external actions deterministic bash in the orchestrator, not model-driven.** This is the key reliability lesson. `/code-review` is a large command that tends to *end* the sub-agent's flow. In a real run the sub-agent ran `/code-review` (72 tool uses), returned findings, then never posted the GitHub review and emitted no DECISION line — a silent no-op.
    - Reframe the sub-agent's deliverable as "write a body file + emit a DECISION line," with `/code-review` demoted to a mere data-gathering substep. Instruct it explicitly: *do NOT stop after `/code-review`.*
@@ -68,7 +72,9 @@ Ordered highest-leverage first.
 
 10. **Choose safe defaults for the side effect.** `DECISION: APPROVE|COMMENT` sentinel on the last line; missing/malformed → COMMENT (the safe default); never `REQUEST_CHANGES` (reserved for humans). Tree-SHA dedup so pure rebases don't re-trigger; re-request detection compares the `review_requested` event timestamp against the state-file mtime. Delta mode reconciles prior findings as RESOLVED / STILL OPEN / REINTRODUCED.
 
-11. **Keep living docs, delete stale ones.** Delete the brainstorm spec/plan once the implementation diverges; keep README + CLAUDE.md as the single source of truth.
+11. **Keep living docs, delete stale ones.** Delete the brainstorm spec/plan once the implementation diverges; keep the plugin README + this doc as the single source of truth, and revise them when the design moves (as this doc was when the bot became a plugin and gained per-repo namespacing).
+
+12. **Namespace per-repo identity in every shared path.** The first design used one lock and flat, PR-number-keyed state (`review-prs.lock`, `state/prior-<pr>.txt`). The moment you run the bot against more than one remote — one `/loop` per clone — those collide: the single lock serialises unrelated repos, and `owner-a/repo` PR #5 clobbers `owner-b/repo` PR #5's tree-SHA/findings/body. Derive a slug from the repo (`owner/name` → `owner-name`) and fold it into the lock, holder, log, and a `state/<slug>/` subdir. Because the slug comes from cwd (`gh repo view`) and the sub-agent runs in its own context, the orchestrator must **resolve the namespaced paths and inject them** into the sub-agent prompt — the sub-agent must not rebuild them from the bare PR number, or it writes to the wrong (flat) location and the orchestrator's read silently finds nothing.
 
 ## Why This Matters
 
@@ -77,6 +83,7 @@ Ordered highest-leverage first.
 - **fd-flock (background holder).** Without a holder process, the "lock" releases the moment each bash call returns, so two overlapping ticks both think they hold it — no real mutual exclusion, concurrent checkouts corrupting the shared tree.
 - **Swallowed pull failure (logged, not `|| true`).** A `|| true`'d pull leaves a stale local tree. Since `/code-review`'s reviewers read that tree for ambient context, every subsequent review is quietly degraded with no error anywhere — the worst kind of failure, invisible.
 - **State-before-success.** Saving the reviewed SHA before a confirmed post means a failed/empty run marks the PR done anyway and never retries — a permanent silent miss.
+- **Per-repo namespacing.** A single global lock + flat PR-number-keyed state looks fine with one repo and breaks the instant a second loop starts: unrelated remotes serialise on one lock, and identical PR numbers across repos overwrite each other's review state. The failure is silent — a real review skipped because another repo's PR #5 already "claimed" the slot.
 
 ## When to Apply
 
@@ -99,9 +106,11 @@ flock -n 9 9>"$LOCK_FILE" || exit 1
 
 # AFTER — a background holder keeps the lock alive across every separate
 # bash call for the life of the run. Store the PID; kill it at cleanup.
+# LOCK_FILE / HOLDER_FILE are namespaced per repo (see #12), e.g.
+#   LOCK_FILE="$BASE_DIR/review-prs-$REPO_SLUG.lock"
 ( flock -n 9 || exit 1; sleep 7200 ) 9>"$LOCK_FILE" &
 HOLDER_PID=$!
-echo "$HOLDER_PID" > "$BASE_DIR/review-prs.lock.holder"
+echo "$HOLDER_PID" > "$HOLDER_FILE"
 # The 7200s sleep is a timeout backstop. Never rm the lock file
 # (deleting it races two ticks onto different inodes).
 ```
@@ -109,11 +118,14 @@ echo "$HOLDER_PID" > "$BASE_DIR/review-prs.lock.holder"
 ### File handoff + deterministic post
 
 ```bash
+# STATE_DIR is namespaced per repo (see #12): "$BASE_DIR/state/$REPO_SLUG".
 # Orchestrator pre-writes prior findings for the sub-agent to read.
 fetch_prior_findings "$PR" > "$STATE_DIR/prior-${PR}.txt"
 
 # The sub-agent runs /code-review as a data-gathering substep, then MUST:
-#   - write the review body to state/review-body-<pr>.md
+#   - write the review body to the BODY_FILE path passed to it (the
+#     orchestrator resolves it via $STATE_DIR; the sub-agent must NOT
+#     rebuild a flat path from the bare PR number)
 #   - emit a final line: DECISION: APPROVE | DECISION: COMMENT
 # (Instruction to sub-agent: "do NOT stop after /code-review.")
 
@@ -154,5 +166,5 @@ git_err=$(git -C "$REPO_DIR" pull origin main --quiet 2>&1) \
 
 ## Related
 
-- This repo's `README.md`, `CLAUDE.md`, `review-task.md`, `commands/review-prs.md`, and `lib.sh` are the authoritative implementation of this pattern.
-- No prior `docs/solutions/` entries — this is the first knowledge-store doc in this repo.
+- Authoritative implementation: the `fu-review-prs` plugin in the `fu-claude-plugins` marketplace — `commands/review-prs.md` (orchestrator), `scripts/lib.sh` (helpers), `review-task.md` (sub-agent spec), and the plugin `README.md`. Resolved via `${CLAUDE_PLUGIN_ROOT}`; runtime state under `~/.claude/pr-review/`.
+- Originally lived in a standalone `pr-review-bot` repo (now deleted); this doc was rescued and updated when the bot was folded into the plugin.
