@@ -13,6 +13,8 @@
     { "name": "fu-pg-stage", "source": "./plugins/fu-pg-stage", "category": "productivity",
       "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine." },
     { "name": "fu-ce-compound", "source": "./plugins/fu-ce-compound", "category": "productivity",
-      "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." }
+      "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
+    { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
+      "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, and dotnet format pre-commit." }
   ]
 }

@@ -14,7 +14,8 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | Plugin | Kind | Purpose |
 |---|---|---|
 | et-sweep | command + agents + scripts + MCP | Datadog Error Tracking -> GitHub issues |
-| review-prs | command | PR review orchestrator |
+| review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo) |
 | inspecting-orders-api | skill | Orders API inspection |
 | pg-stage | skill | Postgres via Vault |
 | ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
+| dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, dotnet format pre-commit |

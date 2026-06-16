@@ -1,0 +1,74 @@
+{
+  "name": "fu-dev-guards",
+  "version": "0.1.0",
+  "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), and dotnet format pre-commit.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": ["guards", "worktree", "dotnet", "git"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/guard-worktree-bash.sh\"",
+            "statusMessage": "Guard worktree path"
+          }
+        ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/guard-worktree-enter.sh\"",
+            "statusMessage": "Guard worktree path"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/guard-protected-branch.sh\"",
+            "statusMessage": "Guard protected branch"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/dotnet-format-precommit.sh\"",
+            "statusMessage": "dotnet format pre-commit"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/guard-protected-dirs.sh\"",
+            "statusMessage": "Guard protected directory"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/guard-protected-checkout.sh\"",
+            "statusMessage": "Guard protected directory"
+          }
+        ]
+      }
+    ]
+  }
+}

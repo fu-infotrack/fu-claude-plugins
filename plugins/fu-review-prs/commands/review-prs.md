@@ -1,3 +1,7 @@
+---
+description: One tick of the automated PR-review loop for the current repo (auto-detected from cwd) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review. Run via /loop from inside the review clone.
+---
+
 # /review-prs — Automated PR Review Orchestrator
 
 You are an automated PR review orchestrator. Follow these steps exactly, in order. Do not skip steps.
@@ -7,7 +11,7 @@ You are an automated PR review orchestrator. Follow these steps exactly, in orde
 ## Step 1 — Lock, setup, detect work
 
 ```bash
-source /home/fu/.claude/pr-review/lib.sh
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_init
 ```
 
@@ -22,7 +26,7 @@ pr_review_init
 ### Step 2a — Pre-flight
 
 ```bash
-source /home/fu/.claude/pr-review/lib.sh
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_preflight <PR> <REASON>
 ```
 
@@ -31,20 +35,32 @@ pr_review_preflight <PR> <REASON>
 
 ### Step 2b — Spawn Task sub-agent
 
-Dispatch a Task sub-agent with this exact prompt (substitute the PR number):
+Resolve the task-file path and this PR's namespaced state paths:
+
+```bash
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
+echo "TASK_FILE=$REVIEW_TASK_FILE"
+pr_review_paths <PR>
+```
+
+Dispatch a Task sub-agent. Use this prompt, substituting the PR number and the four absolute paths just printed (`TASK_FILE`, `STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`):
 
 ```
-Read /home/fu/.claude/pr-review/review-task.md and follow it exactly. Review PR #<PR>.
+Read <TASK_FILE> and follow it exactly. Review PR #<PR>.
+Use these absolute paths verbatim — do not construct your own:
+  STATE_FILE = <STATE_FILE>
+  PRIOR_FILE = <PRIOR_FILE>
+  BODY_FILE  = <BODY_FILE>
 ```
 
-The sub-agent derives its own commit/tree/mode, runs `/code-review`, writes the review body to `state/review-body-<PR>.md`, and emits a `DECISION:` line. It does NOT post to GitHub — Step 2c does.
+The sub-agent derives its own commit/tree/mode, runs `/code-review`, writes the review body to `BODY_FILE`, and emits a `DECISION:` line. It does NOT post to GitHub — Step 2c does.
 
 ### Step 2c — Post review, save state, log
 
 After Task completes: find the last line matching `DECISION: APPROVE` or `DECISION: COMMENT`. If none, use `COMMENT`.
 
 ```bash
-source /home/fu/.claude/pr-review/lib.sh
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_finish <PR> <current_commit> <current_tree> <APPROVE or COMMENT>
 ```
 
@@ -57,6 +73,6 @@ pr_review_finish <PR> <current_commit> <current_tree> <APPROVE or COMMENT>
 Run this after all queued PRs are processed, even if some failed. Skip it only if Step 1 returned `LOCKED` or `NO_WORK` (those already released the lock).
 
 ```bash
-source /home/fu/.claude/pr-review/lib.sh
+source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_cleanup
 ```
