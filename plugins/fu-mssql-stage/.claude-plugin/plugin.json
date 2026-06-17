@@ -1,0 +1,16 @@
+{
+  "name": "fu-mssql-stage",
+  "version": "0.1.0",
+  "description": "Connect to a SQL Server DB whose credentials come from HashiCorp Vault's database secrets engine.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "mssql",
+    "sqlserver",
+    "vault",
+    "database"
+  ],
+  "skills": "./skills/"
+}

@@ -31,9 +31,11 @@ command -v jq    >/dev/null || { echo "jq not found" >&2; exit 1; }
 # fu-tools config resolver (sibling plugin script); empty if unavailable.
 cfg() { "$(dirname "$0")/../../scripts/fu-config.sh" pg-stage "$1" 2>/dev/null || true; }
 
-# VAULT_ADDR: honour the environment, else resolve from config.
-: "${VAULT_ADDR:=$(cfg vaultAddr)}"
+# VAULT_ADDR: honour the environment, else resolve from config. Must be EXPORTED
+# so the `vault` child process sees it (otherwise it falls back to 127.0.0.1:8200).
+VAULT_ADDR="${VAULT_ADDR:-$(cfg vaultAddr)}"
 : "${VAULT_ADDR:?VAULT_ADDR not set — set it or configure pg-stage.vaultAddr, then \`vault login\`}"
+export VAULT_ADDR
 
 mount=""
 mode=""

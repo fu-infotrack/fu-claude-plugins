@@ -68,6 +68,7 @@ python3 plugins/fu-ce-compound/skills/ce-compound/scripts/validate-frontmatter.p
 | fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo) |
 | fu-inspecting-orders-api | skill | Orders API inspection (config-resolved host + token) |
 | fu-pg-stage | skill | Postgres via HashiCorp Vault credentials |
+| fu-mssql-stage | skill | SQL Server via HashiCorp Vault credentials (`sqlcmd`/go-sqlcmd; parses an ADO.NET connection_url) |
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
 | fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
 
