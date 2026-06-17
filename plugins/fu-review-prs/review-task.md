@@ -79,5 +79,6 @@ DECISION: COMMENT
 
 ## Working tree rules
 
-`gh pr checkout <PR>` is allowed (useful for reading files at the PR's head).  
-**Never use `git apply`, `git cherry-pick`, `patch`, or any command that modifies tracked files** — the review clone must stay on `main` with a clean working tree after you finish.
+`gh pr checkout <PR>` is allowed and encouraged for reading files at the PR's head — you do **not** need to restore the tree afterwards. The orchestrator force-resets the dedicated clone back to a clean `main` (discarding tracked changes and untracked files) after your review, so leaving it on the PR branch is fine.
+
+Your job is **read-only review**: never `git commit`, `git push`, `git apply`, `git cherry-pick`, or `patch`. Inspect, don't mutate.

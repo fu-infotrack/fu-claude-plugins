@@ -4,8 +4,9 @@
 
 # Target repo + checkout are auto-detected from the current working directory.
 # Run the /loop session from inside the dedicated review clone — a throwaway
-# checkout, since each tick does `git checkout main && git pull`. gh detects the
-# repo (owner/name) from the clone's origin remote.
+# checkout: each tick (and after each PR) force-resets it to match origin/main
+# exactly (see pr_review_reset_tree). gh detects the repo (owner/name) from the
+# clone's origin remote.
 REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 REVIEW_MARKER="<!-- claude-pr-review -->"
@@ -195,6 +196,28 @@ pr_review_release_lock() {
     fi
 }
 
+# Force the dedicated review clone back to a clean, up-to-date main. The clone
+# is a throwaway per-project checkout, so discarding working-tree changes — both
+# tracked mods AND untracked files — is safe and intended. A sub-agent's
+# `gh pr checkout <PR>` leaves the clone on the PR branch; switching back to main
+# strands any files the PR added as untracked, and a plain `git checkout main`
+# aborts on the resulting dirty tree. Force-reset so every tick / next PR starts
+# pristine. Called from pr_review_init (tick start) and pr_review_finish (per PR).
+pr_review_reset_tree() {
+    git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    local git_err
+    # fetch + hard-reset (not pull): the working dir is made to match origin/main
+    # EXACTLY, immune to local divergence or a force-pushed/rewritten remote main.
+    git_err=$(git -C "$REPO_DIR" fetch origin main --quiet 2>&1) \
+        || log "WARNING: 'git fetch origin main' failed in $REPO_DIR: $git_err"
+    git_err=$(git -C "$REPO_DIR" checkout -f main --quiet 2>&1) \
+        || log "WARNING: 'git checkout -f main' failed in $REPO_DIR: $git_err"
+    git_err=$(git -C "$REPO_DIR" reset --hard origin/main --quiet 2>&1) \
+        || log "WARNING: 'git reset --hard origin/main' failed in $REPO_DIR: $git_err"
+    git_err=$(git -C "$REPO_DIR" clean -fd --quiet 2>&1) \
+        || log "WARNING: 'git clean -fd' failed in $REPO_DIR: $git_err"
+}
+
 # Acquire lock, setup, purge stale files, detect queued PRs.
 # Outputs: "LOCKED", "NO_WORK", or "PR_NUM REASON" lines.
 # On LOCKED or NO_WORK the lock is already released — the caller is done.
@@ -220,13 +243,9 @@ pr_review_init() {
     fi
     log "Target repo: $REPO (checkout: $REPO_DIR)"
     # Refresh the ambient-context baseline that /code-review's sub-agents read
-    # (CLAUDE.md, neighbouring code). A stale tree silently degrades reviews, so
-    # log failures rather than swallowing them.
-    local git_err
-    git_err=$(git -C "$REPO_DIR" checkout main --quiet 2>&1) \
-        || log "WARNING: 'git checkout main' failed in $REPO_DIR: $git_err"
-    git_err=$(git -C "$REPO_DIR" pull origin main --quiet 2>&1) \
-        || log "WARNING: 'git pull origin main' failed in $REPO_DIR: $git_err"
+    # (CLAUDE.md, neighbouring code). Force-reset to clean main: a prior tick's
+    # sub-agent may have left the clone on a PR branch with stray untracked files.
+    pr_review_reset_tree
 
     pr_review_purge_stale
 
@@ -313,24 +332,27 @@ pr_review_finish() {
 
     if [ ! -s "$body_file" ]; then
         log "PR #$pr: no review body produced — NOT posting, NOT saving state (will retry next tick)"
-        return 0
-    fi
-
-    local body
-    body="$REVIEW_MARKER
+    else
+        local body
+        body="$REVIEW_MARKER
 $(cat "$body_file")
 
 ---
 *Automated review by Claude Code via /code-review*"
 
-    if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
-            -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
-        log "PR #$pr: posted $decision review"
-        save_review_state "$pr" "$commit" "$tree"
-    else
-        log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"
+        if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
+                -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
+            log "PR #$pr: posted $decision review"
+            save_review_state "$pr" "$commit" "$tree"
+        else
+            log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"
+        fi
+        rm -f "$body_file"
     fi
-    rm -f "$body_file"
+
+    # Return the dedicated clone to a clean main so the next PR's sub-agent
+    # (or the next tick) starts from a pristine tree, not this PR's branch.
+    pr_review_reset_tree
 }
 
 # End-of-run: log completion and release the lock. Stale-file purge already
