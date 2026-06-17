@@ -47,9 +47,13 @@ falling back to env / CLI args):
 | `role` | the role to mint creds from (optional — auto-picked if the config allows exactly one) |
 | `mount` | secrets-engine mount path (default `database`) |
 
-**Credentials are ephemeral.** Every `creds/<role>` read mints a fresh user/password
-with a lease (here ~24h). When the lease expires the login stops working — re-read.
-Never cache or commit them.
+**Credentials are ephemeral, but cached.** Every `creds/<role>` read mints a fresh
+user/password with a lease (here ~24h). To avoid minting a new login on every call,
+`connect.sh` caches the minted cred in a user-only `0600` file under
+`~/.claude/fu-tools/cache/mssql-stage/` and reuses it until ~10 min before the lease
+expires, then auto-re-mints. A cache hit skips both Vault reads (config + creds).
+`--fresh` forces a new mint; `--purge` wipes the cache. The cache holds a plaintext
+password — never commit it; it is bounded by the lease and self-expires.
 
 ## Prerequisites
 
@@ -97,6 +101,8 @@ to `mssql-stage.role`.
 | Open sqlcmd shell | `connect.sh <db-config> --sqlcmd` |
 | Export `SQLCMD*` into shell | `eval "$(connect.sh <db-config> --export)"` |
 | Non-default mount | `connect.sh <db-config> --mount <mount>` |
+| Bypass cache, mint fresh | `connect.sh --fresh` |
+| Purge cached credentials | `connect.sh --purge` |
 
 After `--export`, `sqlcmd -Q "SELECT @@VERSION"` uses the exported `SQLCMD*` env — no
 need to repeat `-S/-d/-U/-P`.
@@ -137,7 +143,8 @@ SQLCMDPASSWORD="$pass" sqlcmd -S <Server> -d <Database> -U "$user" -C
   and the *allowed roles* — don't guess a role name, read `allowed_roles`.
 - **Parsing the table output.** Use `-format=json` + `jq`; the key/value table is not
   machine-stable.
-- **Caching creds.** They expire with the lease. Re-mint each session; never commit.
+- **Treating cached creds as permanent.** The cache is lease-bounded and auto-re-mints
+  near expiry; if a cred is revoked early, run `--fresh`. Never commit the cache files.
 - **Dropping TLS options.** `TrustServerCertificate=true` → `sqlcmd -C`; without it a
   self-signed cert fails the handshake. `Encrypt=true` → `-N`.
 - **Wrong mount.** If the engine isn't mounted at `database`, pass `--mount`.

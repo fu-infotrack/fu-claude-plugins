@@ -35,9 +35,13 @@ falling back to env / CLI args):
 | `role` | the role to mint creds from (optional — auto-picked if the config allows exactly one) |
 | `mount` | secrets-engine mount path (default `database`) |
 
-**Credentials are ephemeral.** Every `creds/<role>` read mints a fresh user/password
-with a lease (often ~1h). When the lease expires the login stops working — re-read.
-Never cache or commit them.
+**Credentials are ephemeral, but cached.** Every `creds/<role>` read mints a fresh
+user/password with a lease. To avoid minting a new login on every call, `connect.sh`
+caches the minted cred in a user-only `0600` file under `~/.claude/fu-tools/cache/pg-stage/`
+and reuses it until ~5 min before the lease expires, then auto-re-mints. A cache hit
+skips both Vault reads (config + creds). `--fresh` forces a new mint; `--purge` wipes
+the cache. The cache holds a plaintext password — never commit it; it is bounded by the
+lease and self-expires.
 
 ## Prerequisites
 
@@ -84,6 +88,8 @@ to `pg-stage.role`.
 | Open psql shell | `connect.sh <db-config> --psql` |
 | Export `PG*` into shell | `eval "$(connect.sh <db-config> --export)"` |
 | Non-default mount | `connect.sh <db-config> --mount <mount>` |
+| Bypass cache, mint fresh | `connect.sh --fresh` |
+| Purge cached credentials | `connect.sh --purge` |
 
 If the config allows exactly one role it's used automatically; if it allows several
 and you didn't name one (or set `pg-stage.role`), the script lists them and stops so
@@ -118,7 +124,8 @@ lease=$(jq -r '.lease_duration' <<<"$creds")     # seconds until creds die
   and the *allowed roles* — don't guess a role name, read `allowed_roles`.
 - **Parsing the table output.** Use `-format=json` + `jq`; the key/value table is not
   machine-stable.
-- **Caching creds.** They expire with the lease. Re-mint each session; never commit.
+- **Treating cached creds as permanent.** The cache is lease-bounded and auto-re-mints
+  near expiry; if a cred is revoked early, run `--fresh`. Never commit the cache files.
 - **Dropping query params.** The `connection_url` often carries `?sslmode=require`;
   keep it on the assembled string.
 - **Wrong mount.** If the engine isn't mounted at `database`, pass `--mount`.

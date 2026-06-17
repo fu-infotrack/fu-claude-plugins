@@ -1,6 +1,6 @@
 {
   "name": "fu-pg-stage",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine.",
   "author": {
     "name": "fu-infotrack",
