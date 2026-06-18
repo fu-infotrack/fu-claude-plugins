@@ -216,6 +216,17 @@ pr_review_reset_tree() {
         || log "WARNING: 'git reset --hard origin/main' failed in $REPO_DIR: $git_err"
     git_err=$(git -C "$REPO_DIR" clean -fd --quiet 2>&1) \
         || log "WARNING: 'git clean -fd' failed in $REPO_DIR: $git_err"
+    # Prune stale local branches left by sub-agents' `gh pr checkout` (everything
+    # but main). Otherwise a re-checkout of the same PR after a force-push hits a
+    # diverged local ref and needs --force. Safe: this is a dedicated throwaway
+    # clone whose only durable branch is main.
+    local stale
+    stale=$(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null \
+        | grep -vx main || true)
+    if [ -n "$stale" ]; then
+        printf '%s\n' "$stale" | xargs -r git -C "$REPO_DIR" branch -D >/dev/null 2>&1 || true
+        log "pruned $(printf '%s\n' "$stale" | grep -c .) stale local branch(es)"
+    fi
 }
 
 # Acquire lock, setup, purge stale files, detect queued PRs.
