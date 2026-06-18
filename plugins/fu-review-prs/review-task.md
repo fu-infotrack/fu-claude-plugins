@@ -29,10 +29,20 @@ The orchestrator only spawns you when there is work to do — do not re-check wh
 
 Invoke the `/code-review` slash command on PR #<PR>. Capture its findings — do not act on its own posting behaviour (you are not posting).
 
-For a DELTA review, scope `/code-review` to the changes since `<delta_base>`:
-- `gh api repos/<REPO>/compare/<delta_base>...<head_commit> --jq ".files[].filename"`
+For a DELTA review, scope `/code-review` to the PR's actual changed files (not the raw old-head→new-head diff, which includes rebased-in main commits):
 
-Do NOT re-audit unchanged code for new issues in delta mode.
+```bash
+# Files the PR adds relative to its base branch (the true PR scope)
+PR_FILES=$(gh api repos/<REPO>/pulls/<PR>/files --jq ".[].filename")
+
+# Files that changed between the last reviewed commit and the current head
+DELTA_FILES=$(gh api repos/<REPO>/compare/<delta_base>...<head_commit> --jq ".files[].filename")
+
+# Intersection: only files that are both in the PR and new/changed since last review
+comm -12 <(echo "$PR_FILES" | sort) <(echo "$DELTA_FILES" | sort)
+```
+
+Review only the intersected file list. Do NOT re-audit unchanged code for new issues in delta mode, and do NOT review files that the PR did not touch (they may have been pulled in by a rebase).
 
 ## Step 2 — Classify findings and assemble the body
 
