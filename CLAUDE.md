@@ -26,15 +26,15 @@ For a quick single-file test, you can `cp` the changed file straight into the ca
 
 ## Committing here triggers this repo's own `fu-dev-guards`
 
-This repo's remote is `github.com/fu-infotrack/…`, which matches the installed `dev-guards` `repo_filter` (`infotrack`), and `master` is a `protected_branch`. So the plugin's own PreToolUse hook **denies a direct `git commit` on `master`**. Land changes via a feature branch, then fast-forward (no PR needed):
+This repo's remote is `github.com/fu-infotrack/…`, which matches the installed `dev-guards` `repo_filter` (`infotrack`), and `main` is a `protected_branch`. So the plugin's own PreToolUse hook **denies a direct `git commit` on `main`**. Land changes via a feature branch, then fast-forward (no PR needed):
 
 ```bash
 git checkout -b <branch>          # its OWN Bash tool call (see below)
 git add … && git commit -m "…"    # separate call — branch is now unprotected
-git checkout master && git merge --ff-only <branch> && git push origin master && git branch -d <branch>
+git checkout main && git merge --ff-only <branch> && git push origin main && git branch -d <branch>
 ```
 
-`merge --ff-only` invokes no `git commit`, so it isn't blocked. **Keep `git checkout -b` and the commit in separate Bash tool calls**: the branch guard evaluates HEAD *before* the command runs, so a compound `checkout -b …; … commit` is judged while still on `master` and denied. (Bumping a plugin's `version` then `uninstall`+`install` is how you force the cache to pick up a changed bundled file, since `install` no-ops when the version is unchanged.)
+`merge --ff-only` invokes no `git commit`, so it isn't blocked. **Keep `git checkout -b` and the commit in separate Bash tool calls**: the branch guard evaluates HEAD *before* the command runs, so a compound `checkout -b …; … commit` is judged while still on `main` and denied. (Bumping a plugin's `version` then `uninstall`+`install` is how you force the cache to pick up a changed bundled file, since `install` no-ops when the version is unchanged.)
 
 ## Runtime config — standardized on `fu-tools` layered config
 
