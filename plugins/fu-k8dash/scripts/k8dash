@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+# Read-only Kubernetes inspection on the stage cluster via the k8dash dashboard's
+# pass-through API proxy. We hold no kubeconfig and no cluster credentials — we
+# replay exactly what the browser does: attach the user's OIDC bearer token to
+# standard Kubernetes apiserver REST calls. The apiserver authenticates the token
+# and applies RBAC, so the tool's reach is exactly the user's own permissions.
+#
+# GET-ONLY BY CONSTRUCTION. The single network primitive (k8get) hard-codes the
+# HTTP method to GET; no subcommand can issue a mutating verb, even if the token
+# happens to be cluster-admin. There is no code path that sends POST/PUT/PATCH/DELETE.
+#
+# Multi-cluster: a global "-c <cluster>" before the subcommand selects which cluster
+# (e.g. stage, prod). Omitted → k8dash.defaultCluster. Each cluster has its own URL
+# and its own token file; a prod cluster prints a ⚠ banner. prod is never the default.
+#
+# Usage:
+#   k8dash [-c <cluster>] login [--browser|--clip]  # get a token into this cluster's token file; NEVER echoes it
+#   k8dash [-c <cluster>] whoami                     # offline-decode the token (subject, groups, exp) — no network
+#   k8dash [-c <cluster>] ns                         # list namespaces
+#   k8dash [-c <cluster>] pods [ns]                  # pods in ns (all namespaces if ns omitted)
+#   k8dash [-c <cluster>] deploy [ns]                # deployments
+#   k8dash [-c <cluster>] events [ns]                # events, oldest→newest
+#   k8dash [-c <cluster>] logs <ns> <pod> [cont]     # pod logs (tail-limited, timestamped)
+#   k8dash [-c <cluster>] nodes                      # cluster nodes
+#   k8dash [-c <cluster>] top-pods [ns] | top-nodes  # metrics.k8s.io usage (if installed)
+#   k8dash [-c <cluster>] raw <path>                 # GET any apiserver path verbatim — the primary contract
+#
+# Config (fu-tools), nested per cluster — no host baked into the source:
+#   k8dash.defaultCluster   (cluster used when -c is omitted, e.g. "stage")
+#   k8dash.<cluster>.url    (that cluster's k8dash host; REQUIRED per cluster)
+#   e.g.  "k8dash": { "defaultCluster": "stage", "stage": { "url": "https://…" },
+#                     "prod": { "url": "https://…" } }
+# Per-cluster token file: ~/.claude/fu-tools/k8dash/clusters/<cluster>/token
+# Env overrides: K8DASH_CLUSTER, K8DASH_DASHBOARD_URL, K8DASH_TOKEN_PATH.
+# Token refresh recipe (on 401) is in SKILL.md.
+#
+# SECURITY: the token value lives ONLY in the token file and the curl process — the
+# script never prints it (no `whoami`/error/verbose path leaks it). Get it into the
+# file with `login`, which reads stdin or the OS clipboard and never echoes it. Do
+# NOT put the token on a command line or paste it into a chat/agent: that would copy
+# it into places it should never go. `K8DASH_TOKEN` (raw token in env) is therefore
+# intentionally NOT supported — use the file.
+#
+# Requires: curl. Uses jq for formatting when present (falls back to raw JSON).
+set -euo pipefail
+
+have() { command -v "$1" >/dev/null 2>&1; }
+die()  { echo "k8dash: $*" >&2; exit 1; }
+
+have curl || die "curl not found"
+
+# fu-tools config resolver (sibling script); empty if unavailable.
+cfg() { "$(dirname "$0")/fu-config.sh" k8dash "$1" 2>/dev/null || true; }
+
+# ── cluster selection ────────────────────────────────────────────────────────
+# A global "-c <cluster>" / "--cluster <cluster>" may precede the subcommand
+# (e.g. `k8dash -c prod ns`). With none given, k8dash.defaultCluster is used — prod
+# is never the default, so you never hit it by omission. Each cluster has its own
+# dashboard URL and its own token file, so stage and prod never collide.
+cluster=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|--cluster) cluster="${2:?-c/--cluster needs a cluster name}"; shift 2 ;;
+    --cluster=*)  cluster="${1#*=}"; shift ;;
+    *) break ;;
+  esac
+done
+cluster="${cluster:-${K8DASH_CLUSTER:-$(cfg defaultCluster)}}"
+[ -n "$cluster" ] || die "no cluster — pass -c <name> before the subcommand, or set k8dash.defaultCluster in fu-tools config"
+
+# This cluster's dashboard URL from the nested config: k8dash.<cluster>.url.
+# No host is baked into the source.
+BASE="${K8DASH_DASHBOARD_URL:-$(cfg "$cluster.url")}"
+[ -n "$BASE" ] || die "no dashboard host for cluster '$cluster' — set k8dash.$cluster.url in fu-tools config"
+BASE="${BASE%/}"
+
+# Loud, unmissable warning when pointed at a prod cluster (name contains 'prod').
+case "$cluster" in *[Pp][Rr][Oo][Dd]*) echo "⚠  PROD CLUSTER '$cluster' ($BASE) — read-only / GET-only" >&2 ;; esac
+
+# Token is read ONLY from the per-cluster local file — never from a command-line arg
+# or an env value — so it can't land in shell history, a process arg list, or an
+# agent's context. Populate it with `k8dash -c $cluster login` (never echoed).
+tpath="${K8DASH_TOKEN_PATH:-$HOME/.claude/fu-tools/k8dash/clusters/$cluster/token}"
+tpath="${tpath/#\~/$HOME}"
+TOKEN=""
+[ -f "$tpath" ] && TOKEN="$(tr -d ' \t\r\n' < "$tpath")"
+
+no_token_msg="no token for cluster '$cluster' at $tpath. Get one: 'k8dash -c $cluster login --browser' (headed login), or run copy(localStorage.authToken) in the dashboard devtools console then 'k8dash -c $cluster login --clip'. The token is never echoed."
+
+# ── core network primitive (GET only) ───────────────────────────────────────
+# k8get <path> [text]
+#   Fetches BASE/<path> with the bearer token. Method is fixed to GET.
+#   mode "text" (logs) skips the JSON/SSO-wall guard; default expects JSON.
+k8get() {
+  local path="$1" mode="${2:-json}" tmp code
+  [ -n "$TOKEN" ] || die "$no_token_msg"
+  tmp="$(mktemp)"
+  code=$(curl -sS -X GET \
+           -H "Authorization: Bearer $TOKEN" \
+           -H "Accept: application/json" \
+           -o "$tmp" -w '%{http_code}' \
+           "$BASE/${path#/}") || { rm -f "$tmp"; die "curl failed reaching $BASE"; }
+  case "$code" in
+    2*) : ;;
+    401) rm -f "$tmp"; die "401 — token expired. Refresh: dashboard devtools console → copy(localStorage.authToken) → write into $tpath" ;;
+    403) sed 's/^/  /' "$tmp" >&2; rm -f "$tmp"; die "403 — RBAC forbids this path for your identity (see: k8dash whoami)" ;;
+    404) rm -f "$tmp"; die "404 — not found: $path" ;;
+    *)   sed 's/^/  /' "$tmp" >&2; rm -f "$tmp"; die "HTTP $code from $path" ;;
+  esac
+  # Detect an SSO/WAF wall: a 2xx whose body is HTML or a redirect page, not JSON.
+  if [ "$mode" != "text" ] && [ "$(head -c1 "$tmp")" = "<" ]; then
+    rm -f "$tmp"
+    die "got HTML, not JSON — likely an SSO/WAF wall in front of the proxy; the bearer token alone is not enough (a browser session cookie may be required)."
+  fi
+  cat "$tmp"; rm -f "$tmp"
+}
+
+# Align a TSV stream into a table when `column` is available, else print raw.
+table() { if have column; then column -t -s "$(printf '\t')"; else cat; fi; }
+# Run jq with a filter, or pass JSON through untouched if jq is absent.
+jqf() { if have jq; then jq "$@"; else cat; fi; }
+
+# ── subcommands ──────────────────────────────────────────────────────────────
+
+cmd_whoami() {
+  [ -n "$TOKEN" ] || die "$no_token_msg"
+  local payload json
+  payload="$(printf '%s' "$TOKEN" | cut -d. -f2)"      # JWT middle segment
+  payload="${payload//-/+}"; payload="${payload//_//}" # base64url → base64
+  case $(( ${#payload} % 4 )) in 2) payload+='==' ;; 3) payload+='=' ;; esac
+  json="$(printf '%s' "$payload" | base64 -d 2>/dev/null)" \
+    || die "token is not a decodable JWT (got a non-JWT value?)"
+  if have jq; then
+    printf '%s' "$json" | jq '{
+      sub, preferred_username, email, upn, name, groups, iss, aud, exp,
+      expires:      (if .exp then (.exp | todate) else null end),
+      seconds_left: (if .exp then (.exp - now | floor) else null end)
+    }'
+  else
+    printf '%s\n' "$json"
+  fi
+}
+
+# NB: every summarising subcommand fetches into a variable FIRST, so k8get's die
+# (no token / 401 / 403) aborts before any header is printed — never a header then
+# an error, which would look like partial success.
+
+cmd_ns() {
+  local body; body="$(k8get "api/v1/namespaces")"
+  { printf 'NAMESPACE\tSTATUS\n'
+    printf '%s' "$body" | jqf -r '.items[]? | [.metadata.name, .status.phase] | @tsv'
+  } | table
+}
+
+cmd_pods() {
+  local ns="${1:-}" path body
+  [ -n "$ns" ] && path="api/v1/namespaces/$ns/pods" || path="api/v1/pods"
+  body="$(k8get "$path")"
+  { printf 'NAMESPACE\tPOD\tPHASE\tREADY\tRESTARTS\tNODE\n'
+    printf '%s' "$body" | jqf -r '
+      .items[]? | [
+        .metadata.namespace, .metadata.name, (.status.phase // "-"),
+        ([.status.containerStatuses[]? | select(.ready)] | length | tostring)
+          + "/" + ([.status.containerStatuses[]?] | length | tostring),
+        ([.status.containerStatuses[]?.restartCount] | add // 0 | tostring),
+        (.spec.nodeName // "-")
+      ] | @tsv'
+  } | table
+}
+
+cmd_deploy() {
+  local ns="${1:-}" path body
+  [ -n "$ns" ] && path="apis/apps/v1/namespaces/$ns/deployments" || path="apis/apps/v1/deployments"
+  body="$(k8get "$path")"
+  { printf 'NAMESPACE\tDEPLOYMENT\tREADY\tUP-TO-DATE\tAVAILABLE\n'
+    printf '%s' "$body" | jqf -r '
+      .items[]? | [
+        .metadata.namespace, .metadata.name,
+        ((.status.readyReplicas // 0 | tostring) + "/" + (.spec.replicas // 0 | tostring)),
+        (.status.updatedReplicas // 0 | tostring),
+        (.status.availableReplicas // 0 | tostring)
+      ] | @tsv'
+  } | table
+}
+
+cmd_events() {
+  local ns="${1:-}" path body
+  [ -n "$ns" ] && path="api/v1/namespaces/$ns/events" || path="api/v1/events"
+  body="$(k8get "$path")"
+  { printf 'LAST\tTYPE\tREASON\tOBJECT\tMESSAGE\n'
+    printf '%s' "$body" | jqf -r '
+      [ .items[]? | {
+          t: (.lastTimestamp // .eventTime // .metadata.creationTimestamp),
+          type: .type, reason: .reason,
+          obj: ((.involvedObject.kind // "?") + "/" + (.involvedObject.name // "?")),
+          msg: (.message // "" | gsub("\n"; " "))
+        } ]
+      | sort_by(.t) | .[]
+      | [ .t, .type, .reason, .obj, .msg ] | @tsv'
+  } | table
+}
+
+cmd_logs() {
+  local ns="${1:?logs needs <ns> <pod>}" pod="${2:?logs needs <ns> <pod>}" container="${3:-}"
+  local q="tailLines=200&timestamps=true"
+  [ -n "$container" ] && q="$q&container=$container"
+  # text mode: the log endpoint returns text/plain, not JSON.
+  k8get "api/v1/namespaces/$ns/pods/$pod/log?$q" text
+}
+
+cmd_nodes() {
+  local body; body="$(k8get "api/v1/nodes")"
+  { printf 'NODE\tREADY\tKUBELET\tOS-IMAGE\n'
+    printf '%s' "$body" | jqf -r '
+      .items[]? | [
+        .metadata.name,
+        ([.status.conditions[]? | select(.type=="Ready") | .status] | first // "?"),
+        (.status.nodeInfo.kubeletVersion // "-"),
+        (.status.nodeInfo.osImage // "-")
+      ] | @tsv'
+  } | table
+}
+
+cmd_top_pods() {
+  local ns="${1:-}" path out
+  [ -n "$ns" ] && path="apis/metrics.k8s.io/v1beta1/namespaces/$ns/pods" || path="apis/metrics.k8s.io/v1beta1/pods"
+  out="$(k8get "$path" 2>/dev/null)" \
+    || die "pod metrics unavailable — metrics.k8s.io is not installed/readable on this cluster"
+  { printf 'NAMESPACE\tPOD\tCONTAINER\tCPU\tMEMORY\n'
+    printf '%s' "$out" | jqf -r '
+      .items[]? as $p | $p.containers[]? |
+      [ $p.metadata.namespace, $p.metadata.name, .name, (.usage.cpu // "-"), (.usage.memory // "-") ] | @tsv'
+  } | table
+}
+
+cmd_top_nodes() {
+  local out
+  out="$(k8get "apis/metrics.k8s.io/v1beta1/nodes" 2>/dev/null)" \
+    || die "node metrics unavailable — metrics.k8s.io is not installed/readable on this cluster"
+  { printf 'NODE\tCPU\tMEMORY\n'
+    printf '%s' "$out" | jqf -r '.items[]? | [ .metadata.name, (.usage.cpu // "-"), (.usage.memory // "-") ] | @tsv'
+  } | table
+}
+
+cmd_raw() {
+  local path="${1:?raw needs a path, e.g. /api/v1/namespaces}" body
+  body="$(k8get "$path")"
+  if have jq && printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$body" | jq .
+  else
+    printf '%s\n' "$body"
+  fi
+}
+
+# Ingest a token into the token file WITHOUT ever echoing it. Source is the OS
+# clipboard (--clip) or stdin (default). The token goes clipboard/stdin → file; it
+# is never printed, so running this — even under an agent — does not expose it.
+cmd_login() {
+  local src="stdin" tok payload json exp left
+  case "${1:-}" in
+    --browser|--oidc) exec "$(dirname "$0")/k8dash-login" --cluster "$cluster" "${@:2}" ;;  # headed login, no creds in context
+    --clip|--clipboard) src="clip" ;;
+    "") src="stdin" ;;
+    *) die "login: unknown arg '$1' — use --browser, --clip, or pipe/paste the token on stdin" ;;
+  esac
+  if [ "$src" = clip ]; then
+    if   have powershell.exe; then tok="$(powershell.exe -NoProfile -Command Get-Clipboard 2>/dev/null)"
+    elif have pbpaste;        then tok="$(pbpaste)"
+    elif have xclip;          then tok="$(xclip -selection clipboard -o 2>/dev/null)"
+    elif have wl-paste;       then tok="$(wl-paste 2>/dev/null)"
+    else die "login --clip: no clipboard reader found (tried powershell.exe, pbpaste, xclip, wl-paste)"; fi
+  else
+    [ -t 0 ] && printf 'paste token, then press Enter and Ctrl-D: ' >&2
+    tok="$(cat)"
+  fi
+  tok="$(printf '%s' "$tok" | tr -d ' \t\r\n')"
+  [ -n "$tok" ] || die "login: no token received"
+  case "$tok" in *.*.*) : ;; *) die "login: value is not a JWT (expected header.payload.signature)" ;; esac
+  mkdir -p "$(dirname "$tpath")" && chmod 700 "$(dirname "$tpath")" 2>/dev/null || true
+  ( umask 077; printf '%s' "$tok" > "$tpath" )
+  chmod 600 "$tpath" 2>/dev/null || true
+  # Confirm validity WITHOUT printing the token or any identity claim — only seconds left.
+  payload="$(printf '%s' "$tok" | cut -d. -f2)"; payload="${payload//-/+}"; payload="${payload//_//}"
+  case $(( ${#payload} % 4 )) in 2) payload+='==' ;; 3) payload+='=' ;; esac
+  json="$(printf '%s' "$payload" | base64 -d 2>/dev/null || true)"
+  if have jq && [ -n "$json" ]; then exp="$(printf '%s' "$json" | jq -r '.exp // empty' 2>/dev/null || true)"; fi
+  [ -n "${exp:-}" ] && left=$(( exp - $(date +%s) ))
+  if [ -n "${left:-}" ]; then echo "k8dash: token saved to $tpath (valid ~${left}s)" >&2
+  else echo "k8dash: token saved to $tpath" >&2; fi
+}
+
+usage() {
+  cat >&2 <<'USAGE'
+k8dash — read-only Kubernetes inspection via the k8dash API proxy (GET-only).
+
+A global  -c <cluster>  before the subcommand picks the cluster (default:
+k8dash.defaultCluster). A prod cluster prints a ⚠ banner.
+
+  k8dash [-c C] login [--browser|--clip]  get a token into this cluster's token file:
+                                          --browser headed OIDC login, --clip clipboard,
+                                          else stdin; never echoed
+  k8dash [-c C] whoami                    offline-decode the token (subject, groups, exp)
+  k8dash [-c C] ns                        list namespaces
+  k8dash [-c C] pods [ns]                 pods (all namespaces if ns omitted)
+  k8dash [-c C] deploy [ns]               deployments
+  k8dash [-c C] events [ns]               events, oldest→newest
+  k8dash [-c C] logs <ns> <pod> [cont]    pod logs (tail-limited, timestamped)
+  k8dash [-c C] nodes                     cluster nodes
+  k8dash [-c C] top-pods [ns]|top-nodes   metrics.k8s.io usage (if installed)
+  k8dash [-c C] raw <path>                GET any apiserver path verbatim — primary contract
+
+The token lives only in the per-cluster token file; never accepted on a command line.
+USAGE
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+sub="${1:-}"; shift || true
+case "$sub" in
+  login)     cmd_login "$@" ;;
+  whoami)    cmd_whoami "$@" ;;
+  ns)        cmd_ns "$@" ;;
+  pods)      cmd_pods "$@" ;;
+  deploy)    cmd_deploy "$@" ;;
+  events)    cmd_events "$@" ;;
+  logs)      cmd_logs "$@" ;;
+  nodes)     cmd_nodes "$@" ;;
+  top-pods)  cmd_top_pods "$@" ;;
+  top-nodes) cmd_top_nodes "$@" ;;
+  raw)       cmd_raw "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "k8dash: unknown subcommand '$sub'" >&2; echo >&2; usage >&2; exit 2 ;;
+esac

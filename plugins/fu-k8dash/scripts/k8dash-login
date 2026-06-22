@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Headed-browser OIDC login for k8dash. Opens the k8dash dashboard in a REAL
+# (headed) Chromium via playwright-cli, then waits up to N minutes for YOU to
+# authenticate in that window — username, password, and MFA are typed into the
+# browser, never into this script or any agent's context. On success it captures
+# the OIDC id_token (localStorage.authToken) and the browser storage state
+# (cookies, for the case where the proxy sits behind an SSO/WAF) to the shared
+# token location, then closes the browser.
+#
+# Self-contained: the ONLY inputs are what you type into the browser window. This
+# script never sees, prompts for, or echoes a username/password, and never prints
+# the token — it captures into a file/variable it owns and prints only validity.
+#
+# Usage: k8dash-login [-c <cluster>] [--timeout <seconds>] [--keep-open]
+#   -c/--cluster which cluster to log in to (default: k8dash.defaultCluster)
+#   --timeout    how long to wait for login (default 600 = 10 min)
+#   --keep-open  leave the browser open after capturing (default: close it)
+# Usually invoked as `k8dash [-c <cluster>] login --browser`, which passes the cluster.
+#
+# Requires: playwright-cli on PATH, and a display (WSLg/X on WSL — DISPLAY set).
+# Per-cluster dashboard URL + token path resolve from fu-tools config
+# (k8dash.<cluster>.url / per-cluster token file), exactly like the client.
+set -euo pipefail
+
+# Resolve our own dir to an ABSOLUTE path before any cd (the playwright-cli calls
+# run from a scratch cwd, see below), so the sibling fu-config.sh stays locatable.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+die()  { echo "k8dash-login: $*" >&2; exit 1; }
+
+have playwright-cli || die "playwright-cli not found on PATH"
+[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || die "no display (DISPLAY/WAYLAND_DISPLAY unset) — a headed browser needs a GUI (WSLg or an X server)"
+
+cfg() { "$SELF_DIR/fu-config.sh" k8dash "$1" 2>/dev/null || true; }
+
+cluster="" timeout=600 keep_open=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -c|--cluster) cluster="${2:?-c/--cluster needs a cluster name}"; shift ;;
+    --cluster=*)  cluster="${1#*=}" ;;
+    --timeout) timeout="${2:?--timeout needs seconds}"; shift ;;
+    --keep-open) keep_open=1 ;;
+    -*) die "unknown flag: $1" ;;
+    *)  die "unexpected arg: $1" ;;
+  esac; shift
+done
+[[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be an integer (seconds)"
+
+# Resolve the cluster, its dashboard URL, and its per-cluster token file (same rules
+# as the k8dash client) — no host baked into the source; stage/prod never collide.
+cluster="${cluster:-${K8DASH_CLUSTER:-$(cfg defaultCluster)}}"
+[ -n "$cluster" ] || die "no cluster — pass --cluster <name> or set k8dash.defaultCluster in fu-tools config"
+BASE="${K8DASH_DASHBOARD_URL:-$(cfg "$cluster.url")}"
+[ -n "$BASE" ] || die "no dashboard host for cluster '$cluster' — set k8dash.$cluster.url in fu-tools config"
+BASE="${BASE%/}"
+case "$cluster" in *[Pp][Rr][Oo][Dd]*) echo "⚠  PROD CLUSTER '$cluster' — you are logging in to PRODUCTION" >&2 ;; esac
+
+tpath="${K8DASH_TOKEN_PATH:-$HOME/.claude/fu-tools/k8dash/clusters/$cluster/token}"; tpath="${tpath/#\~/$HOME}"
+statepath="$(dirname "$tpath")/browser-state.json"
+
+# Run every playwright-cli command from a scratch dir so its per-session
+# .playwright-cli/ snapshot files land there, never in the user's cwd.
+workdir="$(dirname "$tpath")/.pw"; mkdir -p "$workdir"
+sess="k8dash-login-$cluster"
+pw() { ( cd "$workdir" && playwright-cli -s="$sess" "$@" ); }
+
+cleanup() { [ "$keep_open" = 1 ] || pw close >/dev/null 2>&1 || true; }
+trap cleanup EXIT INT TERM
+
+# Force the bundled chromium engine (the default 'chrome' channel may be absent),
+# and clear any stale session of this name first.
+pw close >/dev/null 2>&1 || true
+echo "k8dash-login: cluster '$cluster' — opening $BASE in a headed browser." >&2
+echo "  Log in there (username / password / MFA). Nothing you type reaches this script." >&2
+echo "  Waiting up to $((timeout/60))m for the OIDC token…" >&2
+pw open --headed --browser chromium "$BASE" >/dev/null 2>&1 || die "failed to open the browser (playwright-cli open)"
+
+# Poll localStorage.authToken until it is a JWT, or we time out. The eval returns
+# only READY/WAIT — never the token — and tolerates transient errors (the dashboard
+# redirects to the IdP, which destroys the execution context mid-navigation).
+deadline=$(( $(date +%s) + timeout )); got=0; next_beat=$(( $(date +%s) + 30 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  state=$(pw eval --raw "() => { try { return (window.localStorage && localStorage.authToken && String(localStorage.authToken).split('.').length===3) ? 'READY' : 'WAIT'; } catch (e) { return 'WAIT'; } }" 2>/dev/null || echo WAIT)
+  if [ "$state" = '"READY"' ] || [ "$state" = READY ]; then got=1; break; fi
+  if [ "$(date +%s)" -ge "$next_beat" ]; then
+    echo "  …still waiting ($(( (deadline - $(date +%s)) / 60 ))m left). Finish the login in the browser." >&2
+    next_beat=$(( $(date +%s) + 30 ))
+  fi
+  sleep 3
+done
+[ "$got" = 1 ] || die "timed out after ${timeout}s with no token — login not completed?"
+
+# Capture WITHOUT printing. --raw prints the JSON-encoded value (a quoted string)
+# to stdout, which $() captures into a script-local variable — it never surfaces to
+# the caller. Strip the surrounding quotes/whitespace; a JWT needs no unescaping.
+raw=$(pw eval --raw "() => (window.localStorage && localStorage.authToken) ? localStorage.authToken : ''" 2>/dev/null || echo '""')
+tok=$(printf '%s' "$raw" | tr -d '\r\n'); tok=${tok#\"}; tok=${tok%\"}
+case "$tok" in *.*.*) : ;; *) die "captured value is not a JWT — login may be incomplete" ;; esac
+
+mkdir -p "$(dirname "$tpath")" && chmod 700 "$(dirname "$tpath")" 2>/dev/null || true
+( umask 077; printf '%s' "$tok" > "$tpath" ); chmod 600 "$tpath" 2>/dev/null || true
+
+# Also persist cookies + storage state (0600) for the SSO/WAF-cookie scenario.
+pw state-save "$statepath" >/dev/null 2>&1 && chmod 600 "$statepath" 2>/dev/null || true
+
+# Confirm with seconds-of-validity only — decode exp locally, never print the token.
+left=""; payload=$(printf '%s' "$tok" | cut -d. -f2); payload="${payload//-/+}"; payload="${payload//_//}"
+case $(( ${#payload} % 4 )) in 2) payload+='==' ;; 3) payload+='=' ;; esac
+if have jq; then exp=$(printf '%s' "$payload" | base64 -d 2>/dev/null | jq -r '.exp // empty' 2>/dev/null || true); [ -n "${exp:-}" ] && left=$(( exp - $(date +%s) )); fi
+if [ -n "$left" ]; then echo "k8dash-login: token saved to $tpath (valid ~${left}s); storage state -> $statepath" >&2
+else echo "k8dash-login: token saved to $tpath; storage state -> $statepath" >&2; fi

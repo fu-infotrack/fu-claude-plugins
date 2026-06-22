@@ -1,0 +1,18 @@
+{
+  "name": "fu-k8dash",
+  "version": "0.3.0",
+  "description": "Read-only Kubernetes inspection across clusters (stage, prod, …) via the k8dash dashboard's pass-through API proxy, using the user's own OIDC bearer token (GET-only, RBAC-bounded). Per-cluster host + token resolve from fu-tools config; pick a cluster with -c.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "kubernetes",
+    "k8s",
+    "k8dash",
+    "skooner",
+    "stage",
+    "debugging"
+  ],
+  "skills": "./skills/"
+}

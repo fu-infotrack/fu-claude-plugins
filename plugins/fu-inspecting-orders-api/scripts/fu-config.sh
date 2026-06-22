@@ -14,7 +14,7 @@ done
 u="{}"; [ -f "$user_cfg" ] && u="$(cat "$user_cfg")"
 p="{}"; [ -n "$proj_cfg" ] && p="$(cat "$proj_cfg")"
 jq -rn --argjson u "$u" --argjson p "$p" --arg t "$tool" --arg k "$key" \
-  '(($u[$t] // {}) * ($p[$t] // {}))[$k] as $v
+  '(($u[$t] // {}) * ($p[$t] // {})) | getpath($k / ".") as $v
    | if $v == null then empty
      elif ($v | type) == "array" then $v[]
      else $v end'

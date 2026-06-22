@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "fu-claude-plugins",
-  "description": "Personal Claude Code tooling: error-tracking sweep, PR review, orders-API inspection, pg/mssql-stage DB access, and ce-compound.",
+  "description": "Personal Claude Code tooling: error-tracking sweep, PR review, orders-API inspection, pg/mssql-stage DB access, k8dash cluster inspection, and ce-compound.",
   "owner": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
   "plugins": [
     { "name": "fu-et-sweep", "source": "./plugins/fu-et-sweep", "category": "productivity",
@@ -14,6 +14,8 @@
       "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine." },
     { "name": "fu-mssql-stage", "source": "./plugins/fu-mssql-stage", "category": "productivity",
       "description": "Connect to a SQL Server DB whose credentials come from HashiCorp Vault's database secrets engine." },
+    { "name": "fu-k8dash", "source": "./plugins/fu-k8dash", "category": "productivity",
+      "description": "Read-only Kubernetes inspection across clusters (stage/prod, pick with -c) via the k8dash dashboard's API proxy (GET-only, RBAC-bounded; user's OIDC bearer token)." },
     { "name": "fu-ce-compound", "source": "./plugins/fu-ce-compound", "category": "productivity",
       "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
