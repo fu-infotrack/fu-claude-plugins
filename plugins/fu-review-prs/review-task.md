@@ -1,17 +1,21 @@
 # PR Review Task
 
-Your deliverable for PR #<PR> is **two things**:
+Your deliverable for PR #<PR> is written to **disk** (so it survives even if the
+orchestrator's context is compacted after you return):
 
-1. A review-body file written to the `BODY_FILE` path given in your task prompt.
-2. A `DECISION:` line as the very last line of your response.
+1. A review-body file at `BODY_FILE`, whose **first line** is a decision header
+   `<!-- DECISION: APPROVE -->` (or `COMMENT`).
+2. The decision token (`APPROVE` or `COMMENT`) written to `DECISION_FILE`.
+3. A `DECISION:` line as the very last line of your response (a human-readable
+   trace; the orchestrator reads the decision from the two files above, not this).
 
 You do **NOT** post anything to GitHub yourself — the orchestrator posts the file you write. Running `/code-review` is only how you *gather* findings; it is NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–5. Do not stop after `/code-review`.
 
 ## Step 0 — Determine your review context
 
-`STATE_FILE`, `PRIOR_FILE`, and `BODY_FILE` are given to you as absolute paths in
-your task prompt. Use them verbatim — do not construct your own (they are
-namespaced per repo, so a hand-built path will be wrong).
+`STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`, and `DECISION_FILE` are given to you as
+absolute paths in your task prompt. Use them verbatim — do not construct your own
+(they are namespaced per repo, so a hand-built path will be wrong).
 
 1. Target repo (you run in the review clone, so gh detects it from cwd):
    `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)`
@@ -66,15 +70,36 @@ Found N issues:
 - A STILL OPEN or REINTRODUCED prior BLOCKER counts as a current BLOCKER.
 - APPROVE if zero BLOCKERs. COMMENT if one or more BLOCKERs.
 
-## Step 4 — Write the body file
+## Step 4 — Write the body file and the decision sidecar
 
-Use the `Write` tool to write the assembled review body (from Step 2) to `BODY_FILE`. Write the body only — no marker, no footer; the orchestrator adds those.
+Use the `Write` tool to write **both** files. Writing the decision to disk (both
+places) is what lets the orchestrator post the correct review even if its context
+is compacted after you return — do not skip either.
 
-If you found no issues (clean APPROVE), still write the formatted body with `Found 0 issues`.
+1. **`BODY_FILE`** — a decision header as the very first line, then the assembled
+   review body from Step 2:
+
+   ```
+   <!-- DECISION: APPROVE -->
+   ### Code review — PR #<PR>
+   Found N issues:
+   ...
+   ```
+
+   Use `APPROVE` or `COMMENT` to match your Step 3 decision. Body only after the
+   header — no marker, no footer; the orchestrator adds those and strips the header
+   line before posting. If you found no issues (clean APPROVE), still write the
+   formatted body with `Found 0 issues`.
+
+2. **`DECISION_FILE`** — a single line containing just `APPROVE` or `COMMENT` (the
+   same decision). This sidecar is the authoritative source the orchestrator reads;
+   the body header is its backup.
 
 ## Step 5 — Emit the decision sentinel
 
-The LAST line of your response must be exactly one of:
+The LAST line of your response must be exactly one of the following. (The
+orchestrator reads your decision from `DECISION_FILE` / the body header, not from
+this line — but still emit it as a human-readable trace.)
 
 ```
 DECISION: APPROVE

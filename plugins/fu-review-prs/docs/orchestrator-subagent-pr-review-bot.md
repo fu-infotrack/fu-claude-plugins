@@ -57,6 +57,7 @@ Ordered highest-leverage first.
    - Orchestrator pre-writes prior findings to `state/prior-<pr>.txt`; sub-agent writes the review body to `state/review-body-<pr>.md`.
    - File handoff dodges fragile permission matching — a `gh api | jq | sed` pipeline may not satisfy a `Bash(gh:*)` allowlist, whereas a plain file Read/Write always works.
    - Use a stable dir under `state/`, **not** `/tmp` — `/tmp` gets clobbered by parallel jobs sharing the host.
+   - This applies to **every** value the post step needs, not just the body — see guidance #14: parsing the decision/commit/tree out of the model's context is the same fragility, one compaction away from breaking.
 
 4. **Hold cross-tool-call locks with a background holder process.** Each Bash tool call is a *new shell*, so a normal fd-based `flock` releases the instant that call returns — giving no mutual exclusion across the orchestrator's separate bash calls. Spawn a background process that holds the lock for the life of the run, store its PID, and kill it at cleanup. Never delete the lock file (deleting it created a TOCTOU race where two ticks flock different inodes).
 
@@ -77,6 +78,8 @@ Ordered highest-leverage first.
 12. **Namespace per-repo identity in every shared path.** The first design used one lock and flat, PR-number-keyed state (`review-prs.lock`, `state/prior-<pr>.txt`). The moment you run the bot against more than one remote — one `/loop` per clone — those collide: the single lock serialises unrelated repos, and `owner-a/repo` PR #5 clobbers `owner-b/repo` PR #5's tree-SHA/findings/body. Derive a slug from the repo (`owner/name` → `owner-name`) and fold it into the lock, holder, log, and a `state/<slug>/` subdir. Because the slug comes from cwd (`gh repo view`) and the sub-agent runs in its own context, the orchestrator must **resolve the namespaced paths and inject them** into the sub-agent prompt — the sub-agent must not rebuild them from the bare PR number, or it writes to the wrong (flat) location and the orchestrator's read silently finds nothing.
 
 13. **Force-reset the throwaway clone; never `pull`.** The review clone is disposable, and the sub-agent's `gh pr checkout <PR>` leaves it on the PR branch — files the PR *added* are then stranded as untracked when you return to `main`, and a plain `git checkout main` aborts on the dirty tree, silently degrading the baseline. Refresh by making the tree match the remote *exactly*: `git fetch origin main` → `git checkout -f main` → `git reset --hard origin/main` → `git clean -fd`. Use `reset --hard`, not `pull`: `pull` is a merge that can create a merge commit or abort on a force-pushed/rewritten remote `main`, whereas hard-reset is immune to local divergence and history rewrites. Omit `-x` from `clean` so gitignored build caches (`bin/obj`, `node_modules`) survive — only stray untracked source and tracked mods get wiped. Run it both at tick start *and* after each PR, so sequential sub-agents never inherit the prior PR's branch.
+
+14. **Persist every cross-step value to disk, so a mid-tick compaction loses nothing.** In a same-session loop the orchestrator's context grows across ticks and *will* eventually compact — possibly right after a sub-agent returns, before the post step runs. Any value carried in context across that boundary is at risk. The original design carried three: the `DECISION` (parsed from the sub-agent's reply) and the `commit`/`tree` (printed by pre-flight, "held" by the model for the post call). Move all three to disk: pre-flight writes `pending-<pr>` (commit + tree); the sub-agent writes its decision to a `decision-<pr>.txt` sidecar **and** as a `<!-- DECISION: X -->` header on the body's first line (belt-and-suspenders); `pr_review_finish <pr>` then takes **only the PR number** and recovers commit/tree/decision/body entirely from disk. The post step becomes reconstructable from disk alone, so a compaction between pre-flight and post is a no-op. Pre-flight also clears the prior tick's body/decision before dispatch so a half-finished earlier run can't leave a stale decision to be read; decision resolution is sidecar → header → `COMMENT` (the safe default from #10). Combined with #6 (state saved only on a successful post), the worst case degrades to a redundant re-review next tick — never a lost or wrong post.
 
 ## Why This Matters
 
@@ -121,31 +124,26 @@ echo "$HOLDER_PID" > "$HOLDER_FILE"
 
 ```bash
 # STATE_DIR is namespaced per repo (see #12): "$BASE_DIR/state/$REPO_SLUG".
-# Orchestrator pre-writes prior findings for the sub-agent to read.
+# Pre-flight: pre-write prior findings AND persist the reviewed commit/tree to
+# disk (pending-<pr>), so the post step never needs them from context (see #14).
 fetch_prior_findings "$PR" > "$STATE_DIR/prior-${PR}.txt"
+rm -f "$STATE_DIR/review-body-${PR}.md" "$STATE_DIR/decision-${PR}.txt"  # clear stale
+write_pending "$PR" "$commit" "$tree"
 
-# The sub-agent runs /code-review as a data-gathering substep, then MUST:
-#   - write the review body to the BODY_FILE path passed to it (the
-#     orchestrator resolves it via $STATE_DIR; the sub-agent must NOT
-#     rebuild a flat path from the bare PR number)
-#   - emit a final line: DECISION: APPROVE | DECISION: COMMENT
+# The sub-agent runs /code-review as a data-gathering substep, then MUST write to
+# the paths passed to it (it must NOT rebuild flat paths from the bare PR number):
+#   - BODY_FILE: a "<!-- DECISION: X -->" header line, then the review body
+#   - DECISION_FILE: the bare APPROVE|COMMENT token (authoritative; header is backup)
 # (Instruction to sub-agent: "do NOT stop after /code-review.")
 
-# Orchestrator posts — deterministically, in bash, NOT the model.
-body_file="$STATE_DIR/review-body-${PR}.md"
-if [ -s "$body_file" ]; then
-    body="$REVIEW_MARKER
-$(cat "$body_file")"
-    if gh api "repos/$REPO/pulls/$PR/reviews" --method POST \
-            -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
-        save_review_state "$PR" "$commit" "$tree"   # save ONLY on a successful post
-    else
-        log "PR #$PR: post failed — NOT saving state (retries next tick)"
-    fi
-else
-    log "PR #$PR: no review body produced — NOT posting, NOT saving state"
-fi
-# No body / failed post -> state NOT saved -> retried next tick (no silent pass).
+# Orchestrator posts — deterministically, in bash, NOT the model. Takes ONLY $PR;
+# everything else is read from disk, so a compaction after the sub-agent returns
+# loses nothing.
+pr_review_finish "$PR"
+#   - body from review-body-<pr>.md (header line stripped before posting)
+#   - decision from decision-<pr>.txt -> body header -> COMMENT (#10 safe default)
+#   - commit/tree from pending-<pr> (re-derived from live head only if missing)
+#   - save_review_state ONLY on a successful post (#6) -> failures retry next tick
 ```
 
 ### Auto-detect identity from cwd

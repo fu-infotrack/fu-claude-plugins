@@ -40,10 +40,11 @@ mkdir -p "$STATE_DIR"
 # the review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
-    printf 'STATE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\n' \
+    printf 'STATE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
         "$STATE_DIR/last-reviewed-$pr" \
         "$STATE_DIR/prior-$pr.txt" \
-        "$STATE_DIR/review-body-$pr.md"
+        "$STATE_DIR/review-body-$pr.md" \
+        "$STATE_DIR/decision-$pr.txt"
 }
 
 rotate_log() {
@@ -98,6 +99,44 @@ read_review_state() {
     [ -z "$commit" ] && return 1
     [ -z "$tree" ] && return 1
     printf '%s\t%s\n' "$commit" "$tree"
+}
+
+# pending-<pr>: the commit/tree being reviewed, persisted by pre-flight so the
+# post step recovers them from DISK rather than from the orchestrator's context.
+# This makes the pre-flight -> post handoff immune to a context compaction that
+# lands mid-tick (right after the sub-agent returns). Same two-line shape as the
+# state file. Written only on the PROCEED path; cleared by pr_review_finish.
+write_pending() {
+    local pr=$1 commit=$2 tree=$3
+    printf '%s\n%s\n' "$commit" "$tree" > "$STATE_DIR/pending-${pr}"
+}
+
+read_pending() {
+    local pr=$1
+    local f="$STATE_DIR/pending-${pr}"
+    [ -f "$f" ] || return 1
+    local commit tree
+    { read -r commit; read -r tree; } < "$f"
+    [ -z "$commit" ] && return 1
+    [ -z "$tree" ] && return 1
+    printf '%s\t%s\n' "$commit" "$tree"
+}
+
+# Resolve the sub-agent's decision from DISK, never from the orchestrator's
+# context: the decision-<pr>.txt sidecar first (clean single token), else the
+# "<!-- DECISION: X -->" header the sub-agent also writes as the body's first
+# line, else COMMENT (conservative — never auto-approve on ambiguity).
+read_decision() {
+    local pr=$1 body_file=$2 d=""
+    local sidecar="$STATE_DIR/decision-${pr}.txt"
+    if [ -s "$sidecar" ]; then
+        d=$(tr -d ' \t\r\n' < "$sidecar" | tr '[:lower:]' '[:upper:]')
+    fi
+    if [ "$d" != "APPROVE" ] && [ "$d" != "COMMENT" ] && [ -f "$body_file" ]; then
+        d=$(sed -n '1{/<!-- *DECISION:/p};q' "$body_file" \
+            | sed -E 's/.*DECISION:[[:space:]]*([A-Za-z]+).*/\1/' | tr '[:lower:]' '[:upper:]')
+    fi
+    case "$d" in APPROVE|COMMENT) printf '%s' "$d" ;; *) printf 'COMMENT' ;; esac
 }
 
 fetch_prior_findings() {
@@ -185,7 +224,7 @@ pr_review_purge_stale() {
         pr_num=$(basename "$state_file" | sed -E 's/last-reviewed-//')
         echo "$open_prs" | grep -qw "$pr_num" || rm -f "$state_file"
     done < <(find "$STATE_DIR" -maxdepth 1 -name "last-reviewed-*" 2>/dev/null)
-    find "$STATE_DIR" -maxdepth 1 \( -name "codeql-wait-*" -o -name "copilot-wait-*" -o -name "prior-*.txt" -o -name "review-body-*.md" \) -delete 2>/dev/null || true
+    find "$STATE_DIR" -maxdepth 1 \( -name "codeql-wait-*" -o -name "copilot-wait-*" -o -name "prior-*.txt" -o -name "review-body-*.md" -o -name "pending-*" -o -name "decision-*.txt" \) -delete 2>/dev/null || true
 }
 
 # Release the lock held by the background holder process.
@@ -272,11 +311,13 @@ pr_review_init() {
     fi
 }
 
-# Pre-flight check for a single PR. Outputs "SKIP" or a tab-separated PROCEED line.
-# Fields: PROCEED <current_commit> <current_tree>
-# The sub-agent derives review mode (first/delta) and delta_base itself from the
-# state file; this function only decides whether the sub-agent should run at all,
-# and pre-writes the prior-findings file the sub-agent reads in delta mode.
+# Pre-flight check for a single PR. Outputs "SKIP" or a bare "PROCEED" line.
+# On PROCEED it persists the reviewed commit/tree to pending-<pr> on disk, so the
+# orchestrator no longer needs to carry them in context to the post step (Step 2c)
+# — the handoff survives a mid-tick compaction. The sub-agent derives review mode
+# (first/delta) and delta_base itself from the state file; this function only
+# decides whether the sub-agent should run at all, and pre-writes the
+# prior-findings file the sub-agent reads in delta mode.
 pr_review_preflight() {
     local pr=$1 reason=$2
 
@@ -330,23 +371,49 @@ pr_review_preflight() {
     # sub-agent reads it from disk and never needs gh-pipe permissions of its own.
     fetch_prior_findings "$pr" > "$STATE_DIR/prior-${pr}.txt" 2>/dev/null || true
 
-    printf 'PROCEED\t%s\t%s\n' "$current_commit" "$current_tree"
+    # Clear this PR's transient outputs so the sub-agent's run starts clean — a
+    # stale body/decision from a prior tick that never reached the post step must
+    # not be read by pr_review_finish. Then persist the reviewed commit/tree.
+    rm -f "$STATE_DIR/review-body-${pr}.md" "$STATE_DIR/decision-${pr}.txt"
+    write_pending "$pr" "$current_commit" "$current_tree"
+
+    printf 'PROCEED\n'
 }
 
-# Post the sub-agent's review body to GitHub, then save state.
-# The sub-agent writes the body to state/review-body-<pr>.md; this function
-# wraps it with the marker + footer and posts a formal GitHub Review.
-# State is saved ONLY on a successful post, so a failed/empty review retries.
+# Post the sub-agent's review to GitHub, then save state. Takes ONLY the PR number
+# — everything else is recovered from disk, so a context compaction landing between
+# pre-flight and here loses nothing: commit/tree from pending-<pr> (pre-flight),
+# decision from the decision-<pr>.txt sidecar / body header (sub-agent), body from
+# review-body-<pr>.md (sub-agent). State is saved ONLY on a successful post, so a
+# failed/empty review retries next tick.
 pr_review_finish() {
-    local pr=$1 commit=$2 tree=$3 decision=$4
+    local pr=$1
     local body_file="$STATE_DIR/review-body-${pr}.md"
+    local pending_file="$STATE_DIR/pending-${pr}"
+    local decision_file="$STATE_DIR/decision-${pr}.txt"
 
     if [ ! -s "$body_file" ]; then
         log "PR #$pr: no review body produced — NOT posting, NOT saving state (will retry next tick)"
     else
+        # commit/tree from disk; re-derive from the live head only if pending is
+        # missing (anomaly) — logged, since that risks recording a newer commit.
+        local commit="" tree="" pend
+        if pend=$(read_pending "$pr"); then
+            commit=${pend%%$'\t'*}; tree=${pend##*$'\t'}
+        else
+            log "PR #$pr: pending file missing — re-deriving head (may record a newer commit than reviewed)"
+            local hi
+            hi=$(get_pr_head_info "$pr") && { commit=${hi%%$'\t'*}; tree=${hi##*$'\t'}; }
+        fi
+
+        local decision review_body
+        decision=$(read_decision "$pr" "$body_file")
+        # Drop a leading "<!-- DECISION: X -->" header line so the posted body is clean.
+        review_body=$(sed '1{/^<!-- *DECISION:/d}' "$body_file")
+
         local body
         body="$REVIEW_MARKER
-$(cat "$body_file")
+$review_body
 
 ---
 *Automated review by Claude Code via /code-review*"
@@ -354,12 +421,17 @@ $(cat "$body_file")
         if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
             log "PR #$pr: posted $decision review"
-            save_review_state "$pr" "$commit" "$tree"
+            if [ -n "$commit" ] && [ -n "$tree" ]; then
+                save_review_state "$pr" "$commit" "$tree"
+            else
+                log "PR #$pr: posted but commit/tree unresolved — state NOT saved (will re-review next tick)"
+            fi
         else
             log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"
         fi
-        rm -f "$body_file"
     fi
+    # Always clear this PR's transients; the next tick regenerates them.
+    rm -f "$body_file" "$pending_file" "$decision_file"
 
     # Return the dedicated clone to a clean main so the next PR's sub-agent
     # (or the next tick) starts from a pristine tree, not this PR's branch.

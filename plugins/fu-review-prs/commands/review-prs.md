@@ -31,7 +31,7 @@ pr_review_preflight <PR> <REASON>
 ```
 
 - `SKIP` → skip this PR, next.
-- `PROCEED` line → tab-separated fields: `current_commit`, `current_tree`. Hold these for Step 2c.
+- `PROCEED` → this PR needs review; go to Step 2b. (Pre-flight has already persisted the reviewed commit/tree to disk — you do **not** carry them in context.)
 
 ### Step 2b — Spawn Task sub-agent
 
@@ -43,28 +43,29 @@ echo "TASK_FILE=$REVIEW_TASK_FILE"
 pr_review_paths <PR>
 ```
 
-Dispatch a Task sub-agent. Use this prompt, substituting the PR number and the four absolute paths just printed (`TASK_FILE`, `STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`):
+Dispatch a Task sub-agent. Use this prompt, substituting the PR number and the five absolute paths just printed (`TASK_FILE`, `STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`, `DECISION_FILE`):
 
 ```
 Read <TASK_FILE> and follow it exactly. Review PR #<PR>.
 Use these absolute paths verbatim — do not construct your own:
-  STATE_FILE = <STATE_FILE>
-  PRIOR_FILE = <PRIOR_FILE>
-  BODY_FILE  = <BODY_FILE>
+  STATE_FILE    = <STATE_FILE>
+  PRIOR_FILE    = <PRIOR_FILE>
+  BODY_FILE     = <BODY_FILE>
+  DECISION_FILE = <DECISION_FILE>
 ```
 
-The sub-agent derives its own commit/tree/mode, runs `/code-review`, writes the review body to `BODY_FILE`, and emits a `DECISION:` line. It does NOT post to GitHub — Step 2c does.
+The sub-agent derives its own commit/tree/mode, runs `/code-review`, writes the review body to `BODY_FILE` (with a `<!-- DECISION: X -->` header line), writes its decision token to `DECISION_FILE`, and emits a `DECISION:` line. It does NOT post to GitHub — Step 2c does.
 
 ### Step 2c — Post review, save state, log
 
-After Task completes: find the last line matching `DECISION: APPROVE` or `DECISION: COMMENT`. If none, use `COMMENT`.
+After Task completes:
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
-pr_review_finish <PR> <current_commit> <current_tree> <APPROVE or COMMENT>
+pr_review_finish <PR>
 ```
 
-`pr_review_finish` reads the body file, posts the GitHub Review, and saves state only on a successful post (so a sub-agent that produced no body retries next tick).
+`pr_review_finish` needs **only the PR number** — it recovers everything from disk: the reviewed commit/tree (from pre-flight's `pending-<PR>`), the decision (from the sub-agent's `decision-<PR>.txt` sidecar, falling back to the body's `<!-- DECISION: X -->` header, then `COMMENT`), and the body (from `review-body-<PR>.md`). So a context compaction landing right after the Task returns loses nothing. It posts the GitHub Review and saves state only on a successful post (a sub-agent that produced no body retries next tick).
 
 ---
 
