@@ -1,0 +1,19 @@
+{
+  "name": "fu-datadog-pup",
+  "version": "0.1.0",
+  "description": "Query Datadog from the terminal with the `pup` CLI — search logs and traces, triage Error Tracking issues, and run auth/meta ops (OAuth login, status, site selection). Read-first guidance with the agent-mode envelope and APM-nanosecond gotchas baked in.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "datadog",
+    "pup",
+    "logs",
+    "traces",
+    "apm",
+    "error-tracking",
+    "observability"
+  ],
+  "skills": "./skills/"
+}

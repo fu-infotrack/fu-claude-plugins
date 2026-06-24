@@ -16,6 +16,8 @@
       "description": "Connect to a SQL Server DB whose credentials come from HashiCorp Vault's database secrets engine." },
     { "name": "fu-k8dash", "source": "./plugins/fu-k8dash", "category": "productivity",
       "description": "Read-only Kubernetes inspection across clusters (stage/prod, pick with -c) via the k8dash dashboard's API proxy (GET-only, RBAC-bounded; user's OIDC bearer token)." },
+    { "name": "fu-datadog-pup", "source": "./plugins/fu-datadog-pup", "category": "productivity",
+      "description": "Query Datadog from the terminal with the `pup` CLI — search logs/traces, triage Error Tracking, and run auth/meta ops (OAuth login, site/org selection)." },
     { "name": "fu-ce-compound", "source": "./plugins/fu-ce-compound", "category": "productivity",
       "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",

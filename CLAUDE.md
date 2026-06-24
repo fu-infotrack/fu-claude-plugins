@@ -84,6 +84,7 @@ No package manager pulls these — they must be on PATH:
 - `node` — `fu-et-sweep` and its `node --test` suite.
 - `python3` — `fu-ce-compound` frontmatter validator.
 - `curl` — `fu-k8dash` (the only hard dep; `jq` optional, used for formatting).
+- `pup` — `fu-datadog-pup` (the Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`). Pure-docs skill — no scripts/config of its own.
 
 ## Plugins
 
@@ -95,6 +96,7 @@ No package manager pulls these — they must be on PATH:
 | fu-pg-stage | skill | Postgres via HashiCorp Vault credentials |
 | fu-mssql-stage | skill | SQL Server via HashiCorp Vault credentials (`sqlcmd`/go-sqlcmd; parses an ADO.NET connection_url) |
 | fu-k8dash | skill | Read-only K8s inspection across clusters (stage/prod, pick with `-c`) via the k8dash dashboard's pass-through API proxy (GET-only, RBAC-bounded; user's OIDC bearer token) |
+| fu-datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops (pure-docs skill; no scripts/config) |
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
 | fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
 
