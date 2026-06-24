@@ -84,7 +84,7 @@ No package manager pulls these — they must be on PATH:
 - `node` — `fu-et-sweep` and its `node --test` suite.
 - `python3` — `fu-ce-compound` frontmatter validator.
 - `curl` — `fu-k8dash` (the only hard dep; `jq` optional, used for formatting).
-- `pup` — `fu-datadog-pup` (pure-docs skill — no scripts/config of its own) **and `fu-et-sweep`** (its sole Datadog access path since v0.2.0). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
+- `pup` — `fu-datadog-pup` (a skill + a bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-et-sweep`** (its sole Datadog access path since v0.2.0). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
 
 ## Plugins
 

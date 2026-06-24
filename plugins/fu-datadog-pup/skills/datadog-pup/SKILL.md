@@ -174,30 +174,13 @@ Every issue has a **source track** — it was captured from a `trace`, a `log`, 
 
 ## Install / update
 
-`pup` is a single static binary from GitHub releases — no package manager. Releases:
-<https://github.com/DataDog/pup/releases/latest>. Assets are named
-`pup_<version>_<OS>_<arch>.tar.gz` (OS ∈ `Linux`|`Darwin`|`Windows`, arch ∈
-`x86_64`|`arm64`), each holding the `pup` binary. The `latest/download/` shortcut
-won't work (the filename embeds the version), so resolve the tag first.
-
-Install **or** update to the latest (Linux/macOS) — resolves the tag, picks this
-machine's asset, drops the binary in `/usr/local/bin`. Updating = re-run the same
-block (it overwrites); no state lives in the binary, so your OAuth session/config
-survive the upgrade.
+`pup` is a single static binary from GitHub releases (no package manager). Install
+or update with the bundled script — re-run it to update:
 
 ```bash
-os=$(uname -s); arch=$(uname -m); [ "$arch" = aarch64 ] && arch=arm64   # asset uses arm64
-tag=$(curl -fsSL https://api.github.com/repos/DataDog/pup/releases/latest | jq -r .tag_name)
-asset="pup_${tag#v}_${os}_${arch}.tar.gz"
-tmp=$(mktemp -d)
-curl -fsSL "https://github.com/DataDog/pup/releases/download/${tag}/${asset}" | tar -xz -C "$tmp"
-sudo cp "$tmp/pup" /usr/local/bin/pup && sudo chmod +x /usr/local/bin/pup
-rm -rf "$tmp"
-pup version    # confirm
+${CLAUDE_PLUGIN_ROOT}/scripts/install-pup.sh        # [--dest DIR] to override location
 ```
 
-- **PATH split:** if `pup` is also installed elsewhere (e.g. `~/.local/bin/pup`),
-  the first PATH match wins — `command -v pup` shows which. Remove the stale copy or
-  install over the same path so you don't run an old version.
-- **Integrity (optional):** each release ships `pup_<version>_checksums.txt` (+ a
-  sigstore bundle); verify the tarball's sha256 against it before installing.
+It resolves the latest tag, picks this machine's asset (`uname`), verifies the
+sha256, and installs over an existing `pup` on PATH (else `/usr/local/bin`; `sudo`
+only when needed). OAuth session/config survive upgrades.
