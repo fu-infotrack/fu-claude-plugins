@@ -1,5 +1,12 @@
 # Datadog Error Tracking Sweep Loop — Implementation Plan
 
+> **Historical artifact.** This is the original (executed) plan. Since v0.2.0 the
+> Datadog access layer was switched from the bundled `au-datadog-mcp` MCP server to
+> the `pup` Datadog CLI (run via Bash). Wherever this doc says `mcp__au-datadog-mcp__*`
+> / `search`/`get`/`analyze` MCP tools, the live design uses `pup error-tracking
+> issues search|get` + `pup traces/logs search '@issue.id:<id>'`. See `DESIGN.md`
+> (current) and the `datadog-pup` skill. Left unedited below to preserve history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A `/et-sweep` slash command (run via `/loop`) that sweeps `entityplatform-api` prod Datadog Error Tracking, de-dups against GitHub, drafts root-cause writeups in token-isolated subagents, and files/reopens GitHub issues.

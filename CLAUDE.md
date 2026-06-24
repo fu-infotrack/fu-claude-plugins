@@ -84,13 +84,13 @@ No package manager pulls these — they must be on PATH:
 - `node` — `fu-et-sweep` and its `node --test` suite.
 - `python3` — `fu-ce-compound` frontmatter validator.
 - `curl` — `fu-k8dash` (the only hard dep; `jq` optional, used for formatting).
-- `pup` — `fu-datadog-pup` (the Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`). Pure-docs skill — no scripts/config of its own.
+- `pup` — `fu-datadog-pup` (pure-docs skill — no scripts/config of its own) **and `fu-et-sweep`** (its sole Datadog access path since v0.2.0). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
 
 ## Plugins
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| fu-et-sweep | command + agents + scripts + MCP | Datadog Error Tracking → de-duped GitHub issues with root-cause writeups |
+| fu-et-sweep | command + agents + scripts | Datadog Error Tracking → de-duped GitHub issues with root-cause writeups (Datadog via the `pup` CLI) |
 | fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo) |
 | fu-inspecting-orders-api | skill | Orders API inspection (config-resolved host + token) |
 | fu-pg-stage | skill | Postgres via HashiCorp Vault credentials |
@@ -100,4 +100,4 @@ No package manager pulls these — they must be on PATH:
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
 | fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
 
-`fu-et-sweep` bundles its own MCP server in `.mcp.json` (`au-datadog-mcp`, HTTP, error-tracking toolset) and requires the `gh` CLI authenticated for the target repo. It must run in a live session for the MCP OAuth.
+`fu-et-sweep` reads Datadog Error Tracking through the **`pup` CLI** (run via Bash; see `fu-datadog-pup`) — **no bundled MCP server** as of v0.2.0 — plus the `gh` CLI authenticated for the target repo. Run it in a live session so `pup auth login` / `gh` auth is available (a `401` needs an interactive re-login). Key design wrinkle: `pup`'s ET `issues search` is a **thin projection (id + total_count only)**, so the orchestrator count-prunes then **gh-dedups first** to bound the set to ≤10, and only then hydrates each survivor via `pup error-tracking issues get` for the rich fields. **Regression is derived from a closed GitHub match** (GH is the sole regression authority — `pup` has no Datadog regression flag). The investigator pulls a sample stack via `pup traces/logs search '@issue.id:<id>'` (replacing the old `analyze_*` MCP tool). The pure-logic `sweep-lib.mjs` is shape-agnostic and was untouched by the cutover.

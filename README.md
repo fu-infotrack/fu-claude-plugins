@@ -13,7 +13,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| et-sweep | command + agents + scripts + MCP | Datadog Error Tracking -> GitHub issues |
+| et-sweep | command + agents + scripts | Datadog Error Tracking -> GitHub issues (via the `pup` CLI) |
 | review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo) |
 | inspecting-orders-api | skill | Orders API inspection |
 | pg-stage | skill | Postgres via Vault (psql; caches dynamic creds) |

@@ -1,6 +1,6 @@
 {
   "name": "fu-et-sweep",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Sweep a service's Datadog Error Tracking into de-duped GitHub issues with drafted root-cause writeups. Run via /loop for a self-paced watch.",
   "author": {
     "name": "fu-infotrack",

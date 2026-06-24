@@ -108,13 +108,13 @@ test('buildServiceQuery: multiple uses OR group', () => {
   assert.equal(buildServiceQuery(['a', 'b'], 'prod'), 'service:(a OR b) env:prod');
 });
 test('mergeConfig: precedence cli > project > auto > user', () => {
-  const user = { 'et-sweep': { env: 'stage', repo: 'u/r', mcpName: 'au-datadog-mcp' } };
+  const user = { 'et-sweep': { env: 'stage', repo: 'u/r', issueUrlBase: 'https://x/' } };
   const project = { 'et-sweep': { env: 'prod' } };
   const auto = { repo: 'a/r', services: ['s1'] };
   const cli = { repo: 'c/r' };
   assert.deepEqual(
     mergeConfig(user, project, auto, cli, 'et-sweep'),
-    { env: 'prod', repo: 'c/r', mcpName: 'au-datadog-mcp', services: ['s1'] },
+    { env: 'prod', repo: 'c/r', issueUrlBase: 'https://x/', services: ['s1'] },
   );
 });
 test('mergeConfig: missing layers tolerated', () => {

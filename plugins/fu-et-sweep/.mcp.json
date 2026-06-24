@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "au-datadog-mcp": {
-      "type": "http",
-      "url": "https://mcp.ap2.datadoghq.com/api/unstable/mcp-server/mcp?toolsets=core,alerting,apm,error-tracking"
-    }
-  }
-}

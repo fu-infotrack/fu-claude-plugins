@@ -14,9 +14,11 @@ Arguments: $ARGUMENTS
 Derived:
 - LIB = "${CLAUDE_PLUGIN_ROOT}/scripts/sweep.mjs". If that path does not exist (variable not expanded), set LIB to the first match of `find "$HOME/.claude" -path '*plugins/et-sweep/scripts/sweep.mjs' 2>/dev/null | head -1`.
 - Build a CLI-override JSON from any flags given: `{ "services": [...from --service], "env": "...", "repo": "..." }` (omit keys not passed).
-- RESOLVED = `node "$LIB" resolve '<cli-override-json>'` → `{services, env, repo, mcpName, issueUrlBase, query}`. `services`/`repo` auto-detect (k8_settings app_name / git remote) unless overridden; `env` defaults to prod.
+- RESOLVED = `node "$LIB" resolve '<cli-override-json>'` → `{services, env, repo, issueUrlBase, query}`. `services`/`repo` auto-detect (k8_settings app_name / git remote) unless overridden; `env` defaults to prod.
 - REPO = RESOLVED.repo; QUERY = RESOLVED.query (spans ALL monitored services in one search); ISSUE_URL_BASE = RESOLVED.issueUrlBase.
 - KEY = REPO with every non-alphanumeric char replaced by "-"; STATE_FILE = "$HOME/.claude/et-sweep-state-<KEY>.json" (holds {last_successful_tick, baseline_done} in epoch ms; one file per repo since a sweep spans all its services).
+
+Datadog access is the `pup` CLI (see the `datadog-pup` skill) — not an MCP server. All Error Tracking reads run through `pup` via Bash. If `pup auth status` shows no valid token, STOP and report: run `pup auth login` first (a re-auth is also needed on a `401`). `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}` — read the payload under `.data`; for one-off `--jq` extraction, the ET search payload is a bare array (`.[]`).
 
 If REPO is empty (no GitHub remote and no --repo/config), STOP and report: cannot file issues without a target repo.
 
@@ -26,11 +28,14 @@ Procedure:
 
 2. Compute window: `node "$LIB" window <last_successful_tick|null>`. Capture startMs, startIso, nowMs.
 
-3. Search: mcp__plugin_fu-et-sweep_au-datadog-mcp__search_datadog_error_tracking_issues with query=QUERY, from=startIso, to="now", order_by="TOTAL_COUNT", max_tokens=8000. One call covers every monitored service. If the result is truncated, remember remaining_items for the summary. (The Datadog Error Tracking tools are provided by this plugin's bundled MCP server, prefixed `mcp__plugin_fu-et-sweep_au-datadog-mcp__`.)
+3. Search (one call, all services): `pup error-tracking issues search --query "$QUERY" --track trace --from "<startIso>" --to now --order-by TOTAL_COUNT --limit 50`. `pup`'s ET search is a **thin projection** — each issue carries only its `id` and `total_count` (no first_seen/error_type/version). So the rich fields come from a `get` per survivor in step 5, not here. If you hit the `--limit`, record the count for the summary (raise `--limit` only if needed). Build a candidate list `[{issueId, totalCount}]`.
 
-4. Map each returned issue to {issueId, service, errorType, errorMessage, firstSeenIso, isRegression, totalCount, firstSeenVersion, lastSeenIso, lastSeenVersion, functionName, platform, datadogUrl}. Then filter: `node "$LIB" filter-batch '<issuesJson>' <startMs> <threshold>`. Survivors = the printed array. (BASELINE mode: skip filtering — take all issues in the window with totalCount >= threshold.)
+4. Prune + dedup + cap (no rich fields needed yet):
+   - Count-prune: drop candidates with `totalCount < threshold`.
+   - Dedup each remaining: `gh issue list --repo "$REPO" --state all --search "<issueId>" --json number,state,title` then `node "$LIB" classify '<matchesJson>'` (map gh state values to OPEN/CLOSED) → ALREADY_OPEN / NEW / REGRESSION. **Drop ALREADY_OPEN.** Set `isRegression = (classification == REGRESSION)` and keep the gh number for regressions. (This gh dedup — not a Datadog flag — is the regression authority now.)
+   - Sort survivors by `totalCount` desc; if more than 10, keep the top 10 and record "dropped <k> over cap". This bounds the `get` calls in step 5 to ≤10.
 
-5. Dedup each survivor: `gh issue list --repo "$REPO" --state all --search "<issueId>" --json number,state,title` then `node "$LIB" classify '<matchesJson>'` (map gh state values to OPEN/CLOSED). Drop survivors classified ALREADY_OPEN. Sort the rest by totalCount desc; if more than 10, keep the top 10 and record "dropped <k> over cap".
+5. Hydrate + recency filter: for each survivor (≤10), `pup error-tracking issues get "<issueId>"` and map `.data.attributes` to {issueId, service, errorType (error_type), errorMessage (error_message), firstSeenIso (from first_seen ms), isRegression (from step 4), totalCount, firstSeenVersion (first_seen_version), lastSeenIso, lastSeenVersion, functionName (function_name), platform, datadogUrl (`<ISSUE_URL_BASE><issueId>`)}. Then recency-filter: `node "$LIB" filter-batch '<hydratedJson>' <startMs> <threshold>` — survivors = the printed array (keeps issues first-seen in the window OR flagged regression). **BASELINE mode: skip the recency filter** — keep all hydrated candidates (count already pruned in step 4).
 
 6. Triage gate (skipped in BASELINE mode): dispatch the `et-triage-gate` agent once per survivor, passing only the metadata + that issue's own `service`. Keep survivors whose result has actionable=true; remember each verdict + reason.
 

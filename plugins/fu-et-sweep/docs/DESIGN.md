@@ -34,16 +34,17 @@ issues, and keeps token/context usage tight enough to run unattended in a long
 - Writing Datadog issue state back (IGNORE/RESOLVE) — out of scope for v1.
 - Auto-fixing / opening PRs — the writeup is a draft, not a verdict.
 - Covering `entityplatform-ui` browser errors — api/prod only for v1 (extensible later).
-- Unattended cloud/cron execution — v1 runs in a live `/loop` session where the
-  Datadog AU + GitHub MCP OAuth is available.
+- Unattended cloud/cron execution — v1 runs in a live `/loop` session where
+  `pup` (Datadog) and the `gh` CLI are authenticated.
 
 ## Execution model
 
 - A slash command `/et-sweep` holds the per-tick procedure, run via `/loop`
   (self-paced) or one-shot. Lives in `.claude/commands/`.
-- Runs in a live Claude Code session so the OAuth-authenticated Datadog AU MCP
-  (`mcp__au-datadog-mcp__*`) and the GitHub MCP / `gh` CLI are available. Headless
-  cron is explicitly rejected for v1 because those MCPs may be absent there.
+- Runs in a live Claude Code session so the `pup` Datadog CLI (`pup auth login`)
+  and the `gh` CLI are authenticated. Datadog access is `pup` via Bash — no MCP
+  server. Headless cron is possible if `pup`/`gh` carry valid tokens, but a `401`
+  needs an interactive `pup auth login`, so a live session is the default.
 
 ## Architecture
 
@@ -53,8 +54,9 @@ Components:
 - **Tick procedure** (main context) — search, cheap filter, dedup classification,
   fan-out, receipt collection. Never reads stack traces or drafts prose itself.
 - **Triage-gate subagent** — metadata in, `{actionable, reason, suspected_severity}`
-  out. No `get`/`analyze` calls.
-- **Investigation subagent** — `issue_id` in; runs `get` + `analyze` + codegraph
+  out. No Datadog reads.
+- **Investigation subagent** — `issue_id` in; runs `pup error-tracking issues get`
+  + a `pup traces/logs search '@issue.id:<id>'` for the sample stack + codegraph
   trace, drafts the writeup, files/reopens the GitHub issue, returns a one-line
   receipt. The writeup goes into the GitHub issue, not back to the loop.
 - **GitHub** — both the de-dup store and the output sink. No separate database.
@@ -64,30 +66,34 @@ Components:
 ### Data flow per tick
 
 ```
-1. search_datadog_error_tracking_issues
-     query:   service:entityplatform-api env:prod
-     from:    window_start (see Window), to: now
-     order_by: TOTAL_COUNT, max_tokens capped
+1. pup error-tracking issues search  (THIN: returns issue_id + total_count only)
+     --query "service:(...) env:prod"  --track trace
+     --from window_start (see Window)  --to now
+     --order-by TOTAL_COUNT  --limit 50
+        │   → candidate list [{issueId, totalCount}]
+2. count-prune (main ctx, no tool calls): keep total_count ≥ COUNT_THRESHOLD
         │
-2. cheap filter (main ctx, no tool calls):
-     keep if (first_seen ≥ window_start OR is_regression)
-             AND total_count ≥ COUNT_THRESHOLD
-        │
-3. dedup classification (main ctx):
+3. dedup classification (main ctx) — the regression authority:
      gh issue list --state all --search "<issue_id>"
        no match       → NEW
        match, open     → ALREADY-OPEN (skip)
-       match, closed   → REGRESSION-of-#N
+       match, closed   → REGRESSION-of-#N   (sets is_regression)
+     sort by total_count desc; cap N=10 (log dropped) → bounds the gets below
         │
-4. fan out survivors (cap N=10, log dropped count):
+4. hydrate + recency filter (survivors ≤10):
+     pup error-tracking issues get "<issue_id>"  → first_seen, error_type/message,
+       version, function_name, platform, datadog_url
+     keep if (first_seen ≥ window_start OR is_regression)   [BASELINE skips this]
+        │
+5. fan out survivors:
      ├─ triage-gate subagent  → actionable? ──no──> drop (shown in observe)
      └─ investigation subagent (actionable only):
-            get + analyze + codegraph → writeup
+            pup get + pup traces/logs search '@issue.id' + codegraph → writeup
             NEW         → gh issue create (+marker +labels)   [live]
             REGRESSION  → gh issue reopen #N + comment        [live]
             (observe mode: draft only, file nothing)
         │
-5. collect one-line receipts → summarise → advance last_successful_tick
+6. collect one-line receipts → summarise → advance last_successful_tick
    → ScheduleWakeup (self-paced)
 ```
 
@@ -123,6 +129,12 @@ candidate  ⟺  (first_seen ≥ window_start OR is_regression == true)
 Long-standing-but-active issues (old `first_seen`, not regressed) are excluded —
 they are backlog, handled once via `--baseline`, not re-surfaced every tick.
 
+Ordering note (pup): `pup`'s ET search returns only `issue_id`+`total_count`, so
+`first_seen` is not known until a per-issue `get`. The tick therefore count-prunes
+and dedups (cheap) FIRST to bound the candidate set ≤10, then hydrates via `get`
+and applies this recency check. The criterion is unchanged — only its position in
+the pipeline moved (was: filter-then-dedup; now: prune+dedup-then-hydrate+filter).
+
 ### Stage 2 — dedup classification
 
 For each candidate: `gh issue list --state all --search "<issue_id>"`.
@@ -133,13 +145,14 @@ For each candidate: `gh issue list --state all --search "<issue_id>"`.
 | match, open     | `ALREADY-OPEN`     | skip (no churn)        |
 | match, closed   | `REGRESSION-of-#N` | reopen + comment       |
 
-A closed-GH match and/or Datadog `is_regression` both route to reopen. GitHub
-state is authoritative for the action taken.
+A closed-GH match routes to reopen and sets `is_regression` for the survivor
+(`pup` has no Datadog regression flag, so GitHub state is the sole regression
+authority — and is authoritative for the action taken).
 
 ### Stage 3 — triage-gate subagent (metadata only)
 
 - Input: `{issue_id, error_type, error_message, total_count, first_seen,
-  last_seen, function_name, service, platform}`. No `get`/`analyze`.
+  last_seen, function_name, service, platform}`. No Datadog reads.
 - Output: `{actionable: bool, reason: string, suspected_severity: low|med|high}`.
 - Heuristic: drop transient/infra noise (client-cancel `TaskCanceledException` /
   `OperationCanceledException` at `HttpConnection.SendAsync`, DNS blips, upstream
@@ -150,8 +163,9 @@ state is authoritative for the action taken.
 
 ### Stage 4 — investigation subagent (actionable only)
 
-- `get_datadog_error_tracking_issue` + `analyze_datadog_error_tracking_errors`
-  for stack + sample events.
+- `pup error-tracking issues get <id>` for the issue summary, then a
+  `pup traces search '@issue.id:<id>'` (fallback `pup logs search`) for a sample
+  event's stack frames; optional `pup logs aggregate --group-by version` for spread.
 - codegraph trace from the failing frame into `entityplatform-api` source
   (EP-owned frames only; skip BCL/framework frames).
 - Drafts root-cause writeup (see Issue format).
