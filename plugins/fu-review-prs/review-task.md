@@ -28,8 +28,9 @@ absolute paths in your task prompt. Use them verbatim — do not construct your 
    - Otherwise compare last reviewed commit to head. Unchanged content → **FULL review** (human re-requested). Changed → **DELTA review**, `delta_base` = last reviewed commit.
 5. Read the PR's stated intent so you can judge whether the diff actually delivers it:
    - `gh pr view <PR> --repo <REPO> --json title,body,closingIssuesReferences`
-   - For each entry in `closingIssuesReferences` (issues the PR closes via "Closes/Fixes #N"), read it: `gh issue view <N> --repo <REPO> --json title,body,labels`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
-   - Distil one line of **stated intent** (the issue's core ask + the PR's own description). You compare the diff against it in Step 2. If there is no linked issue **and** the PR body is empty, record "no stated intent" and skip the scope check entirely (do not invent requirements).
+   - For each entry in `closingIssuesReferences` (issues the PR closes via "Closes/Fixes #N"), read it **including its comments**: `gh issue view <N> --repo <REPO> --json title,body,labels,comments`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
+   - **Read the issue comments, not just the body.** Product managers / maintainers often post the real detail there — clarifications, revised acceptance criteria, or scope cuts added after the issue was opened. Fold genuine requirement updates into the intent, and where a later clarifying comment conflicts with the original body, **the comment wins**. Ignore bot/status/CI chatter and side discussion; weight the issue author's and maintainers' clarifying comments.
+   - Distil one line of **stated intent** (the issue's core ask, as refined by its clarifying comments, + the PR's own description). You compare the diff against it in Step 2. If there is no linked issue **and** the PR body is empty, record "no stated intent" and skip the scope check entirely (do not invent requirements).
 
 The orchestrator only spawns you when there is work to do — do not re-check whether the PR should be skipped.
 
