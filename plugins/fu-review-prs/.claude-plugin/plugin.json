@@ -1,6 +1,6 @@
 {
   "name": "fu-review-prs",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Automated PR review orchestrator.",
   "author": {
     "name": "fu-infotrack",

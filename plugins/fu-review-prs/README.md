@@ -45,5 +45,6 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
 
 - `commands/review-prs.md` — the per-tick orchestrator (context-thin).
 - `scripts/lib.sh` — lock/setup/detect/finish helpers; sourced per Bash call.
-- `review-task.md` — sub-agent spec: derive mode, run `/code-review`, write body,
-  emit a `DECISION:` line. Posts nothing itself.
+- `review-task.md` — sub-agent spec: derive mode, read PR/linked-issue intent,
+  run `/code-review`, scope-check the diff against the intent, write body, emit a
+  `DECISION:` line. Posts nothing itself.

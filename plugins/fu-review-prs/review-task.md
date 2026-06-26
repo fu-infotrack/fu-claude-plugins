@@ -11,7 +11,7 @@ orchestrator's context is compacted after you return):
 
 You do **NOT** post anything to GitHub yourself — the orchestrator posts the file you write. Running `/code-review` is only how you *gather* findings; it is NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–5. Do not stop after `/code-review`.
 
-## Step 0 — Determine your review context
+## Step 0 — Review context and PR intent
 
 `STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`, and `DECISION_FILE` are given to you as
 absolute paths in your task prompt. Use them verbatim — do not construct your own
@@ -26,6 +26,10 @@ absolute paths in your task prompt. Use them verbatim — do not construct your 
 4. Decide review mode yourself:
    - No state file → **FULL review** (first time).
    - Otherwise compare last reviewed commit to head. Unchanged content → **FULL review** (human re-requested). Changed → **DELTA review**, `delta_base` = last reviewed commit.
+5. Read the PR's stated intent so you can judge whether the diff actually delivers it:
+   - `gh pr view <PR> --repo <REPO> --json title,body,closingIssuesReferences`
+   - For each entry in `closingIssuesReferences` (issues the PR closes via "Closes/Fixes #N"), read it: `gh issue view <N> --repo <REPO> --json title,body,labels`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
+   - Distil one line of **stated intent** (the issue's core ask + the PR's own description). You compare the diff against it in Step 2. If there is no linked issue **and** the PR body is empty, record "no stated intent" and skip the scope check entirely (do not invent requirements).
 
 The orchestrator only spawns you when there is work to do — do not re-check whether the PR should be skipped.
 
@@ -54,6 +58,11 @@ Map every finding to one severity:
 - **BLOCKER** — security vulnerability, correctness/logic bug, data loss, breaking API change, or CLAUDE.md correctness/safety rule violation.
 - **NIT** — everything else (style, naming, docs, dead code, missing tests, convention drift). List NITs even when approving.
 
+**Scope check** (skip if Step 0 recorded "no stated intent"): measure the diff against the stated intent. A scope problem is a finding like any other — tag it BLOCKER or NIT and list it:
+- The PR does **not** address the linked issue's core ask, or implements something materially different/unrelated → **BLOCKER** (it won't actually resolve the issue it claims to). Prefix the description with `Scope:` and cite the issue, e.g. `[BLOCKER] Scope: issue #123 asks for X but the diff does Y / never touches X`.
+- Partial coverage (most of the ask, minor part missing) or unrelated extra churn riding along → **NIT** (`[NIT] Scope: …`). Genuinely matching the intent adds no finding.
+Judge against the stated ask only — do not invent acceptance criteria the issue/PR never stated.
+
 Assemble the review body in this format:
 
 ```
@@ -68,6 +77,7 @@ Found N issues:
 ## Step 3 — Decide
 
 - A STILL OPEN or REINTRODUCED prior BLOCKER counts as a current BLOCKER.
+- A core scope mismatch (Step 2) is a BLOCKER like any other.
 - APPROVE if zero BLOCKERs. COMMENT if one or more BLOCKERs.
 
 ## Step 4 — Write the body file and the decision sidecar
