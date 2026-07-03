@@ -1,7 +1,7 @@
 {
   "name": "fu-mssql-stage",
-  "version": "0.3.0",
-  "description": "Connect to a SQL Server DB with Windows (integrated) authentication — native on Windows via sqlcmd, or under WSL via the Windows-host sqlcmd.exe through PATH interop. Prompts for the host once and remembers it.",
+  "version": "0.4.0",
+  "description": "Connect to a SQL Server DB with Windows (integrated) authentication — native on Windows via sqlcmd, or under WSL via the Windows-host sqlcmd.exe through PATH interop. Hosts are named in config with a default; -S takes a name or a literal host.",
   "author": {
     "name": "fu-infotrack",
     "url": "https://github.com/fu-infotrack"

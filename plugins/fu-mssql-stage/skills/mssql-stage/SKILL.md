@@ -1,6 +1,6 @@
 ---
 name: mssql-stage
-description: Use when connecting to a SQL Server / MSSQL database with Windows (integrated) authentication — natively on Windows via sqlcmd, or under WSL via the Windows-host sqlcmd.exe reached through PATH interop. Prompts for the server host on first use and remembers it in config. Triggers — "connect to mssql", "sql server windows auth", "sqlcmd via wsl", "query the sql server", "integrated auth mssql".
+description: Use when connecting to a SQL Server / MSSQL database with Windows (integrated) authentication — natively on Windows via sqlcmd, or under WSL via the Windows-host sqlcmd.exe reached through PATH interop. Hosts are named in config with a default; -S takes a name or a literal host. Triggers — "connect to mssql", "sql server windows auth", "sqlcmd via wsl", "query the sql server", "integrated auth mssql".
 ---
 
 # SQL Server via Windows authentication
@@ -21,27 +21,45 @@ PATH interop), because the Linux `go-sqlcmd` has no NTLM support and most of the
 servers have no Kerberos SPN — so only the Windows client authenticates. `-C`
 (trust server certificate) is always passed; internal servers use self-signed certs.
 
-## Host: prompt once, then remember
+## Hosts: named, with a default
 
-The target host resolves in order:
+Hosts are **named** in config (like `fu-k8dash` clusters), with one marked default:
 
-1. `-S <host>` on the command line,
-2. the `mssql-stage.winHost` config value,
-3. otherwise `connect.sh` **prompts** for it and **persists** it to
-   `~/.claude/fu-tools/config.json`, so later runs never ask again.
+```jsonc
+"mssql-stage": {
+  "defaultHost": "stage",
+  "stage":  { "host": "ldmstagedb.example.com" },
+  "idp-ro": { "host": "auawsro.example.com" }
+}
+```
 
-Re-point the saved default any time: `connect.sh -S db.example.com --save`.
+`-S` accepts a **name or a literal host**, resolved in order:
+
+1. `-S <name>` → that host's `mssql-stage.<name>.host`,
+2. `-S <host>` → used **literally** when it matches no configured name (e.g. anything with dots),
+3. no `-S` → the `mssql-stage.defaultHost` name (else a legacy single `winHost`),
+4. nothing configured → `connect.sh` **prompts** and persists it as `default`.
+
+Register / re-point (writes to `~/.claude/fu-tools/config.json`):
+
+```bash
+connect.sh -S db.example.com --save-as qa            # add a named host 'qa'
+connect.sh -S db.example.com --save-as qa --default  # ...and make it the default
+connect.sh -S idp-ro --default                       # point default at an existing name
+```
 
 ## Quick reference
 
 | Want                                   | Command                                        |
 |----------------------------------------|------------------------------------------------|
-| ADO.NET (Integrated Security) string   | `connect.sh`                                   |
+| ADO.NET string (default host)          | `connect.sh`                                   |
+| ...against a named host                | `connect.sh -S idp-ro`                         |
 | ...for a specific database             | `connect.sh My.Db`                             |
 | Open a sqlcmd shell                    | `connect.sh My.Db --sqlcmd`                    |
 | Run one query                          | `connect.sh My.Db --sqlcmd -- -Q "SELECT 1"`  |
 | Export SQLCMD* into the shell          | `eval "$(connect.sh My.Db --export)"`          |
-| Set + remember the default host        | `connect.sh -S db.example.com --save`          |
+| Register a named host                  | `connect.sh -S db.example.com --save-as qa`    |
+| ...and make it the default             | `connect.sh -S db.example.com --save-as qa --default` |
 
 Everything after `--` is passed straight through to sqlcmd.
 
