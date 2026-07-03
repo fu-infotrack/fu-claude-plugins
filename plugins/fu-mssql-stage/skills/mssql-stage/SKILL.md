@@ -1,154 +1,71 @@
 ---
 name: mssql-stage
-description: Use when connecting to a SQL Server / MSSQL database whose credentials live in HashiCorp Vault's database secrets engine — read the database config for the connection and the roles it allows, mint dynamic short-lived credentials from a role, and build a connection. Covers any Vault-managed SQL Server; host/db/role resolve from fu-tools config. Triggers — "connect to stage mssql", "sql server vault creds", "sqlcmd via vault", "generate database credentials".
+description: Use when connecting to a SQL Server / MSSQL database with Windows (integrated) authentication — natively on Windows via sqlcmd, or under WSL via the Windows-host sqlcmd.exe reached through PATH interop. Prompts for the server host on first use and remembers it in config. Triggers — "connect to mssql", "sql server windows auth", "sqlcmd via wsl", "query the sql server", "integrated auth mssql".
 ---
 
-# SQL Server via Vault (database secrets engine)
+# SQL Server via Windows authentication
 
 ## Overview
 
-When a SQL Server database is managed by Vault's **database secrets engine**, you
-don't hold static credentials. You start from the **database config**, find the
-**roles** it allows, then have a role mint **dynamic, short-lived credentials**.
-The config also carries the `connection_url` (an ADO.NET string with Server/Database).
-Assemble the two.
+Every SQL Server we reach uses **Windows (integrated) authentication** — no SQL
+logins, no Vault. `connect.sh` chooses the mechanism from the platform:
 
-The flow, always config-first:
+| Platform     | How                                | Auth                            |
+|--------------|------------------------------------|---------------------------------|
+| Windows      | `sqlcmd -E`                        | integrated (Kerberos, NTLM fb.) |
+| WSL          | `sqlcmd.exe -E` via PATH interop   | integrated over NTLM            |
+| Linux / macOS| not supported — errors out         | —                               |
 
-```
-<mount>/config/<db>   →  connection_url  +  allowed_roles[]
-        │                                        │
-        │                                  pick a role
-        ▼                                        ▼
-   Server / Database                 <mount>/creds/<role>  →  username + password (lease)
-        └──────────────── connection / sqlcmd ──────────────┘
-```
+Under WSL the **Windows-host `sqlcmd.exe`** is used (reached by name through WSL's
+PATH interop), because the Linux `go-sqlcmd` has no NTLM support and most of these
+servers have no Kerberos SPN — so only the Windows client authenticates. `-C`
+(trust server certificate) is always passed; internal servers use self-signed certs.
 
-`<mount>` is the secrets-engine mount path, default `database`.
+## Host: prompt once, then remember
 
-**The `connection_url` is an ADO.NET connection string**, not a URI:
+The target host resolves in order:
 
-```
-Server=stage-mssql.example.com;Database=My.Db;User Id={{username}};Password={{password}};TrustServerCertificate=true;
-```
+1. `-S <host>` on the command line,
+2. the `mssql-stage.winHost` config value,
+3. otherwise `connect.sh` **prompts** for it and **persists** it to
+   `~/.claude/fu-tools/config.json`, so later runs never ask again.
 
-Vault stores it percent-encoded; `connect.sh` decodes it, parses `Server=` (the whole
-`[tcp:]host[\instance][,port]` spec, passed to `sqlcmd -S` verbatim) and `Database=`,
-and maps `TrustServerCertificate=true` → `-C`, `Encrypt=true` → `-N`. The `{{username}}` /
-`{{password}}` placeholders are filled from the minted creds.
+Re-point the saved default any time: `connect.sh -S db.example.com --save`.
 
-**Config-resolved values** (via `${CLAUDE_PLUGIN_ROOT}/scripts/fu-config.sh mssql-stage <key>`,
-falling back to env / CLI args):
+## Quick reference
 
-| Key | Meaning |
-|-----|---------|
-| `vaultAddr` | the Vault server URL (also honoured via `$VAULT_ADDR`) |
-| `dbConfig` | the database config name read at `<mount>/config/<dbConfig>` |
-| `role` | the role to mint creds from (optional — auto-picked if the config allows exactly one) |
-| `mount` | secrets-engine mount path (default `database`) |
+| Want                                   | Command                                        |
+|----------------------------------------|------------------------------------------------|
+| ADO.NET (Integrated Security) string   | `connect.sh`                                   |
+| ...for a specific database             | `connect.sh My.Db`                             |
+| Open a sqlcmd shell                    | `connect.sh My.Db --sqlcmd`                    |
+| Run one query                          | `connect.sh My.Db --sqlcmd -- -Q "SELECT 1"`  |
+| Export SQLCMD* into the shell          | `eval "$(connect.sh My.Db --export)"`          |
+| Set + remember the default host        | `connect.sh -S db.example.com --save`          |
 
-**Credentials are ephemeral, but cached.** Every `creds/<role>` read mints a fresh
-user/password with a lease (here ~24h). To avoid minting a new login on every call,
-`connect.sh` caches the minted cred in a user-only `0600` file under
-`~/.claude/fu-tools/cache/mssql-stage/` and reuses it until ~10 min before the lease
-expires, then auto-re-mints. A cache hit skips both Vault reads (config + creds).
-`--fresh` forces a new mint; `--purge` wipes the cache. The cache holds a plaintext
-password — never commit it; it is bounded by the lease and self-expires.
+Everything after `--` is passed straight through to sqlcmd.
 
 ## Prerequisites
 
-- `vault` CLI — install per <https://developer.hashicorp.com/vault/install>
-  (e.g. `sudo apt install vault` after adding HashiCorp's apt repo, or `brew install hashicorp/tap/vault`). Then authenticate (see below).
-- `sqlcmd` — the Go rewrite (`go-sqlcmd`, `sqlcmd -?` reports `Version v1.x`). Install
-  per <https://github.com/microsoft/go-sqlcmd> (`go install github.com/microsoft/go-sqlcmd/cmd/modern@latest`,
-  or `winget install sqlcmd`, or the Linux package). Needed for `--sqlcmd` and to actually connect.
-- `jq` for parsing JSON output (`sudo apt install jq` / `brew install jq`).
+- **Windows:** `sqlcmd` on PATH (ODBC `sqlcmd` v17/18 or `go-sqlcmd`).
+- **WSL:** `sqlcmd` installed **on Windows**, plus WSL PATH interop enabled (the
+  default) so `sqlcmd.exe` resolves by name. Verify: `command -v sqlcmd.exe`.
+- `jq` — only needed to persist the host to config.
+- You must be signed into Windows with a domain account the SQL Server authorises.
 
-### Authenticate
+## Common mistakes
 
-`VAULT_ADDR` must point at the Vault server, then log in. Resolve it from config or
-set it yourself:
+- **Using the Linux `sqlcmd` under WSL.** It cannot do Windows auth (no NTLM) — you
+  get `Login failed for user ''`. The script deliberately calls `sqlcmd.exe`.
+- **Expecting it on a plain Linux / CI box.** No Windows session, no Windows auth.
+- **Fighting shell quoting on queries.** Use `--sqlcmd -- -Q "..."`; the `--` hands
+  the remainder to sqlcmd untouched.
+- **The UNC-cwd warning under WSL.** Harmless; the script `cd`s to a Windows dir first.
 
-```bash
-export VAULT_ADDR="$("${CLAUDE_PLUGIN_ROOT}/scripts/fu-config.sh" mssql-stage vaultAddr)"
-# or set it directly:  export VAULT_ADDR="https://your-vault.example.com"
-```
+## Why NTLM, not Kerberos
 
-Persist it once in your shell rc so every session has it (`echo 'export VAULT_ADDR=...' >> ~/.zshrc`).
-
-Then log in:
-
-```bash
-vault login -method=ldap username=<your-ldap-username>     # prompts for password
-```
-
-LDAP is a common method (dynamic users come back as `v-ldap-<user>-…`); use whatever
-method your Vault is configured for. The token is cached in `~/.vault-token`, so you
-only re-login when it expires. Check with `vault token lookup`. A non-interactive
-shell may not source your rc — if `VAULT_ADDR` is empty, export it inline first.
-
-## Quick Reference
-
-`connect.sh` (this skill dir) runs the whole config → role → creds → conn flow. With
-no `<db-config>` arg it falls back to the resolved `mssql-stage.dbConfig`; role falls back
-to `mssql-stage.role`.
-
-| Want | Command |
-|------|---------|
-| ADO.NET connection string (config db + auto/config role) | `connect.sh` |
-| Explicit db-config | `connect.sh <db-config>` |
-| Explicit role | `connect.sh <db-config> <role>` |
-| Open sqlcmd shell | `connect.sh <db-config> --sqlcmd` |
-| Export `SQLCMD*` into shell | `eval "$(connect.sh <db-config> --export)"` |
-| Non-default mount | `connect.sh <db-config> --mount <mount>` |
-| Bypass cache, mint fresh | `connect.sh --fresh` |
-| Purge cached credentials | `connect.sh --purge` |
-
-After `--export`, `sqlcmd -Q "SELECT @@VERSION"` uses the exported `SQLCMD*` env — no
-need to repeat `-S/-d/-U/-P`.
-
-If the config allows exactly one role it's used automatically; if it allows several
-and you didn't name one (or set `mssql-stage.role`), the script lists them and stops so
-you can pick.
-
-## Manual steps (what the script does)
-
-Use `-format=json` + `jq` — never scrape the table output, column widths shift.
-
-```bash
-mount=database; db=<dbConfig>            # db from mssql-stage.dbConfig if unset
-
-# 1. config: connection_url (ADO.NET string) + the roles this DB allows
-cfg=$(vault read -format=json "$mount/config/$db")
-url=$(jq -r '.data.connection_details.connection_url' <<<"$cfg")   # percent-encoded
-jq -r '.data.allowed_roles[]' <<<"$cfg"          # choose one
-
-# 2. mint dynamic creds from the chosen role
-role=<role>                              # role from mssql-stage.role or auto-picked
-creds=$(vault read -format=json "$mount/creds/$role")
-user=$(jq -r '.data.username' <<<"$creds")
-pass=$(jq -r '.data.password' <<<"$creds")       # ~24h lease
-
-# 3. parse Server= / Database= from the (URL-decoded) ADO string, then:
-SQLCMDPASSWORD="$pass" sqlcmd -S <Server> -d <Database> -U "$user" -C
-```
-
-## Common Mistakes
-
-- **Treating connection_url as a URI.** It's an ADO.NET `key=value;…` string. Parse
-  `Server=` and `Database=`; don't `${url#*@}` it like a `postgresql://` URI.
-- **Forgetting it's percent-encoded.** Vault returns `User%20Id=%7B%7B…`. Decode before
-  parsing (the script does).
-- **Skipping the config read.** The config is the source of truth for both the Server
-  and the *allowed roles* — don't guess a role name, read `allowed_roles`.
-- **Parsing the table output.** Use `-format=json` + `jq`; the key/value table is not
-  machine-stable.
-- **Treating cached creds as permanent.** The cache is lease-bounded and auto-re-mints
-  near expiry; if a cred is revoked early, run `--fresh`. Never commit the cache files.
-- **Dropping TLS options.** `TrustServerCertificate=true` → `sqlcmd -C`; without it a
-  self-signed cert fails the handshake. `Encrypt=true` → `-N`.
-- **Wrong mount.** If the engine isn't mounted at `database`, pass `--mount`.
-- **Not authenticated.** `vault read` fails with 403 / "missing client token" without
-  `vault login`. Set `VAULT_ADDR` first.
-- **Old `sqlcmd`.** The ODBC `sqlcmd` (v17/18) differs in flag handling; this skill
-  targets the Go `go-sqlcmd` (`sqlcmd -?` → `Version v1.x`).
+Windows integrated auth tries Kerberos, then falls back to NTLM. Many of these hosts
+are read-routed availability-group / alias names with **no registered SPN**, so the
+KDC cannot issue a service ticket and Windows silently uses NTLM. Linux clients have
+no NTLM fallback — which is exactly why the connection must go through the Windows
+`sqlcmd.exe`.

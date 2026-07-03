@@ -13,7 +13,7 @@
     { "name": "fu-pg-stage", "source": "./plugins/fu-pg-stage", "category": "productivity",
       "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine." },
     { "name": "fu-mssql-stage", "source": "./plugins/fu-mssql-stage", "category": "productivity",
-      "description": "Connect to a SQL Server DB whose credentials come from HashiCorp Vault's database secrets engine." },
+      "description": "Connect to a SQL Server DB with Windows (integrated) authentication — native on Windows, or via the Windows-host sqlcmd.exe under WSL." },
     { "name": "fu-k8dash", "source": "./plugins/fu-k8dash", "category": "productivity",
       "description": "Read-only Kubernetes inspection across clusters (stage/prod, pick with -c) via the k8dash dashboard's API proxy (GET-only, RBAC-bounded; user's OIDC bearer token)." },
     { "name": "fu-datadog-pup", "source": "./plugins/fu-datadog-pup", "category": "productivity",

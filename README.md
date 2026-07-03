@@ -17,7 +17,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo) |
 | inspecting-orders-api | skill | Orders API inspection |
 | pg-stage | skill | Postgres via Vault (psql; caches dynamic creds) |
-| mssql-stage | skill | SQL Server via Vault (sqlcmd/go-sqlcmd; caches dynamic creds) |
+| mssql-stage | skill | SQL Server via Windows (integrated) auth (`sqlcmd`; Windows-host `sqlcmd.exe` under WSL; prompts + remembers host) |
 | k8dash | skill | Read-only K8s inspection across clusters (stage/prod, pick with `-c`) via the k8dash API proxy (GET-only, user's OIDC token) |
 | datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops |
 | ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
