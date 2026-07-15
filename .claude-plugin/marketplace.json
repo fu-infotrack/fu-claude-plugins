@@ -21,6 +21,8 @@
     { "name": "fu-ce-compound", "source": "./plugins/fu-ce-compound", "category": "productivity",
       "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
-      "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, and dotnet format pre-commit." }
+      "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, and dotnet format pre-commit." },
+    { "name": "fu-wsl-setup", "source": "./plugins/fu-wsl-setup", "category": "productivity",
+      "description": "Provision a WSL work environment for Claude Code from Windows PowerShell 7+ — WSL version check, pick/create a Debian instance, then drive the full tool install sequence (non-interactive work automated, privileged/interactive steps handed to the user)." }
   ]
 }

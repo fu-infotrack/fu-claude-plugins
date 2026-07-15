@@ -1,0 +1,19 @@
+{
+  "name": "fu-wsl-setup",
+  "version": "0.1.0",
+  "description": "Provision a WSL work environment for Claude Code from a Windows-host PowerShell 7+ session — checks the WSL version, picks or creates a Debian instance, then drives the full tool install sequence, running non-interactive work itself and handing privileged/interactive steps to the user.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "wsl",
+    "windows",
+    "powershell",
+    "debian",
+    "setup",
+    "onboarding",
+    "claude-code"
+  ],
+  "skills": "./skills/"
+}

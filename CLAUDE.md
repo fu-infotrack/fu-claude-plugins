@@ -87,6 +87,7 @@ No package manager pulls these — they must be on PATH:
 - `python3` — `fu-ce-compound` frontmatter validator.
 - `curl` — `fu-k8dash` (the only hard dep; `jq` optional, used for formatting).
 - `pup` — `fu-datadog-pup` (a skill + a bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-et-sweep`** (its sole Datadog access path since v0.2.0). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
+- `wsl.exe`, PowerShell 7+, `winget` — `fu-wsl-setup` (Windows-host only; drives a Debian/Ubuntu WSL instance).
 
 ## Plugins
 
@@ -101,5 +102,6 @@ No package manager pulls these — they must be on PATH:
 | fu-datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops (pure-docs skill; no scripts/config) |
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
 | fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
+| fu-wsl-setup | skill | Provision a WSL work environment for Claude Code from Windows PowerShell 7+ — WSL version check, pick/create a Debian instance, then drive the full tool install sequence (non-interactive work automated, privileged/interactive steps handed to the user) |
 
 `fu-et-sweep` reads Datadog Error Tracking through the **`pup` CLI** (run via Bash; see `fu-datadog-pup`) — **no bundled MCP server** as of v0.2.0 — plus the `gh` CLI authenticated for the target repo. Run it in a live session so `pup auth login` / `gh` auth is available (a `401` needs an interactive re-login). Key design wrinkle: `pup`'s ET `issues search` is a **thin projection (id + total_count only)**, so the orchestrator count-prunes then **gh-dedups first** to bound the set to ≤10, and only then hydrates each survivor via `pup error-tracking issues get` for the rich fields. **Regression is derived from a closed GitHub match** (GH is the sole regression authority — `pup` has no Datadog regression flag). The investigator pulls a sample stack via `pup traces/logs search '@issue.id:<id>'` (replacing the old `analyze_*` MCP tool). The pure-logic `sweep-lib.mjs` is shape-agnostic and was untouched by the cutover.
