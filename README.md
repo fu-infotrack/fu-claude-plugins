@@ -22,3 +22,4 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops |
 | ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
 | dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, dotnet format pre-commit |
+| wsl-setup | skill | Provision a WSL Debian work environment for Claude Code from Windows PowerShell 7+ (WSL/disk preflight, named instance, tool inventory + full install; non-interactive steps automated, credential logins handed off) |

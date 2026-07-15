@@ -12,6 +12,8 @@ A **personal Claude Code plugin marketplace** — not an application. Each plugi
 - `plugins/<name>/.claude-plugin/plugin.json` — per-plugin manifest. The manifest's component keys (`commands`, `skills`, `hooks`, `userConfig`, etc.) declare what the plugin contributes.
 - All plugins are prefixed `fu-` for provenance.
 
+**When adding a plugin, update all three registries** or it's half-listed: `.claude-plugin/marketplace.json` (required to install), the **Plugins table in the root `README.md`**, and the **Plugins table at the bottom of this file**. Don't stop at `marketplace.json`.
+
 ## Editing → testing a plugin (the install cache gotcha)
 
 Installed plugins are **copied** to `~/.claude/plugins/cache/fu-claude-plugins/<plugin>/<version>/`. Editing files in this repo does **not** auto-sync to the running session. After changing a plugin:
