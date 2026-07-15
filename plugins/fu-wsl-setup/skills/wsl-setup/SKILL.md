@@ -39,6 +39,18 @@ Two command channels, chosen per step:
 
 **Transport caveat:** the command transport blanks `$`-substitutions evaluated at runtime — `$(…)` command substitution, `. /etc/os-release`-sourced vars (`$ID`, `$VERSION_CODENAME`), `$(whoami)`, and any var assigned earlier in the same command. Only pre-existing environment vars (`$HOME`, `$USER`, `$PATH`) survive. So **do not derive values inline**: read the distro's `ID`/`VERSION_CODENAME`/arch once (the Phase 1 sanity probe), then **substitute the concrete values** into the apt-repo commands below (shown as `<id>` / `<codename>` / `<arch>` placeholders). This holds whether Claude runs the command or hands it off, and applies to installs (fnm's `eval "$(fnm env)"`, the Docker/Vault/gh repo lines) as much as to probes.
 
+**Dotfile-write caveat — persist `$`-bearing lines from the host, never via `echo`.** The per-phase steps that append a PATH/env line with escaped `\$` (`echo "export PATH=\"\$HOME/…:\$PATH\"" >> ~/.bashrc`) are **not reliable through the PowerShell→`wsl.exe`→bash transport**: the backslash is eaten, so `$HOME`/`$PATH` expand at write time and a **frozen snapshot** — embedding the entire `/mnt/c` Windows PATH — is baked into the file. That snapshot then contains `/mnt/c/Users/<user>/.local/bin`, which **false-matches** later `grep -q ".local/bin"`-style idempotency guards and silently skips subsequent PATH lines. (Env lines with **no `$` in the value** — `NODE_EXTRA_CA_CERTS`, `VAULT_ADDR` — are safe to `echo`.) So for any line containing a literal `$`, **write it from the Windows host over the `\\wsl.localhost\<distro>\home\<user>\…` UNC path** with a **single-quoted** PowerShell string (PS won't expand `$HOME`/`$PATH`) and LF endings:
+
+```powershell
+$p = "\\wsl.localhost\$DISTRO\home\$USER\.bashrc"; $l = Get-Content -LiteralPath $p
+if (-not ($l | Where-Object { $_ -like '*$HOME/.local/bin*' })) {   # guard on a Linux-only marker
+  $l += 'export PATH="$HOME/.local/bin:$PATH"'                       # literal, single-quoted
+  [System.IO.File]::WriteAllText($p, ($l -join "`n") + "`n")
+}
+```
+
+Two rules that follow: (1) idempotency guards must match a **Linux-only** marker (`$HOME/.local/bin`, `local/share/dotnet`), **never** a bare `.local/bin` a Windows path also contains; to **repair** a frozen file, `$kept = $l | Where-Object { -not ($_ -like 'export PATH=*mnt/c*') }` then re-append clean lines. (2) **Never verify PATH with `echo "$PATH"`** through this transport — it prints the pre-`.bashrc` value and hides the real result; verify with **bare commands** in a fresh interactive shell (`wsl -d $DISTRO -- bash -ic 'claude --version'`), since a bare command name carries no `$` for the transport to mangle.
+
 ## Phase 0 — Windows preflight
 
 Confirm the WSL version is recent enough (require **≥ 2.7.1**):
@@ -168,10 +180,10 @@ Treat the Phase 5 row (`fnm` / `node` / `yarn`) as installed only if all three p
 
 ## Phase 2 — Base update
 
-Update, then install the base tooling later phases assume — the minimal Debian image ships **without `curl`/`wget`/`gnupg`**, and Phase 3's connectivity check needs `curl`. Claude can run this via `-u root`, or hand off:
+Update, then install the base tooling later phases assume — the minimal Debian image ships **without `curl`/`wget`/`gnupg`**, and Phase 3's connectivity check needs `curl`. This also installs **`git`**: `gh repo clone` (Phase 4) and all dev work depend on it, and while the Debian WSL image usually ships it, don't rely on that. Claude can run this via `-u root`, or hand off:
 
 ```
-! wsl -d $DISTRO -- bash -lc 'sudo apt update && sudo apt upgrade -y && sudo apt install -y curl wget gnupg ca-certificates unzip'
+! wsl -d $DISTRO -- bash -lc 'sudo apt update && sudo apt upgrade -y && sudo apt install -y curl wget gnupg ca-certificates unzip git'
 ```
 
 ## Phase 3 — Connectivity gate (Netskope cert + VPN)
@@ -266,6 +278,12 @@ Optionally clone a repo — ask the user which `<owner>/<repo>` they need:
 ! wsl -d $DISTRO -- bash -lc 'gh repo clone <owner>/<repo>'
 ```
 
+`gh auth login` also wires gh in as the git credential helper, so HTTPS clones/pushes just work. But it does **not** set a **git identity** — without one the first commit fails or is misattributed. This is credential-free config, so ask the user for their name/email (or mirror the Windows host's `git config --global user.name` / `user.email`), then Claude sets it (values have spaces/no `$`, so a `bash -lc` is safe here):
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'git config --global user.name "<name>" && git config --global user.email "<email>"'
+```
+
 ## Phase 5 — fnm / Node / yarn
 
 Probe:
@@ -286,10 +304,14 @@ Then install fnm, Node, and yarn. **`eval "$(fnm env)"` cannot be used here** �
 wsl -d $DISTRO -u $USER -- bash -lc 'curl -o- https://fnm.vercel.app/install | bash -s -- --install-dir "$HOME/.local/share/fnm" && "$HOME/.local/share/fnm/fnm" install 26 && "$HOME/.local/share/fnm/fnm" default 26 && export PATH="$HOME/.local/share/fnm/aliases/default/bin:$PATH" && node -v && npm -v && npm install -g yarn && yarn --version'
 ```
 
-Then **persist the default-alias bin on `PATH`.** The fnm installer adds an `eval "$(fnm env)"` block to `~/.bashrc`, but **that alone does not put `node` on `PATH`** in a fresh shell — it sets fnm up without activating the default version, so `node` goes missing and a Windows `/mnt/c` `yarn` wins the PATH. Adding the alias bin fixes both. **Escape `\$`** so the literal `$HOME`/`$PATH` are written — an *unescaped* `$PATH` inside double quotes bakes a frozen snapshot of the current PATH instead of re-expanding at each shell start:
+Then **persist the default-alias bin on `PATH`.** The fnm installer adds an `eval "$(fnm env)"` block to `~/.bashrc`, but **that alone does not put `node` on `PATH`** in a fresh shell — it sets fnm up without activating the default version, so `node` goes missing and a Windows `/mnt/c` `yarn` wins the PATH. Adding the alias bin fixes both. Persist it with the **host-side UNC write** (per the Dotfile-write caveat — an `echo`'d `\$PATH` freezes on this transport):
 
 ```powershell
-wsl -d $DISTRO -u $USER -- bash -lc 'grep -q fnm/aliases/default/bin ~/.bashrc || echo "export PATH=\"\$HOME/.local/share/fnm/aliases/default/bin:\$PATH\"" >> ~/.bashrc'
+$p = "\\wsl.localhost\$DISTRO\home\$USER\.bashrc"; $l = Get-Content -LiteralPath $p
+if (-not ($l | Where-Object { $_ -like '*fnm/aliases/default/bin*' })) {
+  $l += 'export PATH="$HOME/.local/share/fnm/aliases/default/bin:$PATH"'
+  [System.IO.File]::WriteAllText($p, ($l -join "`n") + "`n")
+}
 ```
 
 Verify `yarn --version` reports **1.22.x** and that `command -v yarn` resolves inside `~/.local/share/fnm`, not `/mnt/c/...` (a Windows-node yarn leaking via PATH interop).
@@ -302,10 +324,20 @@ Probe:
 wsl -d $DISTRO -u $USER -- bash -lc 'command -v claude'
 ```
 
-Install (no sudo; Claude may run this). Escape `\$` in the persisted PATH line so the literal `$HOME`/`$PATH` are written, not a frozen snapshot:
+Install (no sudo; Claude may run this):
 
 ```powershell
-wsl -d $DISTRO -u $USER -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash && (grep -q ".local/bin" ~/.bashrc || echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> ~/.bashrc)'
+wsl -d $DISTRO -u $USER -- bash -lc 'curl -fsSL https://claude.ai/install.sh | bash'
+```
+
+Then persist `~/.local/bin` via the **host-side UNC write**, guarding on the literal `$HOME/.local/bin` — a bare `.local/bin` guard false-matches the Windows `/mnt/c/Users/<user>/.local/bin` on the interop PATH:
+
+```powershell
+$p = "\\wsl.localhost\$DISTRO\home\$USER\.bashrc"; $l = Get-Content -LiteralPath $p
+if (-not ($l | Where-Object { $_ -like '*$HOME/.local/bin*' })) {
+  $l += 'export PATH="$HOME/.local/bin:$PATH"'
+  [System.IO.File]::WriteAllText($p, ($l -join "`n") + "`n")
+}
 ```
 
 ## Phase 7 — VSCode (Windows host)
@@ -362,10 +394,14 @@ Install the `dotnetup` bootstrapper, then run the SDK install **by absolute path
 wsl -d $DISTRO -u $USER -- bash -lc 'curl -fsSL https://aka.ms/dotnetup/get-dotnetup.sh | bash && "$HOME/.dotnetup/dotnetup" install latest && "$HOME/.local/share/dotnet/dotnet" --version'
 ```
 
-Persist both dirs on `PATH` for future shells. Guard on the **Linux** SDK path (`local/share/dotnet`), not `.dotnetup` — a frozen Windows PATH snapshot can contain `/mnt/c/.../.dotnetup`, which would false-match and skip this. Escape `\$` so the literal `$HOME`/`$PATH` are written:
+Persist both dirs on `PATH` for future shells via the **host-side UNC write**. Guard on the **Linux** SDK path (`local/share/dotnet`), not `.dotnetup` — a frozen Windows PATH snapshot can contain `/mnt/c/.../.dotnetup`, which would false-match and skip this:
 
 ```powershell
-wsl -d $DISTRO -u $USER -- bash -lc 'grep -q "local/share/dotnet" ~/.bashrc || echo "export PATH=\"\$HOME/.dotnetup:\$HOME/.local/share/dotnet:\$PATH\"" >> ~/.bashrc'
+$p = "\\wsl.localhost\$DISTRO\home\$USER\.bashrc"; $l = Get-Content -LiteralPath $p
+if (-not ($l | Where-Object { $_ -like '*local/share/dotnet*' })) {
+  $l += 'export PATH="$HOME/.dotnetup:$HOME/.local/share/dotnet:$PATH"'
+  [System.IO.File]::WriteAllText($p, ($l -join "`n") + "`n")
+}
 ```
 
 ## Phase 11 — Aspire CLI
