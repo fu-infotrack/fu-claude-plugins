@@ -28,15 +28,15 @@ For a quick single-file test, you can `cp` the changed file straight into the ca
 
 ## Committing here triggers this repo's own `fu-dev-guards`
 
-This repo's remote is `github.com/fu-infotrack/…`, which matches the installed `dev-guards` `repo_filter` (`infotrack`), and `main` is a `protected_branch`. So the plugin's own PreToolUse hook **denies a direct `git commit` on `main`**. Land changes via a feature branch, then fast-forward (no PR needed):
+This repo's remote is `github.com/fu-infotrack/…`, which matches the installed `dev-guards` `repo_filter` (`infotrack`), and `main` is a `protected_branch`. So the plugin's own PreToolUse hook **denies a direct `git commit` on `main`**. Land changes via a feature branch and a **pull request** — never merge to or push `main` directly:
 
 ```bash
 git checkout -b <branch>          # its OWN Bash tool call (see below)
 git add … && git commit -m "…"    # separate call — branch is now unprotected
-git checkout main && git merge --ff-only <branch> && git push origin main && git branch -d <branch>
+git push -u origin <branch> && gh pr create …   # the user reviews and merges the PR
 ```
 
-`merge --ff-only` invokes no `git commit`, so it isn't blocked. **Keep `git checkout -b` and the commit in separate Bash tool calls**: the branch guard evaluates HEAD *before* the command runs, so a compound `checkout -b …; … commit` is judged while still on `main` and denied. (Bumping a plugin's `version` then `uninstall`+`install` is how you force the cache to pick up a changed bundled file, since `install` no-ops when the version is unchanged.)
+**Squash a feature's commits into one before pushing the branch** (no interactive rebase in this environment — use `git reset --soft <base>` + one commit, or `git cherry-pick -n` onto a fresh branch). **Keep `git checkout -b` and the commit in separate Bash tool calls**: the branch guard evaluates HEAD *before* the command runs, so a compound `checkout -b …; … commit` is judged while still on `main` and denied. (Bumping a plugin's `version` then `uninstall`+`install` is how you force the cache to pick up a changed bundled file, since `install` no-ops when the version is unchanged.)
 
 ## Runtime config — standardized on `fu-tools` layered config
 
