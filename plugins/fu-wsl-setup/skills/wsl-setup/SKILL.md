@@ -444,6 +444,63 @@ Only `az devops login` needs credentials (PAT / browser), so the user runs it in
 az devops login --organization <org-url>
 ```
 
+### Private-feed auth — NuGet (interactive once)
+
+The credential provider installed above is only a binary — nothing is wired to a
+feed yet. A project's own `NuGet.config` must list the Azure Artifacts source
+(`https://pkgs.dev.azure.com/<org>/_packaging/<feed>/nuget/v3/index.json`); that
+is project-level (platform scaffolding provides it), not this skill's job.
+
+Plain `dotnet restore` is **non-interactive by design** — against a private feed
+with no cached token it fails 401; it never prompts. The one-time hand-off is a
+**real terminal**, inside any repo that uses the feed (`wsl -d $DISTRO`, `cd`
+into the repo, then):
+
+```
+dotnet restore --interactive
+```
+
+`--interactive` lets the credential provider run its **device-code flow**: it
+prints a URL + code; open the URL in any browser (the Windows host's is fine)
+and enter the code. The provider caches the token, so subsequent *plain*
+restores — including ones Claude runs — succeed silently. After the hand-off,
+Claude re-probes by running a plain `dotnet restore` itself.
+
+**Expiry gotcha:** when the cached token expires, plain restores start failing
+401 again (in some MSBuild contexts they hang instead). Either symptom on a
+previously working machine → redo the `dotnet restore --interactive` hand-off.
+
+### Private-feed auth — npm (PAT, scripted)
+
+`vsts-npm-auth` is Windows-only, so under WSL the Azure Artifacts npm feed needs
+a PAT baked into `~/.npmrc`. The bundled `scripts/npm-artifacts-auth.sh` does
+it: live-verifies with `npm whoami`, silently prompts for a PAT (Packaging Read
+scope) only when needed, and rewrites the `~/.npmrc` entries (both the
+`…/npm/registry/` and parent `…/npm/` paths, base64 no-wrap, `chmod 600`).
+
+Ask the user for the actual `<registry-url>`
+(e.g. `https://pkgs.dev.azure.com/<org>/_packaging/<feed>/npm/registry/`) —
+feeds vary across projects. Probe first (Claude runs; note the explicit fnm
+PATH prepend per the PATH caveat):
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'export PATH="$HOME/.local/share/fnm/aliases/default/bin:$PATH"; npm whoami --registry <registry-url> >/dev/null 2>&1 && echo npm feed auth ok || echo npm feed auth missing'
+```
+
+If missing, the PAT entry is a **real-terminal hand-off** (it is a credential).
+The plugin cache lives on the Windows host, so give the user the script's path
+translated to the WSL view (`C:\Users\<u>\…` → `/mnt/c/Users/<u>/…` — derive it
+from this skill's own install path) and have them run, in `wsl -d $DISTRO`:
+
+```
+bash /mnt/c/Users/<user>/.claude/plugins/cache/fu-claude-plugins/fu-wsl-setup/<version>/scripts/npm-artifacts-auth.sh <registry-url>
+```
+
+The script needs `npm` on `PATH`, which the user's fresh interactive shell
+provides (Phase 5) — do **not** run it via a non-interactive `bash -lc`.
+Re-probe after the hand-off with the same probe above; a re-run of the script
+is also safe (it prints `already authenticated` and exits 0).
+
 ## Phase 13 — DevTunnel (Windows host)
 
 Install on the **Windows host** (shared across all WSL instances); once on PATH it is reachable from WSL as `devtunnel`:
