@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # PreToolUse Bash guard — deny git worktree add outside .claude/worktrees/.
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
-if echo "$cmd" | grep -qE '^\s*git\s+worktree\s+add\b'; then
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Segment + head-match so a chained/wrapped `git worktree add` can't slip past
+# a start-anchored grep (e.g. `cd repo && git worktree add ...`).
+source "$here/lib/git-guard.sh"
+if cmd_invokes "$cmd" 'git worktree add'; then
   if ! echo "$cmd" | grep -qE '\.claude/worktrees/'; then
     jq -nc '{
       hookSpecificOutput: {

@@ -22,7 +22,11 @@ tool=$(jq -r '.tool_name // ""' <<<"$input")
 cmd=$(jq -r '.tool_input.command // ""' <<<"$input")
 
 [ "$tool" = "Bash" ] || exit 0
-echo "$cmd" | grep -qE '(^|[;&|]|\bcd [^;&|]+ && )\s*git\s+commit\b' || exit 0
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Segment + head-match: catches wrapped/substituted commits the old prefix regex
+# missed (`env X=1 git commit`, `$(git commit ...)`), not just separator-chained.
+source "$here/lib/git-guard.sh"
+cmd_invokes "$cmd" 'git commit' || exit 0
 echo "$cmd" | grep -qE '\bgit\s+commit\b.*--amend' && exit 0
 
 project_file=""

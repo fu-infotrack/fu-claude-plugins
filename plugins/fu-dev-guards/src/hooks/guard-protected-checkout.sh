@@ -9,9 +9,13 @@
 # Env overrides (tests): PROTECTED_DIRS / PROTECTED_DIR_EXEMPT / GUARD_CWD.
 
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
-echo "$cmd" | grep -qE '^\s*(git\s+(checkout|switch)|gh\s+pr\s+checkout)\b' || exit 0
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Segment + head-match so chained/wrapped forms can't slip past a start-anchor:
+#   git fetch && git checkout -b x   env X=1 git switch main   $(git checkout ...)
+source "$here/lib/git-guard.sh"
+cmd_invokes "$cmd" 'git checkout' 'git switch' 'gh pr checkout' || exit 0
+
 fu_config="$here/../../scripts/fu-config.sh"
 fu_get() { [ -f "$fu_config" ] && bash "$fu_config" dev-guards "$1" 2>/dev/null || true; }
 
