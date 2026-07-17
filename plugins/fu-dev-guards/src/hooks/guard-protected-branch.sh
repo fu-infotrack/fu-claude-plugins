@@ -9,10 +9,13 @@ DEFAULT_BRANCHES='^(main|master|develop)$'
 
 cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
 
-echo "$cmd" | grep -qE '^\s*git\s+commit\b' || exit 0
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Segment + head-match so a chained commit (`git fetch && git commit -m x`) or a
+# wrapped one can't slip past a start-anchored grep.
+source "$here/lib/git-guard.sh"
+cmd_invokes "$cmd" 'git commit' || exit 0
 
 # Resolve config from fu-tools unless the matching env var is already set.
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fu_config="$here/../../scripts/fu-config.sh"
 fu_get() { [ -f "$fu_config" ] && bash "$fu_config" dev-guards "$1" 2>/dev/null || true; }
 

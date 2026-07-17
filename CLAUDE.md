@@ -78,6 +78,12 @@ node --test plugins/fu-et-sweep/scripts/sweep-lib.test.mjs
 python3 plugins/fu-ce-compound/skills/ce-compound/scripts/validate-frontmatter.py <doc-path>
 ```
 
+`fu-dev-guards` ships a plain-bash suite for the shared git-guard helper (segment + head-match) and the hooks that source it — unit cases plus env-seam-driven end-to-end denials:
+
+```bash
+bash plugins/fu-dev-guards/test/git-guard.test.sh
+```
+
 ## External dependencies (by plugin)
 
 No package manager pulls these — they must be on PATH:

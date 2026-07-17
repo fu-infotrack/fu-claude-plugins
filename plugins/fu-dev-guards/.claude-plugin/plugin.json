@@ -1,6 +1,6 @@
 {
   "name": "fu-dev-guards",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), and dotnet format pre-commit.",
   "author": {
     "name": "fu-infotrack",
