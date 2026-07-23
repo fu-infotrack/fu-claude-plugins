@@ -2,6 +2,8 @@
 // used by the fingerprint core in a later section — deterministic, no I/O).
 // No network, no Date.now() — fully unit-testable.
 
+import { createHash } from 'node:crypto';
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Search window start (epoch ms). Always covers >= 24h, never reaches > 30d
@@ -67,4 +69,102 @@ export function mergeConfig(userObj, projectObj, autoObj, cliObj, tool) {
   const a = autoObj || {};
   const c = cliObj || {};
   return { ...u, ...a, ...p, ...c };
+}
+
+// ---- Fingerprint core (the dedup-signature computation) --------------------
+
+const BCL_PREFIXES = ['System.', 'Microsoft.', 'Datadog.', 'Newtonsoft.', 'MediatR.', 'Polly.'];
+
+// Parse .NET stack frames from an @error.stack string into an ordered array of
+// qualified method names (no params/file/line), innermost first. Non-frame
+// lines (the exception header, blank lines) are skipped.
+export function parseFrames(stackText) {
+  const out = [];
+  for (const raw of (stackText || '').split('\n')) {
+    const line = raw.trim();
+    const m = line.match(/^at\s+(.+?)\s*(?:\(|$)/);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+// A framework/BCL frame (not the application's own code).
+export function isBclFrame(qualifiedMethod) {
+  return BCL_PREFIXES.some((p) => qualifiedMethod.startsWith(p));
+}
+
+// First frame whose qualified method starts with one of appNsPrefixes
+// (e.g. ['Acme']). Returns the qualified method or null.
+export function firstAppFrame(stackText, appNsPrefixes) {
+  const prefixes = (appNsPrefixes || []).filter(Boolean);
+  if (!prefixes.length) return null;
+  for (const f of parseFrames(stackText)) {
+    if (prefixes.some((p) => f.startsWith(p))) return f;
+  }
+  return null;
+}
+
+// First frame that is not a known BCL/framework frame — the fallback used when
+// no app prefix is configured or none matched.
+export function firstNonBclFrame(stackText) {
+  for (const f of parseFrames(stackText)) {
+    if (!isBclFrame(f)) return f;
+  }
+  return null;
+}
+
+// Normalize a qualified frame so it is stable across recompiles: unwrap async
+// state machines and lambdas, drop generic arity backticks.
+export function normalizeFrame(frame) {
+  if (!frame) return '';
+  let f = frame;
+  f = f.replace(/\.<([^>]+)>d__\d+\.MoveNext$/, '.$1'); // async state machine
+  f = f.replace(/\.<([^>]+)>b__[0-9_]+$/, '.$1');       // lambda / local function
+  f = f.replace(/`\d+/g, '');                            // generic arity
+  return f.trim();
+}
+
+// Normalize a message for the last-resort signature: mask guids and numbers so
+// ids don't fragment it, collapse whitespace, cap at 80 chars.
+export function normalizeMessage(message) {
+  return (message || '')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<guid>')
+    .replace(/\d+/g, '<n>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+}
+
+// Stable 12-char signature from the grouping key parts.
+export function computeSignature(errorKind, service, frameKey) {
+  const key = `${errorKind || ''}|${service || ''}|${frameKey || ''}`;
+  return createHash('sha1').update(key).digest('hex').slice(0, 12);
+}
+
+// Compute the dedup signature for one error bucket via the fallback ladder.
+// Returns { sig, frame, confidence }.
+export function buildSignature(errorKind, service, stackText, message, appNsPrefixes) {
+  const app = firstAppFrame(stackText, appNsPrefixes);
+  if (app) {
+    const frame = normalizeFrame(app);
+    return { sig: computeSignature(errorKind, service, frame), frame, confidence: 'app-frame' };
+  }
+  const nonBcl = firstNonBclFrame(stackText);
+  if (nonBcl) {
+    const frame = normalizeFrame(nonBcl);
+    return { sig: computeSignature(errorKind, service, frame), frame, confidence: 'first-frame' };
+  }
+  const msg = normalizeMessage(message);
+  return { sig: computeSignature(errorKind, service, msg), frame: null, confidence: 'message' };
+}
+
+const LOG_MARKER_RE = /<!--\s*dd-log-sig:\s*([0-9a-f]+)\s*-->/i;
+
+export function buildMarker(sig) {
+  return `<!-- dd-log-sig: ${sig} -->`;
+}
+
+export function extractSig(body) {
+  const m = (body || '').match(LOG_MARKER_RE);
+  return m ? m[1] : null;
 }
