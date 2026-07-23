@@ -6,6 +6,8 @@
   "plugins": [
     { "name": "fu-et-sweep", "source": "./plugins/fu-et-sweep", "category": "productivity",
       "description": "Sweep a service's Datadog Error Tracking into de-duped GitHub issues with drafted root-cause writeups." },
+    { "name": "fu-log-sweep", "source": "./plugins/fu-log-sweep", "category": "productivity",
+      "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature." },
     { "name": "fu-review-prs", "source": "./plugins/fu-review-prs", "category": "productivity",
       "description": "Automated PR review orchestrator." },
     { "name": "fu-inspecting-orders-api", "source": "./plugins/fu-inspecting-orders-api", "category": "productivity",

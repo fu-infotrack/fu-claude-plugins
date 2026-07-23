@@ -14,6 +14,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | Plugin | Kind | Purpose |
 |---|---|---|
 | et-sweep | command + agents + scripts | Datadog Error Tracking -> GitHub issues (via the `pup` CLI) |
+| fu-log-sweep | command + agents + scripts | Datadog error-level **Logs** → de-duped GitHub issues with root-cause writeups; dedups on a computed error signature (no Error Tracking required) |
 | review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo) |
 | inspecting-orders-api | skill | Orders API inspection |
 | pg-stage | skill | Postgres via Vault (psql; caches dynamic creds) |

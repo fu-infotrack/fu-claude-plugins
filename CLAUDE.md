@@ -102,6 +102,7 @@ No package manager pulls these — they must be on PATH:
 | Plugin | Kind | Purpose |
 |---|---|---|
 | fu-et-sweep | command + agents + scripts | Datadog Error Tracking → de-duped GitHub issues with root-cause writeups (Datadog via the `pup` CLI) |
+| fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups; sibling to fu-et-sweep, dedups on a self-computed error signature (`type\|service\|top-app-frame` sha1) instead of an ET `issue_id` |
 | fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo) |
 | fu-inspecting-orders-api | skill | Orders API inspection (config-resolved host + token) |
 | fu-pg-stage | skill | Postgres via HashiCorp Vault credentials |
