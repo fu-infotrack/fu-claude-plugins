@@ -81,6 +81,13 @@ switch (cmd) {
     if (!merged.statusQuery) merged.statusQuery = merged.status_query || 'status:error';
     merged.appNamespace = asArray(merged.appNamespace || merged.app_namespace);
     merged.logsUrlBase = merged.logsUrlBase || merged.logs_url_base || null;
+    // Datadog facet the exception TYPE is indexed under, plus where the stack /
+    // message live on a log event. Defaults target the C#/Serilog->Datadog shape
+    // (the generic @error.kind/@error.stack facets are NOT populated there).
+    // Override per stack via config errorFacet / stackPath / messagePath.
+    merged.errorFacet = merged.errorFacet || merged.error_facet || '@Properties.exception.type';
+    merged.stackPath = merged.stackPath || merged.stack_path || 'attributes.attributes.Exception';
+    merged.messagePath = merged.messagePath || merged.message_path || 'attributes.message';
     if (merged.services && merged.services.length) {
       merged.query = buildLogQuery(merged.services, merged.env, merged.statusQuery);
     }

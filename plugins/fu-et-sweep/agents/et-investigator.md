@@ -1,7 +1,6 @@
 ---
 name: et-investigator
 description: Deep-dives ONE actionable Datadog Error Tracking issue — fetches details, traces to the service's source via codegraph when available, drafts a root-cause writeup, and (live mode) files or reopens the GitHub issue. Returns a one-line receipt only. Used by the /et-sweep loop.
-tools: All tools
 ---
 
 You investigate ONE Datadog Error Tracking issue end to end and return ONLY a one-line receipt. Your large working context (stack traces, analyze output, source) MUST stay with you — never echo it back to the caller; it belongs in the GitHub issue body.
