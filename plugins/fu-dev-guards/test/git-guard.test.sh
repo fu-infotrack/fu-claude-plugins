@@ -50,10 +50,45 @@ should_miss  "checkout-index plumbing" 'git checkout-index --all'               
 should_miss  "filename lookalike"     'cat git-checkout.txt'                           "${CO[@]}"
 should_miss  "git config alias"       'git config alias.co checkout'                   "${CO[@]}"
 
-echo "== cmd_invokes: documented accepted over-block =="
-# A separator INSIDE a quote over-splits -> over-blocks. Safe direction for a
-# guard; pinned here so the behaviour is intentional, not accidental.
-should_match "separator inside quote (over-block)" 'echo "a && git checkout b"'        "${CO[@]}"
+echo "== cmd_invokes: quote-aware — no false block on quoted prose =="
+# Boundary chars inside quotes are literal, so prose in a quoted argument cannot
+# trigger a block. The `)` case below was a REAL false positive in v0.2.0: it
+# denied a plain `echo` while probing the guards.
+should_miss  "paren in quoted echo"   'echo "=== A) git checkout -b x ==="'             "${CO[@]}"
+should_miss  "&& inside quotes"       'echo "a && git checkout b"'                     "${CO[@]}"
+should_miss  "; inside quotes"        'echo "a; git switch b"'                         "${CO[@]}"
+should_miss  "pipe inside quotes"     'grep -r "x | git checkout" .'                   "${CO[@]}"
+should_miss  "parens inside quotes"   'printf "%s" "(git checkout main)"'              "${CO[@]}"
+should_miss  "brace inside quotes"    'echo "{git checkout}"'                          "${CO[@]}"
+should_miss  "verb in commit body"    "git commit -m 'ran git checkout; then switch'"   "${CO[@]}"
+
+echo "== cmd_invokes: quote-aware still catches real commands =="
+should_match "substitution in quotes" 'y="$(git checkout main)"'                        "${CO[@]}"
+should_match "backticks"              'y=`git checkout main`'                           "${CO[@]}"
+should_match "backticks in quotes"    'y="`git switch main`"'                           "${CO[@]}"
+should_match "quoted arg then chain"  'echo "safe text" && git checkout main'           "${CO[@]}"
+should_match "sh -c payload"          "sh -c 'git checkout main'"                       "${CO[@]}"
+should_match "bash -c payload"        'bash -c "git switch main"'                       "${CO[@]}"
+should_miss  "sh -c benign payload"   "sh -c 'echo git checkout'"                       "${CO[@]}"
+should_match "commit via sh -c"       "sh -c 'git commit -m x'"                         'git commit'
+
+echo "== cmd_invokes: heredoc bodies are data, not commands =="
+# Writing docs / a PR body that MENTIONS a guarded verb must not be blocked.
+# v0.2.0 denied exactly this while drafting the PR that introduced it.
+SQ="'"
+HD_QUOTED=$(printf 'cat <<%sEOF%s\ngit checkout -b x\nEOF\n' "$SQ" "$SQ")
+HD_BODY=$(printf 'gh pr create --body "$(cat <<%sBODY%s\nran git fetch && git checkout -b x\nBODY\n)"\n' "$SQ" "$SQ")
+should_miss  "heredoc quoted delimiter" "$HD_QUOTED"                                     "${CO[@]}"
+should_miss  "heredoc bare delimiter"   $'cat <<EOF\ngit checkout -b x\nEOF'             "${CO[@]}"
+should_miss  "heredoc <<- indented end" $'cat <<-EOF\n\tgit checkout x\n\tEOF'           "${CO[@]}"
+should_miss  "gh pr body heredoc"       "$HD_BODY"                                       "${CO[@]}"
+should_miss  "here-string is data"      'grep x <<< "git checkout main"'                 "${CO[@]}"
+should_miss  "plain input redirect"     'git status < file.txt'                          "${CO[@]}"
+# ...but a substitution inside a bare-delimiter body DOES execute, and anything
+# after the terminator is a normal command again.
+should_match "substitution in heredoc"  $'cat <<EOF\n$(git checkout main)\nEOF'          "${CO[@]}"
+should_match "command after terminator" $'cat <<EOF\ntext\nEOF\ngit checkout main'       "${CO[@]}"
+should_match "commit after terminator"  $'cat <<EOF\ntext\nEOF\ngit commit -m x'         'git commit'
 
 echo "== cmd_invokes: git commit =="
 should_match "plain commit"           'git commit -m x'                                'git commit'
