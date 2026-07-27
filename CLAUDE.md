@@ -49,7 +49,11 @@ gh pr create --base main …          # land via PR, squash-merged
 
 Land via **PR, squash-merged** — never push `main` directly (`gh pr merge <n> --squash --delete-branch`). Then in the main checkout `git pull --ff-only origin main`, and `ExitWorktree` (`remove` once the branch is merged — its pre-squash commit is redundant).
 
+A **SessionStart** hook (`notify-worktree-sessionstart.sh`) states this up front whenever a session opens inside a protected root, so it isn't rediscovered via a denial. It is advisory — the PreToolUse guards are the enforcement — and stays silent outside protected dirs and inside worktrees.
+
 Because worktrees share the repo's refs, a branch can only be checked out in one at a time (git refuses otherwise) — **name each session's worktree after its task** so concurrent sessions never collide.
+
+**Known gap:** the Write/Edit guard matches only those tools, so a Bash write (`cat > file`, `tee`, `sed -i`) into a protected dir is **not** blocked — measured, not theoretical. Don't route around the guard that way.
 
 **Worktrees do not isolate `~/.claude/`.** The plugin cache, `fu-tools` config, and `pr-review` state are shared, and `claude plugin install` rewrites the cache **for every session**. Serialize install/marketplace steps to one session.
 
@@ -128,7 +132,7 @@ No package manager pulls these — they must be on PATH:
 | fu-k8dash | skill | Read-only K8s inspection across clusters (stage/prod, pick with `-c`) via the k8dash dashboard's pass-through API proxy (GET-only, RBAC-bounded; user's OIDC bearer token) |
 | fu-datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops (pure-docs skill; no scripts/config) |
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
-| fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
+| fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), a SessionStart notice when a session opens in a protected checkout, dotnet format pre-commit |
 | fu-wsl-setup | skill | Provision a WSL work environment for Claude Code from Windows PowerShell 7+ — WSL version check, pick/create a Debian instance, then drive the full tool install sequence (non-interactive work automated, privileged/interactive steps handed to the user) |
 
 `fu-et-sweep` reads Datadog Error Tracking through the **`pup` CLI** (run via Bash; see `fu-datadog-pup`) — **no bundled MCP server** as of v0.2.0 — plus the `gh` CLI authenticated for the target repo. Run it in a live session so `pup auth login` / `gh` auth is available (a `401` needs an interactive re-login). Key design wrinkle: `pup`'s ET `issues search` is a **thin projection (id + total_count only)**, so the orchestrator count-prunes then **gh-dedups first** to bound the set to ≤10, and only then hydrates each survivor via `pup error-tracking issues get` for the rich fields. **Regression is derived from a closed GitHub match** (GH is the sole regression authority — `pup` has no Datadog regression flag). The investigator pulls a sample stack via `pup traces/logs search '@issue.id:<id>'` (replacing the old `analyze_*` MCP tool). The pure-logic `sweep-lib.mjs` is shape-agnostic and was untouched by the cutover.

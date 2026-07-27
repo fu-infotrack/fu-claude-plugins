@@ -137,6 +137,22 @@ run_hook guard-worktree-bash.sh \
   '{"tool_input":{"command":"cd repo && git worktree add .claude/worktrees/x -b x"}}'
 [ "$RC" -eq 0 ] && ok || bad "worktree: add under .claude/worktrees should be ALLOWED (rc=$RC)"
 
+echo "== e2e: notify-worktree-sessionstart.sh =="
+# Advisory notice: fires only inside a protected root, silent everywhere else.
+run_hook notify-worktree-sessionstart.sh '' PROTECTED_DIRS=/tmp/protrepo GUARD_CWD=/tmp/protrepo/src
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | jq -e '.hookSpecificOutput.additionalContext | test("EnterWorktree")' >/dev/null 2>&1
+then ok; else bad "sessionstart: should emit EnterWorktree notice in protected dir (rc=$RC out=$OUT)"; fi
+
+run_hook notify-worktree-sessionstart.sh '' PROTECTED_DIRS=/tmp/protrepo GUARD_CWD=/home/elsewhere
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok; else bad "sessionstart: should stay silent outside protected dirs (out=$OUT)"; fi
+
+run_hook notify-worktree-sessionstart.sh '' \
+  PROTECTED_DIRS=/tmp/protrepo GUARD_CWD=/tmp/protrepo/.claude/worktrees/x
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok; else bad "sessionstart: should stay silent inside a worktree (out=$OUT)"; fi
+
+run_hook notify-worktree-sessionstart.sh '' PROTECTED_DIRS= GUARD_CWD=/tmp/protrepo
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ]; then ok; else bad "sessionstart: no protected_dirs configured = silent (out=$OUT)"; fi
+
 echo "== e2e: guard-protected-branch.sh (temp repo on main) =="
 tmp=$(mktemp -d)
 git -C "$tmp" init -q -b main
