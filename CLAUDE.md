@@ -24,19 +24,40 @@ claude plugin marketplace update fu-claude-plugins # re-index the local marketpl
 claude plugin install fu-<name>@fu-claude-plugins  # reinstall into the cache
 ```
 
-For a quick single-file test, you can `cp` the changed file straight into the cache path, but the full reinstall is the correct path. Plugin **hooks load at session start** — they take effect on the next session, not mid-session. When adding a new plugin, edit `marketplace.json` first, then `marketplace update` before `install`.
+For a quick single-file test, you can `cp` the changed file straight into the cache path, but the full reinstall is the correct path. When adding a new plugin, edit `marketplace.json` first, then `marketplace update` before `install`.
 
-## Committing here triggers this repo's own `fu-dev-guards`
+Plugin **hooks load at session start**, but an `uninstall`+`install` cycle was observed to swap them in **mid-session** (a hook fix installed this way started firing immediately, without a restart). So don't assume the running session still has the old behaviour — verify by exercising the hook rather than reasoning from "hooks need a restart".
 
-This repo's remote is `github.com/fu-infotrack/…`, which matches the installed `dev-guards` `repo_filter` (`infotrack`), and `main` is a `protected_branch`. So the plugin's own PreToolUse hook **denies a direct `git commit` on `main`**. Land changes via a feature branch, then fast-forward (no PR needed):
+## Always work in a worktree here — this repo is guarded by its own `fu-dev-guards`
+
+This repo's path is a `protected_dir`, its remote `github.com/fu-infotrack/…` matches `repo_filter` (`infotrack`), and `main` is a `protected_branch`. In the **main checkout** the installed hooks therefore deny:
+
+| Action | In main checkout | In a worktree |
+|---|---|---|
+| `Write` / `Edit` any file | **denied** (`guard-protected-dirs`) | allowed (`/.claude/` is exempt) |
+| `git checkout` / `switch` / `gh pr checkout` | **denied** (`guard-protected-checkout`) | allowed |
+| `git commit` on `main` | **denied** (`guard-protected-branch`) | allowed (branch ≠ `main`) |
+
+So editing in place is impossible, and **`git checkout -b` from the main checkout is itself denied** — do not start there. Multiple background sessions may also be running against this repo at once, and they would otherwise share one index and one HEAD (session A's `git add -A && commit` swallows session B's half-finished edits). **Begin every change by calling `EnterWorktree` (name: `<branch-name>`)**, then branch/commit/push inside it:
 
 ```bash
-git checkout -b <branch>          # its OWN Bash tool call (see below)
-git add … && git commit -m "…"    # separate call — branch is now unprotected
-git checkout main && git merge --ff-only <branch> && git push origin main && git branch -d <branch>
+# inside the worktree — Write/Edit and git are unguarded here
+git add … && git commit -m "…"
+git push -u origin HEAD:<branch>
+gh pr create --base main …          # land via PR, squash-merged
 ```
 
-`merge --ff-only` invokes no `git commit`, so it isn't blocked. **Keep `git checkout -b` and the commit in separate Bash tool calls**: the branch guard evaluates HEAD *before* the command runs, so a compound `checkout -b …; … commit` is judged while still on `main` and denied. (Bumping a plugin's `version` then `uninstall`+`install` is how you force the cache to pick up a changed bundled file, since `install` no-ops when the version is unchanged.)
+Land via **PR, squash-merged** — never push `main` directly (`gh pr merge <n> --squash --delete-branch`). Then in the main checkout `git pull --ff-only origin main`, and `ExitWorktree` (`remove` once the branch is merged — its pre-squash commit is redundant).
+
+A **SessionStart** hook (`notify-worktree-sessionstart.sh`) states this up front whenever a session opens inside a protected root, so it isn't rediscovered via a denial. It is advisory — the PreToolUse guards are the enforcement — and stays silent outside protected dirs and inside worktrees.
+
+Because worktrees share the repo's refs, a branch can only be checked out in one at a time (git refuses otherwise) — **name each session's worktree after its task** so concurrent sessions never collide.
+
+**Known gap:** the Write/Edit guard matches only those tools, so a Bash write (`cat > file`, `tee`, `sed -i`) into a protected dir is **not** blocked — measured, not theoretical. Don't route around the guard that way.
+
+**Worktrees do not isolate `~/.claude/`.** The plugin cache, `fu-tools` config, and `pr-review` state are shared, and `claude plugin install` rewrites the cache **for every session**. Serialize install/marketplace steps to one session.
+
+To force the cache to pick up a changed bundled file, bump the plugin's `version` then `uninstall`+`install` — plain `install` no-ops when the version is unchanged (it reports "already installed" and silently keeps the old files).
 
 ## Runtime config — standardized on `fu-tools` layered config
 
@@ -58,6 +79,7 @@ Claude Code's plugin `userConfig` mechanism exists but is intentionally **not** 
 
 - **Pure logic split from I/O.** `fu-et-sweep/scripts/sweep-lib.mjs` is dependency-free, side-effect-free, and `node:test`-covered; `sweep.mjs` is the thin CLI wrapper the command shells out to. Date/time and network stay out of the testable core. Preserve this split when extending.
 - **Hooks** live in `src/hooks/` as bash, referenced via `${CLAUDE_PLUGIN_ROOT}/src/hooks/...`. To block an action a PreToolUse hook emits a `hookSpecificOutput` JSON object with `permissionDecision: "deny"` and exits non-zero (2). `jq` is a hard dependency.
+- **Matching a command in a Bash hook** — never `grep` the raw command string. `^\s*git\s+commit` only sees the FIRST token, so `git fetch && git commit` bypasses it; an unanchored `\bgit\s+commit\b` instead false-blocks the verb in quoted prose. All four git guards share `fu-dev-guards/src/hooks/lib/git-guard.sh`: `cmd_invokes "$cmd" 'git commit'` segments on **unquoted** boundaries, peels leading assignments/wrappers/`\`, and head-matches. The governing rule is **data is not a command** — quoted strings and heredoc bodies are inert, while `$( )`, backticks, and `sh -c` payloads are commands wherever they appear. Extend the tests in `test/git-guard.test.sh` when touching it.
 - **Token/context discipline** (et-sweep): the orchestrating command stays context-thin; expensive work (stack traces, source reads) is isolated inside subagents whose context never returns to the loop. A metadata-only triage gate drops noise before the investigator runs. See `plugins/fu-et-sweep/docs/DESIGN.md`.
 - **PR-review orchestrator** (`fu-review-prs`): all irreversible/external steps (lock, state, GitHub post) are deterministic bash in the orchestrator; the per-PR review runs in a sub-agent whose context never returns. State (`last-reviewed-<pr>`: commit + tree SHA) is namespaced per repo and lives in `~/.claude/pr-review/`, outside the wiped plugin cache. The dedicated review clone is force-reset to a pristine `origin/main` at tick start **and** after each PR via `pr_review_reset_tree` (`fetch` → `checkout -f main` → `reset --hard origin/main` → `clean -fd` → prune all non-`main` local branches). Cross-Bash-call locks use a background `flock` holder process (a normal fd-flock would release when the bash call returns). The pre-flight→post handoff is **disk-based, not context-carried**, so a mid-tick context compaction loses nothing: pre-flight persists `pending-<pr>` (commit+tree) and the sub-agent writes its decision to a `decision-<pr>.txt` sidecar **and** a `<!-- DECISION: X -->` body header; `pr_review_finish <pr>` takes only the PR and recovers commit/tree/decision/body from disk (decision: sidecar → header → `COMMENT`). See `plugins/fu-review-prs/docs/orchestrator-subagent-pr-review-bot.md`.
 - **Vault DB-stage plugin** (`fu-pg-stage`): `connect.sh` reads the Vault database-engine *config* (`<mount>/config/<db>`, default mount `database`) for the `connection_url` + `allowed_roles`, mints dynamic creds from a role, then assembles a connection (string / shell / `--export` env). The minted cred (a secret) is **cached** in a `0600` file under `~/.claude/fu-tools/cache/<tool>/`, keyed per `(vault, mount, db, role)`, reused until near lease expiry — `--fresh` bypasses, `--purge` wipes; a cache hit skips both Vault reads. `VAULT_ADDR` resolved from config must be **exported** so the `vault` child process sees it (else it falls back to `127.0.0.1:8200`). pg parses a `postgresql://` URI. (`fu-mssql-stage` used to share this shape but was cut over to Windows auth — see below.)
@@ -110,7 +132,7 @@ No package manager pulls these — they must be on PATH:
 | fu-k8dash | skill | Read-only K8s inspection across clusters (stage/prod, pick with `-c`) via the k8dash dashboard's pass-through API proxy (GET-only, RBAC-bounded; user's OIDC bearer token) |
 | fu-datadog-pup | skill | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops (pure-docs skill; no scripts/config) |
 | fu-ce-compound | skill + agents | Document solved problems (EveryInc fork, MIT) |
-| fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), dotnet format pre-commit |
+| fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), a SessionStart notice when a session opens in a protected checkout, dotnet format pre-commit |
 | fu-wsl-setup | skill | Provision a WSL work environment for Claude Code from Windows PowerShell 7+ — WSL version check, pick/create a Debian instance, then drive the full tool install sequence (non-interactive work automated, privileged/interactive steps handed to the user) |
 
 `fu-et-sweep` reads Datadog Error Tracking through the **`pup` CLI** (run via Bash; see `fu-datadog-pup`) — **no bundled MCP server** as of v0.2.0 — plus the `gh` CLI authenticated for the target repo. Run it in a live session so `pup auth login` / `gh` auth is available (a `401` needs an interactive re-login). Key design wrinkle: `pup`'s ET `issues search` is a **thin projection (id + total_count only)**, so the orchestrator count-prunes then **gh-dedups first** to bound the set to ≤10, and only then hydrates each survivor via `pup error-tracking issues get` for the rich fields. **Regression is derived from a closed GitHub match** (GH is the sole regression authority — `pup` has no Datadog regression flag). The investigator pulls a sample stack via `pup traces/logs search '@issue.id:<id>'` (replacing the old `analyze_*` MCP tool). The pure-logic `sweep-lib.mjs` is shape-agnostic and was untouched by the cutover.

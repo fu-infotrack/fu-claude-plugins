@@ -1,13 +1,24 @@
 {
   "name": "fu-dev-guards",
-  "version": "0.2.0",
-  "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), and dotnet format pre-commit.",
+  "version": "0.3.0",
+  "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), a session-start notice when opened in a protected checkout, and dotnet format pre-commit.",
   "author": {
     "name": "fu-infotrack",
     "url": "https://github.com/fu-infotrack"
   },
   "keywords": ["guards", "worktree", "dotnet", "git"],
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/src/hooks/notify-worktree-sessionstart.sh\"",
+            "statusMessage": "Check protected checkout"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
