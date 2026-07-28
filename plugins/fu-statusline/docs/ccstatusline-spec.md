@@ -1,0 +1,225 @@
+# The ccstatusline render contract
+
+`statusline.sh` reproduces the output of `ccstatusline@2.2.27` byte for byte. This document is
+the spec it implements, reverse-engineered from that package's minified bundle. **It is the
+expensive part of this plugin — the bundle is no longer on disk.** If it is ever needed again:
+`npm view ccstatusline@2.2.27`.
+
+Every rule below is checked by `test/statusline.test.sh`, whose expectations were derived from
+this document rather than captured from the implementation.
+
+## Why the rewrite exists
+
+The original was configured as `statusLine.command = "npx -y ccstatusline@latest"` with
+`refreshInterval: 10`. Per session, every ten seconds, that meant a full `npx` resolve including
+a registry hit (`-y` plus `@latest` defeats the cache), loading a 3.3 MB bundle carrying React,
+Ink and react-devtools (the TUI config editor shares an entrypoint with the render path), and
+`readFileSync` of the entire session transcript — twice, once for the session-name widget and
+once for the token metrics.
+
+With transcripts totalling 310 MB, the largest active one 47 MB, and nine concurrent sessions,
+that measured **605 ms and 103 MB peak RSS per render**. The bash replacement is **12.3 ms and
+11 MB** — 49× and 9.4×.
+
+## Input
+
+Claude Code writes one JSON object to the command's stdin. A real capture, redacted:
+
+```json
+{
+  "session_id": "...", "transcript_path": "/home/<user>/.claude/projects/<slug>/<id>.jsonl",
+  "cwd": "/home/<user>/repo/<name>",
+  "effort": { "level": "xhigh" },
+  "session_name": "-some-session",
+  "model": { "id": "claude-sonnet-5", "display_name": "Sonnet 5" },
+  "workspace": { "current_dir": "...", "project_dir": "...", "repo": {} },
+  "version": "2.1.220",
+  "cost": { "total_cost_usd": 80.09, "total_duration_ms": 168042148, "total_lines_added": 22 },
+  "context_window": {
+    "total_input_tokens": 76078, "total_output_tokens": 123,
+    "context_window_size": 1000000,
+    "current_usage": { "input_tokens": 2, "output_tokens": 123,
+                       "cache_creation_input_tokens": 1459, "cache_read_input_tokens": 74617 },
+    "used_percentage": 8, "remaining_percentage": 92
+  },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 33, "resets_at": 1785206400 },
+    "seven_day": { "used_percentage": 28.000000000000004, "resets_at": 1785438000 }
+  },
+  "exceeds_200k_tokens": false, "fast_mode": false, "thinking": { "enabled": true },
+  "pr": { "number": 12, "url": "..." }
+}
+```
+
+Everything except the git widgets and the cumulative token totals comes straight from this
+payload — **no HTTP calls are needed**, the rate limits arrive in it.
+
+`context_window.current_usage` can be `null` on a fresh session, and `used_percentage` can be
+absent. Both are treated as 0.
+
+## Layout
+
+From `~/.config/ccstatusline/settings.json` at the switchover: five lines, `minimalistMode:
+true` (so no `Model: ` style labels), `defaultSeparator: " "`, `colorLevel: 2` (256-colour),
+`gitCacheTtlSeconds: 5`.
+
+| Line | Widgets (256-colour code) |
+|---|---|
+| 1 | model (30), thinking-effort (96), context-bar slider (26), session-name (30) |
+| 2 | git-branch (96), git-changes (178) |
+| 3 | current-working-dir (26) |
+| 4 | session-cost (70), tokens-cached (30), tokens-input (26), tokens-output (188), tokens-total (30) |
+| 5 | session-usage (111), reset-timer (111), weekly-usage (111), weekly-reset-timer (111) |
+
+Each widget renders as `ESC[38;5;<code>m<text>ESC[39m`. A widget producing no value is dropped
+**along with its separator**, and a line whose widgets are all empty is dropped entirely. Each
+surviving line is prefixed with `ESC[0m`.
+
+## Formatting rules
+
+**Whole-line NBSP substitution.** Once a line is assembled, ccstatusline runs
+`line.replace(/ /g, "\xa0")`. This hits spaces *inside* widget text too, so `Opus 5` emits as
+`Opus<NBSP>5`. ANSI sequences contain no spaces, so a global replace is safe. Get this wrong and
+every line differs.
+
+**`formatTokens(count, decimals = 1)`**
+
+```js
+if (count >= 1e6 - 500 / 10 ** decimals) return `${(count / 1e6).toFixed(1)}M`;
+if (count >= 1000) return `${(count / 1000).toFixed(decimals)}k`;
+return count.toString();
+```
+
+Note the odd threshold: 999950 for `decimals=1`, 999500 for `decimals=0`. The `M` branch is
+always one decimal regardless. Token widgets use `decimals=1`; the context bar uses
+`decimals=0`.
+
+**Model name** — `display_name.replace(/\s*\(.*\)$/, "")`, so `Opus 5 (1M context)` → `Opus 5`.
+
+**Context bar** — `SLIDER_WIDTH = 10`, `▓` filled, `░` empty,
+`filled = Math.round(pct / 100 * width)`.
+
+> The bar is computed from the **unrounded** ratio (`total_input_tokens / context_window_size *
+> 100`) while the printed percentage is the **already-rounded** `used_percentage` from the
+> payload. So 14.7% prints `(15%)` but fills only one cell. Using the rounded value for both is
+> an off-by-one that shows up around each x.5% boundary.
+
+Full text: `<bar> <ftok(total_input_tokens, 0)>/<ftok(context_window_size, 0)>
+(<used_percentage>%)`. The token count is `total_input_tokens` **only** — output tokens are not
+included.
+
+**Session name** — *not* the payload's `session_name`. The widget scans the transcript backwards
+for the last entry with `type === "custom-title"` and returns `entry.customTitle`, i.e. the
+`/rename` title. The payload's `session_name` falls back to an AI-generated title, which
+ccstatusline never shows — which is why a session named by `/rename` renders and an
+auto-titled one appears blank.
+
+**Cumulative token totals** — summed over the whole transcript, but filtered:
+
+```js
+// collect every entry with message.usage, in file order → parsedEntries
+const hasStopReasonField = parsedEntries.some(e => Object.hasOwn(e.data.message, "stop_reason"));
+const entriesToCount = hasStopReasonField
+  ? parsedEntries.filter((entry, index) => {
+      const sr = entry.data.message?.stop_reason;
+      return Boolean(sr) || (sr === null && index === parsedEntries.length - 1);
+    })
+  : parsedEntries;
+```
+
+Then `cached = Σ(cache_read + cache_creation)`, `in = Σ input_tokens`, `out = Σ output_tokens`,
+`total = cached + in + out`.
+
+> This filter is the single subtlest thing here. It drops the partial entries a streamed
+> response leaves behind; omitting it inflated `cached` by 0.3M on a 504M session. `stop_reason
+> === null` is strict — an *absent* field is `undefined` and does **not** qualify, so jq needs
+> `has("stop_reason")` to tell the two apart. Sidechain (subagent) entries **are** counted;
+> there is no `isSidechain` filter on the sums.
+
+**Git** — `rev-parse --is-inside-work-tree`; branch from `branch --show-current` (worktree
+branches really are named `worktree-<name>`, with no transformation); changes from `diff
+--shortstat` **plus** `diff --cached --shortstat`, parsed with `/(\d+)\s+insertions?/` and
+`/(\d+)\s+deletions?/`, rendered `(+N,-M)`. Outside a repo the branch widget shows `⎇ no git`
+and the changes widget `(no git)`.
+
+**Durations** (reset timers)
+
+```js
+const totalHours = Math.floor(ms / 3600000);
+const m = Math.floor((ms % 3600000) / 60000);
+const d = Math.floor(totalHours / 24), h = totalHours % 24;
+[d > 0 && `${d}d`, h > 0 && `${h}hr`, m > 0 && `${m}m`].filter(Boolean).join(" ") || "0m";
+```
+
+Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
+
+**Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. **Cost** — `$` plus `toFixed(2)`.
+
+## How the replacement stays cheap
+
+Two mechanisms. Both matter; removing either puts the cost back.
+
+**Incremental transcript reads.** `~/.cache/cc-statusline/<session_id>.tok` holds a byte offset
+plus running totals. Each render reads only `tail -c +<offset+1> | head -c <size - offset>`,
+greps for `"usage"|"custom-title"`, and folds the delta in.
+
+> The `head -c` bound matters: without it, a transcript that grows during the read gets
+> partially re-counted on the next tick, because the recorded offset is the pre-read `size`.
+> That bug produced totals a few entries too high. It is the one invariant here the test suite
+> cannot stage deterministically.
+
+Because the `stop_reason` filter has that "…or the last entry, if null" clause, the trailing
+entry is **provisional** — a later entry demotes it. So the cache keeps three sets of sums:
+
+- `s_*` — stable, only entries with a truthy `stop_reason`, monotonically accumulating;
+- `a_*` — every entry, used only for legacy transcripts with no `stop_reason` field at all
+  (`has_sr = 0`);
+- `l_*` plus `last_null` — the trailing entry's contribution, recomputed each tick and added to
+  `s_*` only when it qualifies.
+
+**Torn-write guard.** If the transcript does not end in a newline, the tick is skipped entirely
+and the cached values are reused; the next render picks it up. This avoids consuming half a line
+and permanently losing it, at the cost of one possibly-stale render.
+
+**Git caching.** Keyed per directory, 5 s TTL, matching `gitCacheTtlSeconds`.
+
+> Historical bug worth knowing: the key was originally `${gkey: -180}`, which evaluates to the
+> **empty string** in bash, so every directory shared one cache file named `git_`. Sessions in a
+> genuinely non-repo directory then poisoned it for all the others, and every session showed
+> `⎇ no git`. Fixed with an explicit length check. If git widgets ever go wrong across the
+> board, look here first.
+
+## Validating a change
+
+Parity with the original was established by A/B running both renderers against the same live
+payloads: **25 of 27 renders were byte-identical across 9 concurrent sessions.** The 2 diffs
+were a one-second clock skew crossing a minute boundary (`19m` vs `18m`) — timing, not formula.
+
+To redo that (ccstatusline must be reinstalled first):
+
+1. Write a wrapper that reads stdin once, runs both renderers on it, prints ccstatusline's
+   output so the UI keeps working, and logs any diff.
+2. Point `statusLine.command` at the wrapper. **Back up `settings.json` first.**
+3. Let it collect across all sessions for a couple of minutes, then inspect.
+4. Restore `statusLine.command`.
+
+Two traps in that harness: redirect ccstatusline's stderr to `/dev/null` or npm warnings pollute
+the comparison, and clear `~/.cache/cc-statusline/*.tok` between runs or stale sums mask real
+changes.
+
+For an exact comparison with no timing skew, freeze a transcript: copy it, point a payload's
+`transcript_path` at the copy with a synthetic `session_id`, and run both against that. The
+script honours `CC_SL_NOW` (epoch seconds) to pin the clock — but pinning it to a *past* time
+makes the git cache never look fresh, so git re-runs on every render. `test/statusline.test.sh`
+relies on both of those.
+
+## Gotchas
+
+- The script parses Claude Code's payload schema directly. If that schema changes, the affected
+  widget silently blanks rather than erroring. There is no schema version check.
+- `jq`'s `|` binds **looser** than `,`, so `[ A | f, B | f ]` does not mean what it looks like.
+  Array elements each need their own parentheses.
+- jq cannot distinguish an absent key from a `null` value via `.key`; use `has("key")`. Required
+  for the `stop_reason` logic.
+- A transcript can contain a malformed JSON line. Any parser here must skip bad lines rather
+  than abort — `jq` without `fromjson?` dies on it.
