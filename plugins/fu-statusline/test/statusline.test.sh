@@ -227,6 +227,90 @@ eq "cached entry served inside the TTL" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
+echo "== divergence from the default branch =="
+# No case here fetches. The renderer must not either, so every "behind" below is
+# staged by fetching *outside* the render and then asserting what it reads.
+new_sandbox
+transcript >"$SANDBOX/t.jsonl"
+gitc() { git -C "$1" -c user.email=t@t -c user.name=t "${@:2}" >/dev/null 2>&1; }
+# Line 2 from a cold cache. The 5s TTL would otherwise serve the previous repo
+# state back for every assertion in this section.
+gitline() { rm -rf "$XDG_CACHE_HOME/cc-statusline"
+            payload s1 "$SANDBOX/t.jsonl" "$1" | render | sed -n 2p; }
+
+# A bare origin and a real `git clone`, so refs/remotes/origin/HEAD exists the
+# way it does in a working checkout — that ref is what settles main vs master.
+git init -q --bare "$SANDBOX/origin.git" >/dev/null 2>&1
+# The bare repo's own HEAD is what a clone copies into refs/remotes/origin/HEAD,
+# and `git init` still points it at master on this git — so name it, or the clone
+# lands on an unborn master and there is nothing to count.
+git -C "$SANDBOX/origin.git" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+seed="$SANDBOX/seed"
+git init -q "$seed" >/dev/null 2>&1
+git -C "$seed" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+printf '1\n' >"$seed/a.txt"
+gitc "$seed" add a.txt
+gitc "$seed" commit -qm init
+gitc "$seed" push -q "$SANDBOX/origin.git" main
+clone="$SANDBOX/clone"
+git clone -q "$SANDBOX/origin.git" "$clone" >/dev/null 2>&1
+
+eq "level with origin/main drops the widget entirely" \
+  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(gitline "$clone")"
+
+printf '2\n' >"$clone/a.txt"; gitc "$clone" commit -qam two
+printf '3\n' >"$clone/a.txt"; gitc "$clone" commit -qam three
+eq "two unpushed commits read as ahead" \
+  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(gitline "$clone")"
+
+# origin moves and the clone fetches: both sides now count.
+printf 'x\n' >"$seed/b.txt"
+gitc "$seed" add b.txt
+gitc "$seed" commit -qm remote
+gitc "$seed" push -q "$SANDBOX/origin.git" main
+gitc "$clone" fetch -q
+eq "a fetched remote commit reads as behind alongside ahead" \
+  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(gitline "$clone")"
+
+# Detached HEAD leaves the branch field empty, and it now sits ahead of two more
+# fields in the cache record — the exact shape a tab separator would collapse.
+gitc "$clone" update-ref --no-deref HEAD "$(git -C "$clone" rev-parse HEAD)"
+cold=$(gitline "$clone")
+warm=$(payload s1 "$SANDBOX/t.jsonl" "$clone" | render | sed -n 2p)
+eq "detached HEAD still counts, with no branch widget" \
+  "$(ln_ "$(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" "$cold"
+eq "and the cached read agrees with the cold one" "$cold" "$warm"
+
+# With no origin/HEAD the fallback list decides, and a remote candidate outranks
+# a local one of the same name. origin/master here is one commit behind the local
+# master, so picking the wrong base would print ⇡1 instead of ⇡2.
+loc="$SANDBOX/local"
+git init -q "$loc" >/dev/null 2>&1
+git -C "$loc" symbolic-ref HEAD refs/heads/master >/dev/null 2>&1
+printf '1\n' >"$loc/a.txt"; gitc "$loc" add a.txt; gitc "$loc" commit -qm c1
+c1=$(git -C "$loc" rev-parse HEAD)
+printf '2\n' >"$loc/a.txt"; gitc "$loc" commit -qam c2
+gitc "$loc" update-ref refs/remotes/origin/master "$c1"
+# Move onto a branch without a checkout: the trees are identical either way.
+gitc "$loc" update-ref refs/heads/feature HEAD
+git -C "$loc" symbolic-ref HEAD refs/heads/feature >/dev/null 2>&1
+printf '3\n' >"$loc/a.txt"; gitc "$loc" commit -qam c3
+eq "origin/master outranks the local master as the base" \
+  "$(ln_ "$(c $C_BODY feature) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(gitline "$loc")"
+
+# An unborn HEAD has nothing to count against and must not fail the render.
+empty="$SANDBOX/empty"
+git init -q "$empty" >/dev/null 2>&1
+git -C "$empty" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+eq "a repo with no commits renders without a widget" \
+  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(gitline "$empty")"
+cleanup
+
 echo "== an empty field does not shift the fields after it =="
 # Both cases below are the same defect: a tab is IFS *whitespace*, so bash
 # collapses runs of it and an empty field silently shifts every later field
