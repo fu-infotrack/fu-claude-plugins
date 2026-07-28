@@ -35,8 +35,14 @@ fi
 
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
-IFS=$'\t' read -r sid tpath dir < <(
-    jq -r '[.session_id // "", .transcript_path // "", .cwd // .workspace.current_dir // ""] | @tsv' <<<"$payload"
+# US (0x1f) separates fields everywhere a record is split back apart. A tab
+# cannot: bash treats IFS whitespace specially and collapses runs of it, so one
+# empty field silently shifts every later field left. That is reachable — an
+# absent transcript_path here, an empty branch on a detached HEAD below.
+SEP=$'\x1f'
+
+IFS="$SEP" read -r sid tpath dir < <(
+    jq -r --arg s "$SEP" '[.session_id // "", .transcript_path // "", .cwd // .workspace.current_dir // ""] | join($s)' <<<"$payload"
 ) || exit 0
 
 now=${CC_SL_NOW:-$(printf '%(%s)T' -1)}
@@ -51,7 +57,8 @@ now=${CC_SL_NOW:-$(printf '%(%s)T' -1)}
 # Transcripts predating the stop_reason field have none at all, so in that case
 # every entry counts and the a* sums are used instead.
 #
-# Cache line, tab separated:
+# Cache line, US separated (the .tok2 suffix marks that format; .tok files from
+# the earlier tab-separated version are simply ignored):
 #   offset s_cached s_in s_out a_cached a_in a_out has_sr last_null
 #   l_cached l_in l_out custom-title
 tok_cached=0
@@ -59,10 +66,10 @@ tok_in=0
 tok_out=0
 title=""
 if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
-    cache="$CACHE_DIR/$sid.tok"
+    cache="$CACHE_DIR/$sid.tok2"
     offset=0 sc=0 si=0 so=0 ac=0 ai=0 ao=0 hs=0 ln=0 lc=0 li=0 lo=0
     if [ -r "$cache" ]; then
-        IFS=$'\t' read -r offset sc si so ac ai ao hs ln lc li lo title <"$cache" || true
+        IFS="$SEP" read -r offset sc si so ac ai ao hs ln lc li lo title <"$cache" || true
     fi
 
     size=$(stat -c%s "$tpath" 2>/dev/null || echo 0)
@@ -78,7 +85,7 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
             tail -c "+$((offset + 1))" "$tpath" 2>/dev/null |
                 head -c "$((size - offset))" |
                 grep -aE '"usage"|"custom-title"' |
-                jq -Rrn --arg title "$title" '
+                jq -Rrn --arg title "$title" --arg s "$SEP" '
                     reduce inputs as $line (
                         {n: 0, sc: 0, si: 0, so: 0, ac: 0, ai: 0, ao: 0,
                          hs: 0, ln: 0, lc: 0, li: 0, lo: 0, title: $title};
@@ -104,11 +111,12 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
                               .title = $e.customTitle
                           else . end
                     )
-                    | [.n, .sc, .si, .so, .ac, .ai, .ao, .hs, .ln, .lc, .li, .lo, .title] | @tsv
+                    | [.n, .sc, .si, .so, .ac, .ai, .ao, .hs, .ln, .lc, .li, .lo, .title]
+                    | map(tostring) | join($s)
                 '
         )
         if [ -n "$delta" ]; then
-            IFS=$'\t' read -r d_n d_sc d_si d_so d_ac d_ai d_ao d_hs d_ln d_lc d_li d_lo title <<<"$delta"
+            IFS="$SEP" read -r d_n d_sc d_si d_so d_ac d_ai d_ao d_hs d_ln d_lc d_li d_lo title <<<"$delta"
             sc=$((sc + d_sc)) si=$((si + d_si)) so=$((so + d_so))
             ac=$((ac + d_ac)) ai=$((ai + d_ai)) ao=$((ao + d_ao))
             [ "$d_hs" = 1 ] && hs=1
@@ -117,7 +125,7 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
                 ln=$d_ln lc=$d_lc li=$d_li lo=$d_lo
             fi
         fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
             "$size" "$sc" "$si" "$so" "$ac" "$ai" "$ao" "$hs" "$ln" "$lc" "$li" "$lo" "$title" \
             >"$cache.$$" 2>/dev/null && mv -f "$cache.$$" "$cache" 2>/dev/null
     fi
@@ -132,7 +140,9 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
 fi
 
 # --- git ---------------------------------------------------------------------
-# Cache line: in_repo<TAB>branch<TAB>insertions<TAB>deletions
+# Cache line, US separated: in_repo branch insertions deletions. The branch is
+# empty on a detached HEAD, which is exactly the field a tab separator would
+# swallow. The git2_ prefix marks the format; git_ files are ignored.
 in_repo=0
 branch=""
 ins=0
@@ -142,7 +152,7 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     # Keep the key inside the filename length limit without letting distinct
     # directories collide onto one cache file.
     [ ${#gkey} -gt 200 ] && gkey="${#gkey}_${gkey:${#gkey}-190}"
-    gcache="$CACHE_DIR/git_$gkey"
+    gcache="$CACHE_DIR/git2_$gkey"
     fresh=0
     if [ -r "$gcache" ]; then
         mtime=$(stat -c%Y "$gcache" 2>/dev/null || echo 0)
@@ -150,7 +160,7 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     fi
 
     if [ "$fresh" = 1 ]; then
-        IFS=$'\t' read -r in_repo branch ins dels <"$gcache" || true
+        IFS="$SEP" read -r in_repo branch ins dels <"$gcache" || true
     else
         if [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]; then
             in_repo=1
@@ -165,7 +175,7 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
                 stats=${stats/"${BASH_REMATCH[0]}"/}
             done
         fi
-        printf '%s\t%s\t%s\t%s\n' "$in_repo" "$branch" "$ins" "$dels" \
+        printf '%s\x1f%s\x1f%s\x1f%s\n' "$in_repo" "$branch" "$ins" "$dels" \
             >"$gcache.$$" 2>/dev/null && mv -f "$gcache.$$" "$gcache" 2>/dev/null
     fi
 fi

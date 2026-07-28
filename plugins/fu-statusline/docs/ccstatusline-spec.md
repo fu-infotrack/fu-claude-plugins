@@ -159,7 +159,7 @@ Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
 
 Two mechanisms. Both matter; removing either puts the cost back.
 
-**Incremental transcript reads.** `~/.cache/cc-statusline/<session_id>.tok` holds a byte offset
+**Incremental transcript reads.** `~/.cache/cc-statusline/<session_id>.tok2` holds a byte offset
 plus running totals. Each render reads only `tail -c +<offset+1> | head -c <size - offset>`,
 greps for `"usage"|"custom-title"`, and folds the delta in.
 
@@ -183,6 +183,13 @@ and permanently losing it, at the cost of one possibly-stale render.
 
 **Git caching.** Keyed per directory, 5 s TTL, matching `gitCacheTtlSeconds`.
 
+**Records are US-separated (0x1f), not tab-separated.** A tab is IFS *whitespace*, so bash
+collapses runs of it: one empty field silently shifts every later field left. Both records here
+have a field that is legitimately empty — the payload's `transcript_path`, and the branch name
+on a detached HEAD, which sits in the *middle* of the git record and made the cached read
+return `branch=0`. The `.tok2` and `git2_` names mark the format; files from the tab-separated
+version are ignored rather than misparsed.
+
 > Historical bug worth knowing: the key was originally `${gkey: -180}`, which evaluates to the
 > **empty string** in bash, so every directory shared one cache file named `git_`. Sessions in a
 > genuinely non-repo directory then poisoned it for all the others, and every session showed
@@ -204,7 +211,7 @@ To redo that (ccstatusline must be reinstalled first):
 4. Restore `statusLine.command`.
 
 Two traps in that harness: redirect ccstatusline's stderr to `/dev/null` or npm warnings pollute
-the comparison, and clear `~/.cache/cc-statusline/*.tok` between runs or stale sums mask real
+the comparison, and clear `~/.cache/cc-statusline/*.tok2` between runs or stale sums mask real
 changes.
 
 For an exact comparison with no timing skew, freeze a transcript: copy it, point a payload's

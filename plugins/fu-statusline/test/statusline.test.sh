@@ -219,6 +219,42 @@ eq "cached entry served inside the TTL" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
+echo "== an empty field does not shift the fields after it =="
+# Both cases below are the same defect: a tab is IFS *whitespace*, so bash
+# collapses runs of it and an empty field silently shifts every later field
+# left. Records are US-separated for exactly this reason.
+new_sandbox
+repo="$SANDBOX/repo"
+mkdir -p "$repo"
+git init -q "$repo" >/dev/null 2>&1
+git -C "$repo" symbolic-ref HEAD refs/heads/testbr >/dev/null 2>&1
+printf '1\n' >"$repo/a.txt"
+git -C "$repo" add a.txt >/dev/null 2>&1
+git -C "$repo" -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+
+# An absent transcript_path sits between session_id and cwd: collapsing it made
+# cwd land in the transcript variable, and the git widgets read "no git".
+no_tp=$(jq -nc --arg cwd "$repo" --argjson now "$NOW" '{
+  session_id: "s1", transcript_path: "", cwd: $cwd,
+  context_window: { total_input_tokens: 0, context_window_size: 0, used_percentage: 0 } }')
+out=$(printf '%s' "$no_tp" | render)
+eq "cwd survives an empty transcript_path" \
+  "$(ln_ "$(c 96 testbr) $(c 178 '(+0,-0)')")" \
+  "$(printf '%s\n' "$out" | sed -n 2p)"
+
+# A detached HEAD has no branch name, and that empty field sits in the middle of
+# the git cache record. Reading it back used to yield branch="0".
+git -C "$repo" checkout -q --detach HEAD >/dev/null 2>&1
+transcript >"$SANDBOX/t.jsonl"
+# The render above cached this directory seconds ago and the TTL has not
+# expired, so drop the cache rather than measuring the stale entry.
+rm -rf "$XDG_CACHE_HOME/cc-statusline"
+cold=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
+warm=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
+eq "detached HEAD drops the branch widget" "$(ln_ "$(c 178 '(+0,-0)')")" "$cold"
+eq "and the cached read agrees with the cold one" "$cold" "$warm"
+cleanup
+
 echo "== a transcript with no stop_reason field at all counts every entry =="
 new_sandbox
 t="$SANDBOX/t.jsonl"
