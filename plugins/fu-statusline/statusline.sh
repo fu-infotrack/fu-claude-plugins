@@ -218,6 +218,20 @@ jq -rn \
         ((([0, ([100, $pct] | min)] | max) / 100 * 10) | round) as $f
         | (("▓" * $f) // "") + (("░" * (10 - $f)) // "");
 
+    # Palette. Three tiers of grey carry the structure, and hue is spent only on
+    # state, so a coloured cell always means a value crossed a threshold — glance
+    # at a quiet line and there is nothing to read. The greys clear WCAG AA on a
+    # dark ground (245 is 4.75:1 on #1e1e2e, 248 is 6.90, 253 is 11.73). The
+    # ccstatusline defaults this replaced failed three of seven — the three most
+    # reused ones — with the context bar worst at 2.83.
+    def c_primary: 253;   # the two numbers actually worth reading
+    def c_body:    248;   # identity fields
+    def c_detail:  245;   # diagnostic detail, and anything at rest
+    def c_ok:      108;
+    def c_warn:    179;
+    def c_crit:    174;
+    def sev($pct): if $pct > 85 then c_crit elif $pct >= 60 then c_warn else c_ok end;
+
     # 256-colour wrapper; empty widgets drop out along with their separator.
     def w($text; $c):
         if ($text // "") == "" then empty else "[38;5;\($c)m\($text)[39m" end;
@@ -237,27 +251,33 @@ jq -rn \
     | (if $ctx_size > 0 then ($ctx_used / $ctx_size * 100) else 0 end) as $ctx_ratio
     | ($cached + $tin + $tout) as $tok_total
 
+    | (($rl.five_hour.used_percentage // 0)) as $pct5
+    | (($rl.seven_day.used_percentage // 0)) as $pct7
+    # A clean tree is not news, so the diffstat only takes a colour once it moves.
+    | (if ($ins + $dels) > 0 then c_warn else c_detail end) as $c_changes
+
     | [
-        ([ w($model; 30),
-           w($p.effort.level // ""; 96),
-           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0)) (\($ctx_pct)%)"; 26),
-           w($title; 30) ] | line),
+        ([ w($model; c_primary),
+           w($p.effort.level // ""; c_detail),
+           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0)) (\($ctx_pct)%)"; sev($ctx_pct)),
+           w($title; c_body) ] | line),
 
-        ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; 96),
-           w(if $inrepo == 1 then "(+\($ins),-\($dels))" else "(no git)" end; 178) ] | line),
+        ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; c_body),
+           w(if $inrepo == 1 then "(+\($ins),-\($dels))" else "(no git)" end;
+             if $inrepo == 1 then $c_changes else c_detail end) ] | line),
 
-        ([ w($p.cwd // ""; 26) ] | line),
+        ([ w($p.cwd // ""; c_body) ] | line),
 
-        ([ w("$" + fix2($p.cost.total_cost_usd // 0); 70),
-           w(ftok($cached; 1); 30),
-           w(ftok($tin; 1); 26),
-           w(ftok($tout; 1); 188),
-           w(ftok($tok_total; 1); 30) ] | line),
+        ([ w("$" + fix2($p.cost.total_cost_usd // 0); c_body),
+           w(ftok($cached; 1); c_detail),
+           w(ftok($tin; 1); c_detail),
+           w(ftok($tout; 1); c_detail),
+           w(ftok($tok_total; 1); c_primary) ] | line),
 
-        ([ w(fix1($rl.five_hour.used_percentage // 0) + "%"; 111),
-           w(dur(($rl.five_hour.resets_at // $now) - $now); 111),
-           w(fix1($rl.seven_day.used_percentage // 0) + "%"; 111),
-           w(dur(($rl.seven_day.resets_at // $now) - $now); 111) ] | line)
+        ([ w(fix1($pct5) + "%"; sev($pct5)),
+           w(dur(($rl.five_hour.resets_at // $now) - $now); c_detail),
+           w(fix1($pct7) + "%"; sev($pct7)),
+           w(dur(($rl.seven_day.resets_at // $now) - $now); c_detail) ] | line)
       ]
     | .[]
 '

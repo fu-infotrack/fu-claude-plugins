@@ -1,9 +1,13 @@
 # The ccstatusline render contract
 
-`statusline.sh` reproduces the output of `ccstatusline@2.2.27` byte for byte. This document is
-the spec it implements, reverse-engineered from that package's minified bundle. **It is the
-expensive part of this plugin — the bundle is no longer on disk.** If it is ever needed again:
-`npm view ccstatusline@2.2.27`.
+`statusline.sh` implements the render contract of `ccstatusline@2.2.27`, reverse-engineered from
+that package's minified bundle. **It is the expensive part of this plugin — the bundle is no
+longer on disk.** If it is ever needed again: `npm view ccstatusline@2.2.27`.
+
+Every formatting rule below still holds exactly. **The palette does not** — as of v0.2.0 the
+colour codes are deliberately replaced, for reasons given under
+[Palette](#palette-a-deliberate-divergence). Output was byte-identical to ccstatusline through
+v0.1.1, and that is how the formatting was originally validated.
 
 Every rule below is checked by `test/statusline.test.sh`, whose expectations were derived from
 this document rather than captured from the implementation.
@@ -63,13 +67,16 @@ From `~/.config/ccstatusline/settings.json` at the switchover: five lines, `mini
 true` (so no `Model: ` style labels), `defaultSeparator: " "`, `colorLevel: 2` (256-colour),
 `gitCacheTtlSeconds: 5`.
 
-| Line | Widgets (256-colour code) |
+| Line | Widgets (ccstatusline's original 256-colour code) |
 |---|---|
 | 1 | model (30), thinking-effort (96), context-bar slider (26), session-name (30) |
 | 2 | git-branch (96), git-changes (178) |
 | 3 | current-working-dir (26) |
 | 4 | session-cost (70), tokens-cached (30), tokens-input (26), tokens-output (188), tokens-total (30) |
 | 5 | session-usage (111), reset-timer (111), weekly-usage (111), weekly-reset-timer (111) |
+
+The line and widget composition is still exactly this. The codes are not — see
+[Palette](#palette-a-deliberate-divergence).
 
 Each widget renders as `ESC[38;5;<code>m<text>ESC[39m`. A widget producing no value is dropped
 **along with its separator**, and a line whose widgets are all empty is dropped entirely. Each
@@ -154,6 +161,49 @@ const d = Math.floor(totalHours / 24), h = totalHours % 24;
 Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
 
 **Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. **Cost** — `$` plus `toFixed(2)`.
+
+## Palette: a deliberate divergence
+
+Two problems with the inherited codes, one measurable and one structural.
+
+**Measured.** On `#1e1e2e`, three of the seven fall below WCAG AA — but they are the three most
+reused, between them covering nine of the sixteen fields:
+
+| code | hex | ratio | used by |
+|---|---|---|---|
+| 26 | `#005fd7` | **2.83** | context bar, working dir, tokens-in |
+| 96 | `#875f87` | 3.14 | effort, git branch |
+| 30 | `#008787` | 3.76 | model, session name, tokens cached, tokens total |
+
+The worst is the context bar, which is the most-glanced widget on the line. The other four codes
+(`178`, `188`, `111`, `70`) pass on dark — and are exactly the four that fail on light, at 1.94,
+1.33, 2.03 and 2.56. Between the two grounds every colour in the set fails somewhere.
+
+**Structural, and the bigger of the two.** Hue marked *field type* — a property that never
+changes and that position already encodes. Nothing marked *state*. Code 30 covered the model,
+the session name, cached tokens and total tokens: four unrelated things. Colour was decoration.
+
+The replacement puts structure in greys and spends hue only on state:
+
+| Role | Code | Ratio on `#1e1e2e` | Applies to |
+|---|---|---|---|
+| primary | 253 | 11.73 | model, tokens-total |
+| body | 248 | 6.90 | session name, git branch, cwd, cost |
+| detail | 245 | 4.75 | effort, tokens cached/in/out, both reset timers |
+| ok | 108 | 6.65 | value under 60% |
+| warn | 179 | 7.96 | 60–85%, and a dirty worktree |
+| crit | 174 | 6.02 | value over 85% |
+
+`sev($pct)` grades the context bar and each rate-limit percentage independently. The bar grades
+on the **printed** (rounded) percentage, so the colour always agrees with the number beside it —
+unlike the fill, which uses the exact ratio. The diffstat takes `warn` only when
+`insertions + deletions > 0`. Reset timers never colour: a countdown is not news.
+
+Thresholds are `> 85` crit, `>= 60` warn, else ok. All six boundaries are pinned by tests.
+
+**Ground-specific.** These are tuned for a dark terminal and there is no set that serves both:
+on `#fdf6e3` the old `188` measures 1.33:1, and this grey ramp would have to invert (roughly
+234 / 238 / 241, with severity at 65 / 130 / 124).
 
 ## How the replacement stays cheap
 
