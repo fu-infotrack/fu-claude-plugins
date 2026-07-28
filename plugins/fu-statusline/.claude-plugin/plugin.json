@@ -1,0 +1,17 @@
+{
+  "name": "fu-statusline",
+  "version": "0.1.0",
+  "description": "A bash + jq status line renderer for Claude Code — a drop-in replacement for `npx ccstatusline` that renders the same five lines at a fraction of the cost. Ships install/uninstall commands that patch settings.json, because statusLine is not a plugin capability.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "statusline",
+    "ccstatusline",
+    "performance",
+    "bash",
+    "jq"
+  ],
+  "commands": "./commands/"
+}
