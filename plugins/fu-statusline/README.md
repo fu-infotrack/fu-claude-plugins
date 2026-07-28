@@ -24,7 +24,7 @@ contract it reproduces, and the two mechanisms that keep it cheap.
 | `~/.claude/settings.json` → `statusLine.command` | `~/.claude/statusline/statusline.sh` |
 | `~/.claude/statusline/previous-statusline.json` | the `statusLine` this displaced, for uninstall |
 | `~/.claude/statusline/settings.json.bak` | pre-change snapshot of `settings.json` |
-| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok`, `git_<escaped-dir>` |
+| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok2`, `git2_<escaped-dir>` |
 
 Installing is idempotent, keeps a `padding` / `refreshInterval` you have tuned, and refuses —
 changing nothing — if `settings.json` is malformed or a foreign file already sits at the install
