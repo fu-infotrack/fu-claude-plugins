@@ -75,8 +75,10 @@ true` (so no `Model: ` style labels), `defaultSeparator: " "`, `colorLevel: 2` (
 | 4 | session-cost (70), tokens-cached (30), tokens-input (26), tokens-output (188), tokens-total (30) |
 | 5 | session-usage (111), reset-timer (111), weekly-usage (111), weekly-reset-timer (111) |
 
-The line and widget composition is still exactly this. The codes are not — see
-[Palette](#palette-a-deliberate-divergence).
+The codes are not — see [Palette](#palette-a-deliberate-divergence). The composition is, with one
+addition: since v0.4.0 line 2 carries a **divergence widget** between the branch and the changes,
+which ccstatusline has no equivalent of. See **Git** under
+[Formatting rules](#formatting-rules) below.
 
 Each widget renders as `ESC[38;5;<code>m<text>ESC[39m`. A widget producing no value is dropped
 **along with its separator**, and a line whose widgets are all empty is dropped entirely. Each
@@ -148,6 +150,28 @@ branches really are named `worktree-<name>`, with no transformation); changes fr
 --shortstat` **plus** `diff --cached --shortstat`, parsed with `/(\d+)\s+insertions?/` and
 `/(\d+)\s+deletions?/`, rendered `(+N,-M)`. Outside a repo the branch widget shows `⎇ no git`
 and the changes widget `(no git)`.
+
+**Divergence** (an addition, not in ccstatusline) — `rev-list --count --left-right <base>...HEAD`,
+which prints `<behind>\t<ahead>`, rendered `⇡<ahead> ⇣<behind>`. Each side is omitted at zero and
+the widget disappears with both, so a branch sitting on its base adds nothing to the line. It
+stays `detail` grey in every state: being some commits ahead is the ordinary condition of working,
+not a threshold crossing, and the count itself is what you read.
+
+`<base>` is the **default branch**, resolved without touching the network:
+
+1. `symbolic-ref --short refs/remotes/origin/HEAD` — a local ref written at clone time. This is
+   what settles `main` vs `master`, and it is the case that normally hits.
+2. Otherwise the first of `refs/remotes/origin/main`, `refs/remotes/origin/master`,
+   `refs/heads/main`, `refs/heads/master` that exists — one `for-each-ref` call for all four,
+   picked in that priority (remote outranks local of the same name), since `for-each-ref` sorts
+   by refname rather than by pattern order. Reachable via `clone --single-branch`, or a clone made
+   by a git old enough not to write `origin/HEAD`.
+3. If none exists — a repo with no commits, or with no main/master at all — both counts stay 0 and
+   the widget is absent.
+
+**A status line must never fetch**, so the remote side of that comparison is only as current as
+your last fetch: `⇣` understates silently and `⇡` may already be pushed. Treat it as divergence
+from the last-known base, which is what the local refs actually record.
 
 **Durations** (reset timers)
 
@@ -231,14 +255,18 @@ entry is **provisional** — a later entry demotes it. So the cache keeps three 
 and the cached values are reused; the next render picks it up. This avoids consuming half a line
 and permanently losing it, at the cost of one possibly-stale render.
 
-**Git caching.** Keyed per directory, 5 s TTL, matching `gitCacheTtlSeconds`.
+**Git caching.** Keyed per directory, 5 s TTL, matching `gitCacheTtlSeconds`. The divergence
+counts ride in the same record and the same TTL, so they cost one extra `symbolic-ref` and one
+`rev-list` on a cache miss and nothing on a hit: **14.9 ms → 17.8 ms** per cold render, 20 runs
+each on this repo, with the warm path unchanged at 10 ms.
 
 **Records are US-separated (0x1f), not tab-separated.** A tab is IFS *whitespace*, so bash
 collapses runs of it: one empty field silently shifts every later field left. Both records here
 have a field that is legitimately empty — the payload's `transcript_path`, and the branch name
 on a detached HEAD, which sits in the *middle* of the git record and made the cached read
-return `branch=0`. The `.tok2` and `git2_` names mark the format; files from the tab-separated
-version are ignored rather than misparsed.
+return `branch=0`. The `.tok2` and `git3_` names mark the format; files from an earlier one
+(`git_`, `git2_`) are ignored rather than misparsed — **bump the prefix whenever the record gains
+a field**, or an in-flight cache entry feeds short input to a longer `read`.
 
 > Historical bug worth knowing: the key was originally `${gkey: -180}`, which evaluates to the
 > **empty string** in bash, so every directory shared one cache file named `git_`. Sessions in a

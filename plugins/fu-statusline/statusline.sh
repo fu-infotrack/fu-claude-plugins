@@ -15,7 +15,7 @@
 #
 # Layout mirrors ~/.config/ccstatusline/settings.json as of the switchover:
 #   1. model | thinking effort | context bar (slider) | session name
-#   2. git branch | git changes
+#   2. git branch | ahead/behind the default branch | git changes
 #   3. working directory
 #   4. session cost | tokens cached/in/out/total
 #   5. 5h usage | 5h reset | weekly usage | weekly reset
@@ -140,19 +140,22 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
 fi
 
 # --- git ---------------------------------------------------------------------
-# Cache line, US separated: in_repo branch insertions deletions. The branch is
-# empty on a detached HEAD, which is exactly the field a tab separator would
-# swallow. The git2_ prefix marks the format; git_ files are ignored.
+# Cache line, US separated: in_repo branch insertions deletions ahead behind.
+# The branch is empty on a detached HEAD, which is exactly the field a tab
+# separator would swallow. The git3_ prefix marks the format; git_ and git2_
+# files are ignored.
 in_repo=0
 branch=""
 ins=0
 dels=0
+ahead=0
+behind=0
 if [ -n "$dir" ] && [ -d "$dir" ]; then
     gkey=${dir//\//%}
     # Keep the key inside the filename length limit without letting distinct
     # directories collide onto one cache file.
     [ ${#gkey} -gt 200 ] && gkey="${#gkey}_${gkey:${#gkey}-190}"
-    gcache="$CACHE_DIR/git2_$gkey"
+    gcache="$CACHE_DIR/git3_$gkey"
     fresh=0
     if [ -r "$gcache" ]; then
         mtime=$(stat -c%Y "$gcache" 2>/dev/null || echo 0)
@@ -160,7 +163,7 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     fi
 
     if [ "$fresh" = 1 ]; then
-        IFS="$SEP" read -r in_repo branch ins dels <"$gcache" || true
+        IFS="$SEP" read -r in_repo branch ins dels ahead behind <"$gcache" || true
     else
         if [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]; then
             in_repo=1
@@ -174,8 +177,38 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
                 dels=$((dels + BASH_REMATCH[1]))
                 stats=${stats/"${BASH_REMATCH[0]}"/}
             done
+
+            # Commits ahead of / behind the default branch. origin/HEAD is a
+            # local symbolic ref, so resolving it settles main-vs-master without
+            # a network round trip; the fallback list covers a clone that never
+            # had one written (git clone --single-branch, or an older git). Note
+            # what this cannot do: a status line must never fetch, so the remote
+            # side is only as current as your last fetch and "behind" understates
+            # silently. Only the local refs are authoritative here.
+            base=$(git -C "$dir" symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null)
+            if [ -z "$base" ]; then
+                # One process for all four candidates; for-each-ref sorts by
+                # refname, so pick by our own priority rather than by output order.
+                have=$(git -C "$dir" for-each-ref --format='%(refname)' \
+                    refs/remotes/origin/main refs/remotes/origin/master \
+                    refs/heads/main refs/heads/master 2>/dev/null)
+                for cand in refs/remotes/origin/main refs/remotes/origin/master \
+                    refs/heads/main refs/heads/master; do
+                    if [[ $'\n'$have$'\n' == *$'\n'$cand$'\n'* ]]; then base=$cand; break; fi
+                done
+            fi
+            if [ -n "$base" ]; then
+                # --left-right on a symmetric range prints "<behind>\t<ahead>".
+                # An unborn HEAD makes this fail, leaving both at zero.
+                counts=$(git -C "$dir" rev-list --count --left-right "$base...HEAD" 2>/dev/null)
+                if [[ $counts =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]]; then
+                    behind=${BASH_REMATCH[1]}
+                    ahead=${BASH_REMATCH[2]}
+                fi
+            fi
         fi
-        printf '%s\x1f%s\x1f%s\x1f%s\n' "$in_repo" "$branch" "$ins" "$dels" \
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+            "$in_repo" "$branch" "$ins" "$dels" "$ahead" "$behind" \
             >"$gcache.$$" 2>/dev/null && mv -f "$gcache.$$" "$gcache" 2>/dev/null
     fi
 fi
@@ -191,6 +224,8 @@ jq -rn \
     --arg branch "${branch:-}" \
     --argjson ins "${ins:-0}" \
     --argjson dels "${dels:-0}" \
+    --argjson ahead "${ahead:-0}" \
+    --argjson behind "${behind:-0}" \
     --arg title "${title:-}" '
     # One decimal place, matching JS toFixed(1).
     def fix1($x): (($x * 10) | round) as $t | "\(($t / 10) | floor).\($t % 10)";
@@ -268,6 +303,12 @@ jq -rn \
     | (($rl.seven_day.used_percentage // 0)) as $pct7
     # A clean tree is not news, so the diffstat only takes a colour once it moves.
     | (if ($ins + $dels) > 0 then c_warn else c_detail end) as $c_changes
+    # Divergence from the default branch. Each side disappears at zero, and the
+    # whole widget with it on a branch that sits exactly on the base — being some
+    # commits ahead is the ordinary state of working, not a threshold crossing,
+    # so it stays grey and the count itself is the signal.
+    | ([ (if $ahead  > 0 then "⇡\($ahead)"  else empty end),
+         (if $behind > 0 then "⇣\($behind)" else empty end) ] | join(" ")) as $div
 
     | [
         ([ w($model; c_primary),
@@ -276,6 +317,7 @@ jq -rn \
            w($title; c_body) ] | line),
 
         ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; c_body),
+           w(if $inrepo == 1 then $div else "" end; c_detail),
            w(if $inrepo == 1 then "(+\($ins),-\($dels))" else "(no git)" end;
              if $inrepo == 1 then $c_changes else c_detail end) ] | line),
 

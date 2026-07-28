@@ -5,8 +5,8 @@ five lines and every one of its formatting rules, at **12.3 ms / 11 MB** per ren
 **605 ms / 103 MB** (49× / 9.4×).
 
 It matched ccstatusline byte for byte through v0.1.1. Since v0.2.0 the **palette deliberately
-diverges** — see below. Everything else about the render contract is unchanged and still tested
-against it.
+diverges**, and v0.4.0 adds a **divergence widget** ccstatusline has no equivalent of — both
+below. Everything else about the render contract is unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -28,7 +28,7 @@ contract it reproduces, and the two mechanisms that keep it cheap.
 | `~/.claude/settings.json` → `statusLine.command` | `~/.claude/statusline/statusline.sh` |
 | `~/.claude/statusline/previous-statusline.json` | the `statusLine` this displaced, for uninstall |
 | `~/.claude/statusline/settings.json.bak` | pre-change snapshot of `settings.json` |
-| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok2`, `git2_<escaped-dir>` |
+| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok2`, `git3_<escaped-dir>` |
 
 Installing is idempotent, keeps a `padding` / `refreshInterval` you have tuned, and refuses —
 changing nothing — if `settings.json` is malformed or a foreign file already sits at the install
@@ -84,6 +84,28 @@ amber bar on a large window as a prompt to look at the printed token count, not 
 
 Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
 terminal the old `188` measured 1.33:1, and these greys would need to invert.
+
+## Divergence from the default branch
+
+Line 2 reads `<branch> ⇡<ahead> ⇣<behind> (+N,-M)`. Each arrow is omitted at zero and the widget
+vanishes with both, so a branch level with its base costs nothing on the line.
+
+The base is the default branch, resolved locally: `refs/remotes/origin/HEAD` if the clone has one
+(it settles `main` vs `master` for you), else the first of `origin/main`, `origin/master`, local
+`main`, local `master` that exists. No base — a repo with no commits, or with neither name — and
+the widget stays absent.
+
+**It never fetches.** A status line runs every few seconds; going to the network there is not an
+option. So the remote side is only as current as your last fetch: `⇣` understates until you fetch,
+and `⇡` can include commits you have already pushed. It is divergence from the last-known base,
+which is what the local refs record.
+
+It stays grey in every state, because being some commits ahead is the ordinary condition of
+working, not a threshold crossing — and hue on this line already means "the tree is dirty".
+
+Cost is one `symbolic-ref` and one `rev-list` behind the existing 5 s git cache — two more forks
+on a miss, nothing on a hit. Measured on this repo, 20 cold renders each: **14.9 ms → 17.8 ms**.
+Warm renders are untouched at 10 ms, and at most one render per directory per 5 s is cold.
 
 ## Configuration
 
