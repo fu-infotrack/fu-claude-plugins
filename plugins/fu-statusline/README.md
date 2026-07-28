@@ -60,14 +60,27 @@ So the palette is now three tiers of grey for structure, with hue reserved for s
 | primary | 253 | 11.73:1 | model, total tokens |
 | body | 248 | 6.90:1 | session name, git branch, working dir, cost |
 | detail | 245 | 4.75:1 | effort, cached/in/out tokens, reset timers, anything at rest |
-| ok | 108 | 6.65:1 | under 60% |
-| warn | 179 | 7.96:1 | 60–85%, and a worktree with changes |
-| crit | 174 | 6.02:1 | over 85% |
+| ok | 108 | 6.65:1 | under 60%, and under 256k tokens |
+| warn | 179 | 7.96:1 | 60–85% or 256k–512k tokens, and a worktree with changes |
+| crit | 174 | 6.02:1 | over 85% or at least 512k tokens |
 
 The context bar and the two rate-limit percentages take their colour from their own value; the
 diffstat colours only once the tree is dirty. A line with no colour in it needs nothing from you,
 which is the property worth having — the reset timers stay grey precisely because a countdown is
 not news.
+
+The rate-limit percentages are graded on percent alone. The **context bar is graded on both**
+percent and absolute tokens, and shows whichever reading is worse, because percent alone is the
+wrong denominator once window sizes differ by 5×:
+
+- **Percent** carries compaction proximity. It is the only useful reading on a 200k window, which
+  tops out below the first token step and would otherwise sit quiet at 95% full.
+- **Absolute tokens** carry the long-context reading a 1M window hides. 300k tokens is 30% of that
+  window and already past the first step.
+
+The 256k and 512k steps are bucket edges borrowed from how MRCR long-context results are binned —
+not a measured degradation threshold, and none is published for a current 1M-window model. Read an
+amber bar on a large window as a prompt to look at the printed token count, not as a cliff.
 
 Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
 terminal the old `188` measured 1.33:1, and these greys would need to invert.

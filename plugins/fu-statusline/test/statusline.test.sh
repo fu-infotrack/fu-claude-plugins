@@ -314,7 +314,9 @@ cleanup
 
 echo "== severity: colour tracks the value, at the boundaries =="
 # The whole point of Scheme A is that hue means "this crossed a threshold".
-# Boundaries are: under 60 quiet, 60 through 85 amber, above 85 rose.
+# Percent boundaries are: under 60 quiet, 60 through 85 amber, above 85 rose.
+# The context bar grades absolute tokens on the same three tiers as well, and
+# shows whichever of the two readings is worse.
 new_sandbox
 sev_payload() { # sev_payload <ctx_pct> <five_hour_pct> <seven_day_pct>
   jq -nc --argjson c "$1" --argjson f "$2" --argjson s "$3" --argjson now "$NOW" '{
@@ -334,6 +336,30 @@ eq "context 60% turns amber"   "$C_WARN" "$(bar_colour 60)"
 eq "context 85% is still amber" "$C_WARN" "$(bar_colour 85)"
 eq "context 86% turns rose"    "$C_CRIT" "$(bar_colour 86)"
 eq "context 100% is rose"      "$C_CRIT" "$(bar_colour 100)"
+
+# The context bar also grades absolute tokens, because a 1M window hides
+# long-context territory behind a low percentage. Steps are 256k and 512k.
+tok_payload() { # tok_payload <total_input_tokens> <context_window_size>
+  jq -nc --argjson t "$1" --argjson w "$2" --argjson now "$NOW" '{
+    session_id: "tok", transcript_path: "", cwd: "",
+    context_window: { total_input_tokens: $t, context_window_size: $w,
+                      used_percentage: (($t / $w) * 100) },
+    rate_limits: { five_hour: { used_percentage: 0, resets_at: $now },
+                   seven_day: { used_percentage: 0, resets_at: $now } } }'
+}
+tok_colour() { tok_payload "$1" "$2" | render | sed -n 1p | grep -o '38;5;[0-9]*' | head -1 | cut -d';' -f3; }
+
+# All four sit under 60% of a 1M window, so percent alone would keep them quiet.
+eq "255999 tokens is quiet"        "$C_OK"   "$(tok_colour 255999 1000000)"
+eq "256000 tokens turns amber"     "$C_WARN" "$(tok_colour 256000 1000000)"
+eq "511999 tokens is still amber"  "$C_WARN" "$(tok_colour 511999 1000000)"
+eq "512000 tokens turns rose"      "$C_CRIT" "$(tok_colour 512000 1000000)"
+
+# Percent is still graded, so a small window keeps its compaction warning even
+# though it can never reach the first token step.
+eq "190k of a 200k window is rose" "$C_CRIT" "$(tok_colour 190000 200000)"
+eq "130k of a 200k window is amber" "$C_WARN" "$(tok_colour 130000 200000)"
+eq "100k of a 200k window is quiet" "$C_OK"   "$(tok_colour 100000 200000)"
 
 # The two windows are graded independently, and the reset timers never colour.
 eq "5h rose, 7d amber, both timers at rest" \
