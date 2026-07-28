@@ -103,8 +103,9 @@ which is what the local refs record.
 It stays grey in every state, because being some commits ahead is the ordinary condition of
 working, not a threshold crossing — and hue on this line already means "the tree is dirty".
 
-Cost is one `symbolic-ref` and one `rev-list` behind the existing 5 s git cache: ~1 ms on a miss,
-nothing on a hit.
+Cost is one `symbolic-ref` and one `rev-list` behind the existing 5 s git cache — two more forks
+on a miss, nothing on a hit. Measured on this repo, 20 cold renders each: **14.9 ms → 17.8 ms**.
+Warm renders are untouched at 10 ms, and at most one render per directory per 5 s is cold.
 
 ## Configuration
 

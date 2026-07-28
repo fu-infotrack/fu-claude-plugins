@@ -257,7 +257,8 @@ and permanently losing it, at the cost of one possibly-stale render.
 
 **Git caching.** Keyed per directory, 5 s TTL, matching `gitCacheTtlSeconds`. The divergence
 counts ride in the same record and the same TTL, so they cost one extra `symbolic-ref` and one
-`rev-list` — about **1 ms** together — on a cache miss, and nothing on a hit.
+`rev-list` on a cache miss and nothing on a hit: **14.9 ms → 17.8 ms** per cold render, 20 runs
+each on this repo, with the warm path unchanged at 10 ms.
 
 **Records are US-separated (0x1f), not tab-separated.** A tab is IFS *whitespace*, so bash
 collapses runs of it: one empty field silently shifts every later field left. Both records here
