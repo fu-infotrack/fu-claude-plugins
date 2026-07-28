@@ -232,6 +232,19 @@ jq -rn \
     def c_crit:    174;
     def sev($pct): if $pct > 85 then c_crit elif $pct >= 60 then c_warn else c_ok end;
 
+    # Context takes the worse of two readings, because percent alone is the wrong
+    # denominator once windows differ by 5x. Percent still carries compaction
+    # proximity — a 200k-window model tops out below the first token step, so it
+    # would otherwise sit quiet at 95% full. Absolute tokens carry the long-context
+    # reading a 1M window hides: 300k tokens is 30% full and already past the first
+    # step. Steps are 256k and 512k; they are bucket edges borrowed from how MRCR
+    # results are binned, not a measured knee, so treat them as a prompt to look at
+    # the printed count rather than a cliff.
+    def sev_ctx($pct; $tok):
+        if $pct > 85 or $tok >= 512000 then c_crit
+        elif $pct >= 60 or $tok >= 256000 then c_warn
+        else c_ok end;
+
     # 256-colour wrapper; empty widgets drop out along with their separator.
     def w($text; $c):
         if ($text // "") == "" then empty else "[38;5;\($c)m\($text)[39m" end;
@@ -259,7 +272,7 @@ jq -rn \
     | [
         ([ w($model; c_primary),
            w($p.effort.level // ""; c_detail),
-           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0)) (\($ctx_pct)%)"; sev($ctx_pct)),
+           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0)) (\($ctx_pct)%)"; sev_ctx($ctx_pct; $ctx_used)),
            w($title; c_body) ] | line),
 
         ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; c_body),
