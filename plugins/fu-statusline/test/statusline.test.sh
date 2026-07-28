@@ -32,6 +32,14 @@ eq() { # eq <desc> <expected> <actual>
 }
 
 ESC=$'\033'
+
+# Scheme A. Three tiers of grey for structure; hue only for state.
+C_PRIMARY=253   # the two numbers worth reading
+C_BODY=248      # identity fields
+C_DETAIL=245    # detail, and anything at rest
+C_OK=108        # under 60%
+C_WARN=179      # 60-85%, and a dirty worktree
+C_CRIT=174      # over 85%
 NB=$' '
 NOW=1785000000
 
@@ -100,15 +108,15 @@ JSONL
 #   five_hour  2160s   -> "36m"
 #   seven_day  232560s -> 64h36m -> "2d 16hr 36m"
 expected_golden() { # expected_golden <cwd>
-  ln_ "$(c 30 'Opus 5') $(c 96 xhigh) $(c 26 '▓░░░░░░░░░ 147k/1.0M (15%)') $(c 30 log-sweep)"
+  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M (15%)') $(c $C_BODY log-sweep)"
   printf '\n'
-  ln_ "$(c 96 '⎇ no git') $(c 178 '(no git)')"
+  ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
   printf '\n'
-  ln_ "$(c 26 "$1")"
+  ln_ "$(c $C_BODY "$1")"
   printf '\n'
-  ln_ "$(c 70 '$80.09') $(c 30 3.8k) $(c 26 16) $(c 188 157) $(c 30 4.0k)"
+  ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.8k) $(c $C_DETAIL 16) $(c $C_DETAIL 157) $(c $C_PRIMARY 4.0k)"
   printf '\n'
-  ln_ "$(c 111 33.0%) $(c 111 36m) $(c 111 28.0%) $(c 111 '2d 16hr 36m')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d 16hr 36m')"
 }
 
 echo "== golden: five lines, exact bytes =="
@@ -154,15 +162,15 @@ after=$(payload s1 "$t" "$SANDBOX/nogit" | render)
 # so its 300/1/7 drops back out while the new 0/100/200 comes in:
 # stable 3500/15/150 + 0/100/200 => cached 3500, in 115, out 350, total 3965.
 expected_after=$(
-  ln_ "$(c 30 'Opus 5') $(c 96 xhigh) $(c 26 '▓░░░░░░░░░ 147k/1.0M (15%)') $(c 30 log-sweep)"
+  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M (15%)') $(c $C_BODY log-sweep)"
   printf '\n'
-  ln_ "$(c 96 '⎇ no git') $(c 178 '(no git)')"
+  ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
   printf '\n'
-  ln_ "$(c 26 "$SANDBOX/nogit")"
+  ln_ "$(c $C_BODY "$SANDBOX/nogit")"
   printf '\n'
-  ln_ "$(c 70 '$80.09') $(c 30 3.5k) $(c 26 115) $(c 188 350) $(c 30 4.0k)"
+  ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 115) $(c $C_DETAIL 350) $(c $C_PRIMARY 4.0k)"
   printf '\n'
-  ln_ "$(c 111 33.0%) $(c 111 36m) $(c 111 28.0%) $(c 111 '2d 16hr 36m')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d 16hr 36m')"
 )
 eq "completed line is counted, provisional one demoted" "$expected_after" "$after"
 cleanup
@@ -183,7 +191,7 @@ printf '3\n' >"$repo/a.txt"      # unstaged: +1 -1
 transcript >"$SANDBOX/t.jsonl"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | render)
 eq "branch and summed diffstat" \
-  "$(ln_ "$(c 96 testbr) $(c 178 '(+2,-2)')")" \
+  "$(ln_ "$(c $C_BODY testbr) $(c $C_WARN '(+2,-2)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
@@ -207,7 +215,7 @@ transcript >"$SANDBOX/t.jsonl"
 payload s1 "$SANDBOX/t.jsonl" "$SANDBOX/nogit" | bash "$SL" >/dev/null
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | bash "$SL")
 eq "repo not poisoned by the non-repo render" \
-  "$(ln_ "$(c 96 testbr) $(c 178 '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 
 # Within the TTL a second render must not re-shell out to git, so a change made
@@ -215,7 +223,7 @@ eq "repo not poisoned by the non-repo render" \
 printf '2\n' >"$repo/a.txt"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | bash "$SL")
 eq "cached entry served inside the TTL" \
-  "$(ln_ "$(c 96 testbr) $(c 178 '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
@@ -239,7 +247,7 @@ no_tp=$(jq -nc --arg cwd "$repo" --argjson now "$NOW" '{
   context_window: { total_input_tokens: 0, context_window_size: 0, used_percentage: 0 } }')
 out=$(printf '%s' "$no_tp" | render)
 eq "cwd survives an empty transcript_path" \
-  "$(ln_ "$(c 96 testbr) $(c 178 '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 
 # A detached HEAD has no branch name, and that empty field sits in the middle of
@@ -251,7 +259,7 @@ transcript >"$SANDBOX/t.jsonl"
 rm -rf "$XDG_CACHE_HOME/cc-statusline"
 cold=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
 warm=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
-eq "detached HEAD drops the branch widget" "$(ln_ "$(c 178 '(+0,-0)')")" "$cold"
+eq "detached HEAD drops the branch widget" "$(ln_ "$(c $C_DETAIL '(+0,-0)')")" "$cold"
 eq "and the cached read agrees with the cold one" "$cold" "$warm"
 cleanup
 
@@ -265,7 +273,7 @@ JSONL
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # cached 3500, in 15, out 150, total 3665 -> fix1(3.665) = "3.7k"
 eq "legacy totals" \
-  "$(ln_ "$(c 70 '$80.09') $(c 30 3.5k) $(c 26 15) $(c 188 150) $(c 30 3.7k)")" \
+  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 15) $(c $C_DETAIL 150) $(c $C_PRIMARY 3.7k)")" \
   "$out"
 cleanup
 
@@ -280,7 +288,7 @@ t="$SANDBOX/t.jsonl"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "totals ignore the bad line" \
-  "$(ln_ "$(c 70 '$80.09') $(c 30 3.5k) $(c 26 15) $(c 188 150) $(c 30 3.7k)")" \
+  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 15) $(c $C_DETAIL 150) $(c $C_PRIMARY 3.7k)")" \
   "$(printf '%s\n' "$out" | sed -n 4p)"
 cleanup
 
@@ -294,14 +302,44 @@ eq "exit 0" "0" "$rc"
 # whose widgets are all empty is dropped entirely — so the cwd line disappears.
 eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
 eq "context bar at zero" \
-  "$(ln_ "$(c 26 '░░░░░░░░░░ 0/0 (0%)')")" \
+  "$(ln_ "$(c $C_OK '░░░░░░░░░░ 0/0 (0%)')")" \
   "$(printf '%s\n' "$out" | sed -n 1p)"
 eq "zeroed cost and tokens" \
-  "$(ln_ "$(c 70 '$0.00') $(c 30 0) $(c 26 0) $(c 188 0) $(c 30 0)")" \
+  "$(ln_ "$(c $C_BODY '$0.00') $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_PRIMARY 0)")" \
   "$(printf '%s\n' "$out" | sed -n 3p)"
 eq "zeroed usage and timers" \
-  "$(ln_ "$(c 111 0.0%) $(c 111 0m) $(c 111 0.0%) $(c 111 0m)")" \
+  "$(ln_ "$(c $C_OK 0.0%) $(c $C_DETAIL 0m) $(c $C_OK 0.0%) $(c $C_DETAIL 0m)")" \
   "$(printf '%s\n' "$out" | sed -n 4p)"
+cleanup
+
+echo "== severity: colour tracks the value, at the boundaries =="
+# The whole point of Scheme A is that hue means "this crossed a threshold".
+# Boundaries are: under 60 quiet, 60 through 85 amber, above 85 rose.
+new_sandbox
+sev_payload() { # sev_payload <ctx_pct> <five_hour_pct> <seven_day_pct>
+  jq -nc --argjson c "$1" --argjson f "$2" --argjson s "$3" --argjson now "$NOW" '{
+    session_id: "sev", transcript_path: "", cwd: "",
+    context_window: { total_input_tokens: 0, context_window_size: 0, used_percentage: $c },
+    rate_limits: { five_hour: { used_percentage: $f, resets_at: $now },
+                   seven_day: { used_percentage: $s, resets_at: $now } } }'
+}
+# With no cwd the working-directory line drops out entirely, leaving four lines:
+# bar, git, cost/tokens, limits.
+bar_colour()    { sev_payload "$1" 0 0 | render | sed -n 1p | grep -o '38;5;[0-9]*' | head -1 | cut -d';' -f3; }
+limit_colours() { sev_payload 0 "$1" "$2" | render | sed -n 4p | grep -o '38;5;[0-9]*' | cut -d';' -f3 | tr '\n' ' '; }
+
+eq "context 0% is quiet"       "$C_OK"   "$(bar_colour 0)"
+eq "context 59% is quiet"      "$C_OK"   "$(bar_colour 59)"
+eq "context 60% turns amber"   "$C_WARN" "$(bar_colour 60)"
+eq "context 85% is still amber" "$C_WARN" "$(bar_colour 85)"
+eq "context 86% turns rose"    "$C_CRIT" "$(bar_colour 86)"
+eq "context 100% is rose"      "$C_CRIT" "$(bar_colour 100)"
+
+# The two windows are graded independently, and the reset timers never colour.
+eq "5h rose, 7d amber, both timers at rest" \
+  "$C_CRIT $C_DETAIL $C_WARN $C_DETAIL " "$(limit_colours 88 71)"
+eq "both windows quiet" \
+  "$C_OK $C_DETAIL $C_OK $C_DETAIL " "$(limit_colours 12 4)"
 cleanup
 
 echo "== empty stdin exits quietly =="
@@ -321,7 +359,7 @@ head -n 1 "$t" >"$t.small" && mv "$t.small" "$t"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # Only entry 1 remains: cached 1500, in 10, out 100, total 1610 -> "1.6k"
 eq "totals recomputed from scratch" \
-  "$(ln_ "$(c 70 '$80.09') $(c 30 1.5k) $(c 26 10) $(c 188 100) $(c 30 1.6k)")" \
+  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 1.5k) $(c $C_DETAIL 10) $(c $C_DETAIL 100) $(c $C_PRIMARY 1.6k)")" \
   "$out"
 cleanup
 

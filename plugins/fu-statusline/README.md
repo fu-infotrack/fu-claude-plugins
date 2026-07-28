@@ -1,8 +1,12 @@
 # fu-statusline
 
-A Claude Code status line renderer in bash + jq. Drop-in replacement for
-`npx -y ccstatusline@latest`: same five lines, byte for byte, at **12.3 ms / 11 MB** per render
-instead of **605 ms / 103 MB** (49× / 9.4×).
+A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@latest`: the same
+five lines and every one of its formatting rules, at **12.3 ms / 11 MB** per render instead of
+**605 ms / 103 MB** (49× / 9.4×).
+
+It matched ccstatusline byte for byte through v0.1.1. Since v0.2.0 the **palette deliberately
+diverges** — see below. Everything else about the render contract is unchanged and still tested
+against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -41,11 +45,38 @@ A `statusLine` pointing at something else is never touched.
 Both commands are thin wrappers over `scripts/install.sh` and `scripts/uninstall.sh`, which are
 runnable directly from a checkout.
 
+## The palette
+
+ccstatusline's default colours spend hue on **field type** — which never changes, and which
+position already tells you. Code 30 marked the model, the session name, cached tokens and total
+tokens: four things with nothing in common. Nothing marked **state**, which is the only reason to
+glance at a status line. Three of the seven also failed WCAG AA on a dark terminal — the three
+most reused, covering nine of the sixteen fields — with the context bar worst at 2.83:1.
+
+So the palette is now three tiers of grey for structure, with hue reserved for state:
+
+| Role | Code | Contrast on `#1e1e2e` | Used by |
+|---|---|---|---|
+| primary | 253 | 11.73:1 | model, total tokens |
+| body | 248 | 6.90:1 | session name, git branch, working dir, cost |
+| detail | 245 | 4.75:1 | effort, cached/in/out tokens, reset timers, anything at rest |
+| ok | 108 | 6.65:1 | under 60% |
+| warn | 179 | 7.96:1 | 60–85%, and a worktree with changes |
+| crit | 174 | 6.02:1 | over 85% |
+
+The context bar and the two rate-limit percentages take their colour from their own value; the
+diffstat colours only once the tree is dirty. A line with no colour in it needs nothing from you,
+which is the property worth having — the reset timers stay grey precisely because a countdown is
+not news.
+
+Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
+terminal the old `188` measured 1.33:1, and these greys would need to invert.
+
 ## Configuration
 
-None, deliberately. The layout is hardcoded to the five lines and 256-colour codes documented in
-the spec; paths derive from `$HOME` (or `$CLAUDE_CONFIG_DIR` and `$XDG_CACHE_HOME` where set).
-Refresh cadence is Claude Code's own `statusLine.refreshInterval`.
+None, deliberately. The layout and palette are hardcoded; paths derive from `$HOME` (or
+`$CLAUDE_CONFIG_DIR` and `$XDG_CACHE_HOME` where set). Refresh cadence is Claude Code's own
+`statusLine.refreshInterval`.
 
 Making the layout configurable means reading `~/.config/ccstatusline/settings.json` and
 reimplementing its widget registry and colour-name mapping in bash — a much larger job that was
