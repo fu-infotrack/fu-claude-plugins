@@ -292,10 +292,13 @@ jq -rn \
     | (($p.model.display_name // $p.model.id // "") | sub("\\s*\\(.*\\)$"; "")) as $model
     | ($cw.total_input_tokens // 0) as $ctx_used
     | ($cw.context_window_size // 0) as $ctx_size
+    # Percent is no longer printed: ten cells and a token count already say how
+    # full the window is, so a third rendering of the same number only widened
+    # the line. It still *grades* the bar, so it is still computed.
+    # NB: this jq program is single-quoted in bash — no apostrophes below.
     | (($cw.used_percentage // 0) | floor) as $ctx_pct
-    # The bar tracks the exact ratio; the printed percentage is the already
-    # rounded one from the payload. ccstatusline splits these the same way, so
-    # e.g. 14.7% prints as 15% but still fills only one of the ten cells.
+    # The bar tracks the exact ratio, not the rounded percent from the payload, so
+    # 14.7% fills only one of the ten cells. ccstatusline splits these the same way.
     | (if $ctx_size > 0 then ($ctx_used / $ctx_size * 100) else 0 end) as $ctx_ratio
     | ($cached + $tin + $tout) as $tok_total
 
@@ -313,7 +316,7 @@ jq -rn \
     | [
         ([ w($model; c_primary),
            w($p.effort.level // ""; c_detail),
-           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0)) (\($ctx_pct)%)"; sev_ctx($ctx_pct; $ctx_used)),
+           w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0))"; sev_ctx($ctx_pct; $ctx_used)),
            w($title; c_body) ] | line),
 
         ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; c_body),
