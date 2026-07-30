@@ -190,6 +190,16 @@ const d = Math.floor(totalHours / 24), h = totalHours % 24;
 
 Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
 
+**Since v0.5.1 the units are compacted to `2d16h56m`** — a divergence: `hr` → `h`, and the parts
+join with no separator. One letter per unit is already unambiguous, and the inner spaces were the
+same character line 5 uses between its four widgets, so a two- or three-part countdown read as
+several fields instead of one. The arithmetic is unchanged.
+
+The countdown is `resets_at - now`, both epoch seconds — `resets_at` straight off the payload,
+`now` from `$CC_SL_NOW` when set (the test clock) else `printf '%(%s)T'`. Nothing is polled or
+tracked between renders. A missing `resets_at` defaults to `now`, and a past one clamps at zero;
+both print `0m`.
+
 **Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. **Cost** — `$` plus `toFixed(2)`.
 
 ## Palette: a deliberate divergence
