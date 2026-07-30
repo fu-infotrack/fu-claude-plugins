@@ -4,7 +4,7 @@
 # token on this line is the marker install/uninstall use to recognise their own
 # copy, so do not remove it.
 #
-# Renders the payload on stdin as four lines, without the 3.3 MB React/Ink
+# Renders the payload on stdin as three lines, without the 3.3 MB React/Ink
 # bundle and without re-reading the whole transcript on every tick. Two things
 # make it cheap:
 #
@@ -15,20 +15,26 @@
 #
 # Layout started from ~/.config/ccstatusline/settings.json and has diverged:
 #   1. model | thinking effort | context bar (slider) | session name
-#   2. git branch | ahead/behind the default branch | git changes
-#   3. working directory, $HOME-collapsed and glob-abbreviated past CWD_BUDGET
-#   4. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
+#   2. working directory | git branch | ahead/behind the default branch | changes
+#   3. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
 #
-# Line 4 is ccstatusline's last two lines merged. The four rate-limit fields are
-# padded to a constant width and lead, so they hold fixed columns; the two that
-# grow with the session trail, where their jitter has nothing to push.
+# Lines 2 and 3 are each a pair of ccstatusline lines merged, and both are ordered
+# by how much a field moves: what holds still leads and what jitters trails, where
+# a widening field has nothing to its right to push. On line 2 that puts the
+# directory first (fixed for a session, and the widest) and the diffstat last; on
+# line 3 the four rate-limit fields are padded to a constant width and lead, with
+# the token total and cost — which only grow — behind them.
 
 set -uo pipefail
 
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cc-statusline"
 GIT_TTL=5
-# Columns of working directory printed verbatim before line 3 starts abbreviating.
-CWD_BUDGET=44
+# Target width of line 2 — directory plus the git widgets. What is left after the
+# git widgets is what the directory may spend before it starts abbreviating, so a
+# quiet git side buys columns and a long branch name gives them back. 56 leaves
+# the directory the 44 it had when it was a line of its own and the git side is
+# its usual `main (+0,-0)`.
+LINE_TARGET=56
 
 payload=$(cat)
 [ -n "$payload" ] || exit 0
@@ -145,22 +151,23 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
 fi
 
 # --- git ---------------------------------------------------------------------
-# Cache line, US separated: in_repo branch insertions deletions ahead behind.
+# Cache line, US separated: in_repo branch insertions deletions ahead behind top.
 # The branch is empty on a detached HEAD, which is exactly the field a tab
-# separator would swallow. The git3_ prefix marks the format; git_ and git2_
-# files are ignored.
+# separator would swallow. The git4_ prefix marks the format; git_, git2_ and
+# git3_ files are ignored.
 in_repo=0
 branch=""
 ins=0
 dels=0
 ahead=0
 behind=0
+top=""
 if [ -n "$dir" ] && [ -d "$dir" ]; then
     gkey=${dir//\//%}
     # Keep the key inside the filename length limit without letting distinct
     # directories collide onto one cache file.
     [ ${#gkey} -gt 200 ] && gkey="${#gkey}_${gkey:${#gkey}-190}"
-    gcache="$CACHE_DIR/git3_$gkey"
+    gcache="$CACHE_DIR/git4_$gkey"
     fresh=0
     if [ -r "$gcache" ]; then
         mtime=$(stat -c%Y "$gcache" 2>/dev/null || echo 0)
@@ -168,9 +175,15 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     fi
 
     if [ "$fresh" = 1 ]; then
-        IFS="$SEP" read -r in_repo branch ins dels ahead behind <"$gcache" || true
+        IFS="$SEP" read -r in_repo branch ins dels ahead behind top <"$gcache" || true
     else
-        if [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]; then
+        # Both answers from one process: --show-toplevel is what settles whether
+        # the branch is the one this worktree implies (see line 2 below).
+        IFS=$'\n' read -r -d '' inside top < <(
+            git -C "$dir" rev-parse --is-inside-work-tree --show-toplevel 2>/dev/null
+            printf '\0'
+        )
+        if [ "$inside" = "true" ]; then
             in_repo=1
             branch=$(git -C "$dir" branch --show-current 2>/dev/null)
             stats="$(git -C "$dir" diff --shortstat 2>/dev/null) $(git -C "$dir" diff --cached --shortstat 2>/dev/null)"
@@ -212,26 +225,29 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
                 fi
             fi
         fi
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
-            "$in_repo" "$branch" "$ins" "$dels" "$ahead" "$behind" \
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+            "$in_repo" "$branch" "$ins" "$dels" "$ahead" "$behind" "$top" \
             >"$gcache.$$" 2>/dev/null && mv -f "$gcache.$$" "$gcache" 2>/dev/null
     fi
 fi
 
-# --- working directory -------------------------------------------------------
-# Line 3 is there to be copy-pasted into another terminal, so any shortening has
-# to survive `cd <paste>`. That rules out every usual one — a middle ellipsis,
-# one letter per segment, a repo-relative path — and leaves the two a shell puts
-# back for you: `~` for $HOME, and a glob prefix for a directory name.
+# --- line 2: working directory, then the git widgets -------------------------
+# The directory is there to be copy-pasted into another terminal, so any
+# shortening has to survive `cd <paste>`. That rules out every usual one — a
+# middle ellipsis, one letter per segment, a repo-relative path — and leaves the
+# two a shell puts back for you: `~` for $HOME, and a glob prefix for a
+# directory name.
 #
-# So: always collapse $HOME, and past CWD_BUDGET columns replace each middle
-# segment with the shortest prefix unique among its siblings, plus `*`. The last
-# segment is never touched — it is the part actually read. `cd` on the result
-# reaches the same directory, and a prefix that a later sibling makes ambiguous
-# fails loudly (`cd: too many arguments`) rather than landing somewhere else.
+# So: always collapse $HOME, and once the line is over LINE_TARGET columns
+# replace middle segments with the shortest prefix unique among their siblings
+# plus `*`, leftmost first, stopping as soon as it fits. The last segment is
+# never touched — it is the part actually read — and the outermost ancestors go
+# first, since they say least about where you are. `cd` on the result reaches the
+# same directory, and a prefix a later sibling makes ambiguous fails loudly
+# (`cd: too many arguments`) rather than landing somewhere else.
 #
 # What it costs: pasting into something that is not a shell — an editor, a tool
-# argument — now needs the `*`s expanded first. Only paths over the budget pay.
+# argument — now needs the `*`s expanded first. Only paths over budget pay it.
 
 # Shortest prefix of <segment> that no sibling in <parent-dir> shares, plus `*`,
 # assigned to $cwd_g. Leaves it empty (and the caller keeps the segment literal)
@@ -292,6 +308,48 @@ cwd_glob() { # cwd_glob <parent-dir> <segment>
     return 1
 }
 
+# The git widget *texts*, assembled here rather than in jq, because what is left
+# of LINE_TARGET for the directory is the target minus whatever these take. jq
+# still owns their colours.
+#
+# The branch is dropped when it is the one this directory already implies:
+# EnterWorktree puts a worktree at <repo>/.claude/worktrees/<name> on a branch
+# named worktree-<name>, so lines 2 and 3 used to print the same token twice —
+# 31 columns of it for a name like `statusline-cwd-shorten`. Its absence is the
+# statement "the branch is this worktree's own", which is why a detached HEAD can
+# no longer render as absence too and now says so.
+g_branch=""
+g_div=""
+g_changes=""
+detached=0
+if [ "$in_repo" = 1 ]; then
+    if [ -z "$branch" ]; then
+        detached=1
+        g_branch="⎇ detached"
+    else
+        wt_name=""
+        # Matches a multi-segment worktree name (`feat/x`) as well as a plain one.
+        [ -n "$top" ] && [ "$top" != "${top#*/.claude/worktrees/}" ] &&
+            wt_name=${top#*/.claude/worktrees/}
+        [ -n "$wt_name" ] && [ "$branch" = "worktree-$wt_name" ] || g_branch="$branch"
+    fi
+    [ "$ahead" -gt 0 ] && g_div="⇡$ahead"
+    [ "$behind" -gt 0 ] && g_div="${g_div:+$g_div }⇣$behind"
+    g_changes="(+$ins,-$dels)"
+else
+    # One `⎇ no git` says it; the second widget saying `(no git)` beside it was
+    # ccstatusline printing the same fact twice, which a merged line makes plain.
+    g_branch="⎇ no git"
+fi
+
+# Columns these leave for the directory. Every non-empty widget costs its own
+# width plus the space in front of it. Character counts, not display widths: the
+# only non-ASCII glyphs here (⎇ ⇡ ⇣) are single-width.
+cwd_budget=$LINE_TARGET
+for cwd_w in "$g_branch" "$g_div" "$g_changes"; do
+    [ -n "$cwd_w" ] && cwd_budget=$((cwd_budget - 1 - ${#cwd_w}))
+done
+
 cwd_disp=$dir
 if [ -n "${HOME:-}" ] && [ -n "$cwd_disp" ]; then
     if [ "$cwd_disp" = "$HOME" ]; then
@@ -301,31 +359,36 @@ if [ -n "${HOME:-}" ] && [ -n "$cwd_disp" ]; then
     fi
 fi
 
-if [ ${#cwd_disp} -gt "$CWD_BUDGET" ] && [[ $cwd_disp == "~/"* || $cwd_disp == /?* ]]; then
+if [ ${#cwd_disp} -gt "$cwd_budget" ] && [[ $cwd_disp == "~/"* || $cwd_disp == /?* ]]; then
     # Walk the display segments while accumulating the real path alongside, since
     # the sibling lookup happens on disk and the display root may be `~`.
-    cwd_root="" cwd_acc="" cwd_rest="" cwd_out=""
+    cwd_root="" cwd_acc="" cwd_rest=""
     if [[ $cwd_disp == "~/"* ]]; then
         cwd_root="~" cwd_acc="$HOME" cwd_rest=${cwd_disp#\~/}
     else
         cwd_rest=${cwd_disp#/}
     fi
     IFS=/ read -r -a cwd_segs <<<"$cwd_rest"
-    cwd_out=$cwd_root
-    cwd_last=$((${#cwd_segs[@]} - 1))
-    for cwd_i in "${!cwd_segs[@]}"; do
-        cwd_seg=${cwd_segs[cwd_i]}
-        if [ "$cwd_i" = "$cwd_last" ]; then
-            cwd_out+="/$cwd_seg"
-        else
-            cwd_glob "${cwd_acc:-/}" "$cwd_seg"
-            cwd_out+="/${cwd_g:-$cwd_seg}"
-        fi
+    # Real parent of each segment, so the sibling lookup needs no re-walking.
+    cwd_parents=()
+    for cwd_seg in "${cwd_segs[@]}"; do
+        cwd_parents+=("${cwd_acc:-/}")
         cwd_acc+="/$cwd_seg"
     done
-    # Take it only if it bought columns — a path of all-unabbreviable segments
-    # comes back the same length, and a one-segment path has nothing to abbreviate.
-    [ ${#cwd_out} -lt ${#cwd_disp} ] && cwd_disp=$cwd_out
+
+    # Abbreviate one segment at a time, outermost first, and stop the moment the
+    # line fits — a path only pays for the columns it is actually over by. A
+    # segment with no usable prefix is skipped without ending the loop, and the
+    # last segment is never a candidate.
+    cwd_shown=("${cwd_segs[@]}")
+    for ((cwd_i = 0; cwd_i < ${#cwd_segs[@]} - 1; cwd_i++)); do
+        [ ${#cwd_disp} -le "$cwd_budget" ] && break
+        cwd_glob "${cwd_parents[cwd_i]}" "${cwd_segs[cwd_i]}"
+        [ -n "$cwd_g" ] || continue
+        cwd_shown[cwd_i]=$cwd_g
+        cwd_disp=$cwd_root
+        for cwd_seg in "${cwd_shown[@]}"; do cwd_disp+="/$cwd_seg"; done
+    done
 fi
 
 # --- render ------------------------------------------------------------------
@@ -336,11 +399,12 @@ jq -rn \
     --argjson tin "${tok_in:-0}" \
     --argjson tout "${tok_out:-0}" \
     --argjson inrepo "${in_repo:-0}" \
-    --arg branch "${branch:-}" \
     --argjson ins "${ins:-0}" \
     --argjson dels "${dels:-0}" \
-    --argjson ahead "${ahead:-0}" \
-    --argjson behind "${behind:-0}" \
+    --arg gbranch "${g_branch:-}" \
+    --arg gdiv "${g_div:-}" \
+    --arg gchanges "${g_changes:-}" \
+    --argjson detached "${detached:-0}" \
     --arg cwd "${cwd_disp:-}" \
     --arg title "${title:-}" '
     # One decimal place, matching JS toFixed(1).
@@ -457,12 +521,6 @@ jq -rn \
     | (($rl.seven_day.used_percentage // 0)) as $pct7
     # A clean tree is not news, so the diffstat only takes a colour once it moves.
     | (if ($ins + $dels) > 0 then c_warn else c_detail end) as $c_changes
-    # Divergence from the default branch. Each side disappears at zero, and the
-    # whole widget with it on a branch that sits exactly on the base — being some
-    # commits ahead is the ordinary state of working, not a threshold crossing,
-    # so it stays grey and the count itself is the signal.
-    | ([ (if $ahead  > 0 then "⇡\($ahead)"  else empty end),
-         (if $behind > 0 then "⇣\($behind)" else empty end) ] | join(" ")) as $div
 
     | [
         ([ w($model; c_primary),
@@ -470,17 +528,25 @@ jq -rn \
            w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0))"; sev_ctx($ctx_pct; $ctx_used)),
            w($title; c_body) ] | line),
 
-        ([ w(if $inrepo == 1 then $branch else "⎇ no git" end; c_body),
-           w(if $inrepo == 1 then $div else "" end; c_detail),
-           w(if $inrepo == 1 then "(+\($ins),-\($dels))" else "(no git)" end;
-             if $inrepo == 1 then $c_changes else c_detail end) ] | line),
+        # ccstatusline puts the git widgets on one line and the directory on the
+        # next. Merged, ordered by movement like line 3: the directory is fixed for
+        # a session and the widest field, so it leads; the diffstat is the only one
+        # that changes while you work, so it trails.
+        #
+        # Every text here is assembled in bash — $cwd is shortened against the real
+        # filesystem, and the widths of the other three are what decide how much
+        # shortening it needs. jq only picks the colours. A detached HEAD is the one
+        # state that takes hue: the branch widget is otherwise absent exactly when
+        # the directory already implies the branch, and losing commits to a detached
+        # HEAD is worth more than a grey.
+        ([ w($cwd; c_body),
+           w($gbranch; if $detached == 1 then c_warn else c_body end),
+           w($gdiv; c_detail),
+           w($gchanges; $c_changes) ] | line),
 
-        # $cwd, not $p.cwd: shortened in bash above, where the filesystem is.
-        ([ w($cwd; c_body) ] | line),
-
-        # ccstatusline splits usage across two lines: cost and the four-way token
-        # breakdown, then the rate limits. Merged, ordered by how much each field
-        # moves. The four rate-limit fields are constant-width by construction, so
+        # ccstatusline splits usage across two lines as well: cost and the four-way
+        # token breakdown, then the rate limits. Merged, ordered by how much each
+        # field moves. The four rate-limit fields are constant-width by construction, so
         # they lead and hold fixed columns for the whole session. Tokens and cost
         # only grow, so they trail — where a widening field has nothing to its
         # right to push. The fence (·, U+00B7) marks where the fixed part ends —

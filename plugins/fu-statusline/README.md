@@ -4,13 +4,13 @@ A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@l
 of its formatting rules, at **12.3 ms / 11 MB** per render instead of **605 ms / 103 MB**
 (49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Six deliberate divergences since, all below:
-v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
+It matched ccstatusline byte for byte through v0.1.1. Seven deliberate divergences since, all
+below: v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
 equivalent of, v0.5.0 **dropped the context percentage** — the bar and the token count already say
 it — v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`, v0.6.0 **merged the last two lines**
-into one that mostly holds its width, and v0.7.0 **shortened the working directory** while keeping
-it copy-pasteable. Everything else about the render contract is unchanged and still tested
-against it.
+into one that mostly holds its width, v0.7.0 **shortened the working directory** while keeping it
+copy-pasteable, and v0.8.0 **merged the directory and the git widgets** — five ccstatusline lines
+are now three. Everything else about the render contract is unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -134,34 +134,66 @@ reading that made the split worth seeing.
 The values are display-only: `resets_at - now` in epoch seconds straight off the payload, a past or
 absent reset clamped to zero. Nothing is polled or kept between renders.
 
-## The working directory line
+## Line 2: the working directory and the git widgets
 
-Line 3 exists to be copy-pasted into another terminal, so every shortening has to survive
-`cd <paste>`. That rules out the usual ones — a middle ellipsis, one letter per segment, a
-repo-relative path — and leaves the two a shell puts back for you: `~` for `$HOME`, and a **glob
-prefix** for a directory name.
-
-`$HOME` always collapses. Past **44 columns** each middle segment is replaced by the shortest
-prefix that is unique among its siblings, plus `*`; the last segment is never touched, since it is
-the part actually read:
+Since v0.8.0 these share a line, ordered like the usage line — what holds still leads, what jitters
+trails:
 
 ```
-~/repo/fu-claude-plugins                                    (24, printed as-is)
-~/r*/f*/.claude/w*/statusline-cwd-shorten                   (41, was 72)
-~/r*/f*/p*/fu-s*/docs                                       (21, was 99)
+~/repo/fu-claude-plugins main (+0,-0)                          37
+~/r*/f*/.claude/worktrees/merge-git-cwd (+127,-63)             50   branch implied, not printed
+~/r*/f*/.claude/w*/m*/plugins/fu-statusline (+127,-63)         54
+/usr/share/doc ⎇ no git                                        22
 ```
 
-Both forms `cd` to the same place in bash, zsh and fish. The prefixes are computed against what is
-actually on disk, so a segment with no unique prefix stays literal — `.claude` alongside
-`.claude-plugin` has none, every candidate matches both — as does a segment that is not on disk, or
-one whose name would need quoting to paste (a space, a glob character). A path whose segments all
-resist abbreviation prints unchanged rather than half-shortened.
+The directory is fixed for a session and is the widest field, so it leads. The diffstat is the only
+one that changes while you work, so it trails, where a widening field has nothing to its right to
+push.
+
+**The branch is dropped when the checkout already implies it.** `EnterWorktree` puts a worktree at
+`<repo>/.claude/worktrees/<name>` on a branch named `worktree-<name>`, so the old lines 2 and 3
+printed the same token twice — 31 columns of it for a name like `statusline-cwd-shorten`. The test
+is `rev-parse --show-toplevel`, not the basename of the printed path, so a subdirectory of the
+worktree counts too, and switching that worktree onto any other branch brings the name back.
+
+Two consequences. Absence of the branch widget now *means* "the branch is this worktree's own", so
+a **detached HEAD** can no longer render as absence as well: it says `⎇ detached`, and takes the one
+hue on the line, because losing commits to a detached HEAD is worth more than a grey. And outside a
+repo the second widget that used to repeat `(no git)` beside `⎇ no git` is gone — one statement of
+a fact is enough, which a merged line makes obvious.
+
+### Keeping the directory copy-pasteable
+
+It is there to be pasted into another terminal, so every shortening has to survive `cd <paste>`.
+That rules out the usual ones — a middle ellipsis, one letter per segment, a repo-relative path —
+and leaves the two a shell puts back for you: `~` for `$HOME`, and a **glob prefix** for a
+directory name.
+
+`$HOME` always collapses. **`LINE_TARGET` (56) is a target for the whole line**, not a budget for
+the directory: what the git widgets do not take is what the directory may spend, so a quiet git side
+buys columns and a long branch name gives them back. `main (+0,-0)` leaves 43 — near the 44 the
+directory had when it was a line of its own.
+
+Over budget, middle segments become the shortest prefix unique among their siblings plus `*`,
+**outermost first, stopping the moment the line fits** — the outer ancestors say least about where
+you are, and a path only pays for the columns it is actually over by:
+
+```
+~/repo/fu-claude-plugins                       24   printed as-is
+~/r*/f*/.claude/worktrees/merge-git-cwd        39   was 72; two segments were enough
+~/r*/f*/p*/fu-s*/docs                          21   was 99
+```
+
+All of these `cd` to the same place in bash, zsh and fish. Prefixes are computed against what is
+actually on disk, so a segment stays literal when it has no unique prefix — `.claude` beside
+`.claude-plugin` has none, every candidate matches both — as does one that is not on disk, or one
+whose name would need quoting to paste (a space, a glob character).
 
 **Failure mode, and why it is acceptable:** clone a new sibling that shares a printed prefix and
 that prefix becomes ambiguous. `cd` then fails with `too many arguments` — loudly, without landing
 in the wrong directory, which is the property that makes the trade worth taking. The real cost is
 pasting into something that is *not* a shell: an editor, a tool argument, a commit message. Only
-paths over the budget carry `*` at all.
+paths over budget carry `*` at all.
 
 Cost is one `readdir` per abbreviated segment and no forks — the prefix search returns through a
 variable, because a `$(...)` per segment measured **+5 ms** on a worktree path, half the render
@@ -169,8 +201,8 @@ budget. Measured 20 cold renders on a 99-column path: **10 ms → 11 ms**.
 
 ## Divergence from the default branch
 
-Line 2 reads `<branch> ⇡<ahead> ⇣<behind> (+N,-M)`. Each arrow is omitted at zero and the widget
-vanishes with both, so a branch level with its base costs nothing on the line.
+The git side of line 2 reads `<branch> ⇡<ahead> ⇣<behind> (+N,-M)`. Each arrow is omitted at zero
+and the widget vanishes with both, so a branch level with its base costs nothing on the line.
 
 The base is the default branch, resolved locally: `refs/remotes/origin/HEAD` if the clone has one
 (it settles `main` vs `master` for you), else the first of `origin/main`, `origin/master`, local

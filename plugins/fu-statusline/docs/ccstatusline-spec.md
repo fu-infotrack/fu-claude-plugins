@@ -85,8 +85,13 @@ either:
 - Since v0.7.0 line 3 **shortens the working directory** instead of printing `cwd` verbatim, under
   the constraint that the text still `cd`s. See **Working directory** under
   [Formatting rules](#formatting-rules).
+- Since v0.8.0 that directory and the git widgets are **one line** too, in that order, and the
+  branch is **dropped when the checkout already implies it** — a worktree at
+  `<repo>/.claude/worktrees/<name>` is on branch `worktree-<name>`, so the two lines used to print
+  the same token twice. A detached HEAD therefore needs its own text (`⎇ detached`) rather than
+  rendering as absence, and the `(no git)` widget that repeated `⎇ no git` is gone.
 
-So the render is four lines, not five.
+So the render is three lines, not five.
 
 Each widget renders as `ESC[38;5;<code>m<text>ESC[39m`. A widget producing no value is dropped
 **along with its separator**, and a line whose widgets are all empty is dropped entirely. Each
@@ -163,7 +168,16 @@ Then `cached = Σ(cache_read + cache_creation)`, `in = Σ input_tokens`, `out = 
 branches really are named `worktree-<name>`, with no transformation); changes from `diff
 --shortstat` **plus** `diff --cached --shortstat`, parsed with `/(\d+)\s+insertions?/` and
 `/(\d+)\s+deletions?/`, rendered `(+N,-M)`. Outside a repo the branch widget shows `⎇ no git`
-and the changes widget `(no git)`.
+and — until v0.8.0 — the changes widget repeated it as `(no git)`; one statement of that fact is
+enough, so only the first survives.
+
+**The branch widget is absent when the directory implies it** (v0.8.0). `EnterWorktree` creates a
+worktree at `<repo>/.claude/worktrees/<name>` on a branch named `worktree-<name>`; when
+`rev-parse --show-toplevel` ends in `/.claude/worktrees/<name>` and the branch is exactly
+`worktree-<name>`, the branch is not printed. Using the toplevel rather than the basename of `cwd`
+means a subdirectory of the worktree still counts, and any other branch checked out in that worktree
+is printed as usual. Since absence now carries that meaning, a **detached HEAD** renders as
+`⎇ detached` in `warn` — the one hue the git widgets can take.
 
 **Divergence** (an addition, not in ccstatusline) — `rev-list --count --left-right <base>...HEAD`,
 which prints `<behind>\t<ahead>`, rendered `⇡<ahead> ⇣<behind>`. Each side is omitted at zero and
@@ -192,9 +206,15 @@ shortened, bounded by the rule that the printed text must still reach the direct
 into another shell. Only two shortenings survive that: `~` for `$HOME`, and a **glob prefix** for a
 directory name.
 
-`$HOME` always collapses. Past `CWD_BUDGET` (44 columns of the `~`-collapsed path) each middle
-segment becomes the shortest prefix unique among its siblings plus `*`, with the last segment left
-whole — `~/repo/fu-claude-plugins/.claude/worktrees/foo` → `~/r*/f*/.claude/w*/foo`.
+`$HOME` always collapses. `LINE_TARGET` (56) is a target for **line 2 as a whole**, not a budget
+for the directory: what the git widgets do not spend is what the directory may, so `main (+0,-0)`
+leaves it 43 — near the 44 it had as a line of its own — and a 26-column branch name leaves 21.
+
+Over budget, middle segments become the shortest prefix unique among their siblings plus `*`, with
+the last segment left whole. They go **outermost first and the loop stops as soon as the line fits**:
+the outer ancestors say least about where you are, and a path pays only for the columns it is over
+by, so `~/repo/fu-claude-plugins/.claude/worktrees/foo` gives up two segments
+(`~/r*/f*/.claude/worktrees/foo`) rather than all four.
 
 Prefixes are computed against the real filesystem, one `readdir` per segment: the sibling set is
 the hidden entries when the segment starts with `.` and the visible ones otherwise, matching how
