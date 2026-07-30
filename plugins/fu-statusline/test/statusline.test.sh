@@ -52,9 +52,15 @@ ln_() { local s="$*"; printf '%s[0m%s' "$ESC" "${s// /$NB}"; }
 
 SANDBOX=""
 new_sandbox() {
-  SANDBOX=$(mktemp -d)
+  # TMPDIR is forced to /tmp and HOME into the sandbox so that the sandbox path
+  # is both short and outside $HOME. Line 3 now collapses $HOME to ~ and
+  # abbreviates past CWD_BUDGET=44 columns, so a long TMPDIR (macOS defaults to
+  # one) or a TMPDIR under $HOME would otherwise rewrite the cwd the goldens
+  # below print verbatim. Pinning HOME also keeps git off the real ~/.gitconfig.
+  SANDBOX=$(TMPDIR=/tmp mktemp -d)
   export XDG_CACHE_HOME="$SANDBOX/cache"
-  mkdir -p "$SANDBOX/nogit"
+  export HOME="$SANDBOX/home"
+  mkdir -p "$SANDBOX/nogit" "$HOME"
 }
 cleanup() { [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ] && rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -125,6 +131,67 @@ out=$(payload s1 "$SANDBOX/t.jsonl" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "rendered output" "$(expected_golden "$SANDBOX/nogit")" "$out"
 eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
+cleanup
+
+echo "== working directory: ~ always, glob prefixes past the budget =="
+# The contract line 3 has to keep is that its text still reaches the directory
+# when pasted into another shell. So every case here asserts two things: the
+# rendered text, and that `cd <that text>` in a fresh bash lands on the real path.
+new_sandbox
+cwdline() { # cwdline <cwd>
+  # Colour off, and the line-wide space -> NBSP substitution undone. Undone
+  # rather than stripped: a directory name can contain a space, and that space
+  # is NBSP by the time it is printed.
+  local s
+  s=$(payload s1 "" "$1" | render | sed -n 3p | sed 's/\x1b\[[0-9;]*m//g')
+  printf '%s' "${s//$NB/ }"
+}
+cd_reaches() { # cd_reaches <desc> <rendered> <expected real path>
+  # HOME is exported, so ~ expands to the sandbox home in the child too.
+  local got
+  got=$(bash -c "cd $2 2>/dev/null && pwd -P")
+  eq "$1: cd reaches it" "$(cd "$3" && pwd -P)" "$got"
+}
+
+# Under the budget nothing is touched but $HOME.
+mkdir -p "$HOME/repo/proj"
+eq "home itself is just ~" "~" "$(cwdline "$HOME")"
+eq "a short path keeps every segment" "~/repo/proj" "$(cwdline "$HOME/repo/proj")"
+eq "a path outside \$HOME stays absolute" "$SANDBOX/nogit" "$(cwdline "$SANDBOX/nogit")"
+
+# Past it, every middle segment collapses to its shortest unique prefix and the
+# last one is left whole: 52 columns down to 35.
+deep="$HOME/alpha/bravo/charlie/deltadir/leafname-that-is-long"
+mkdir -p "$deep"
+got=$(cwdline "$deep")
+eq "long path abbreviates to unique prefixes" "~/a*/b*/c*/d*/leafname-that-is-long" "$got"
+cd_reaches "abbreviated path" "$got" "$deep"
+
+# A sibling sharing a prefix pushes the prefix out until it is unique, and a
+# sibling the segment is itself a prefix OF has no unique prefix at all — every
+# candidate matches both — so that segment stays literal.
+mkdir -p "$HOME/.claude/plugins/leaf-name-long-enough-to-trip-budget" \
+         "$HOME/.claude/plugbox" "$HOME/.claude-plugin"
+got=$(cwdline "$HOME/.claude/plugins/leaf-name-long-enough-to-trip-budget")
+eq "prefix grows past a clashing sibling, .claude stays literal" \
+  "~/.claude/plugi*/leaf-name-long-enough-to-trip-budget" "$got"
+cd_reaches "partly literal path" "$got" \
+  "$HOME/.claude/plugins/leaf-name-long-enough-to-trip-budget"
+
+# A segment that is not on disk cannot be prefix-matched — a glob would expand to
+# nothing — so it and everything under it stay literal.
+ghost="$HOME/alpha/ghost-one/ghost-two/leafname-that-is-long"
+eq "segments not on disk stay literal" \
+  "~/a*/ghost-one/ghost-two/leafname-that-is-long" "$(cwdline "$ghost")"
+
+# A name that would not paste as a bare word is left alone, and with the only
+# middle segment literal the result is no shorter, so the whole path prints as-is.
+# No cd assertion here: a path holding a space needs quoting whatever we print,
+# which is the reason such a segment is never abbreviated rather than a claim.
+spaced="$HOME/my dir/leafname-that-is-quite-long-here"
+mkdir -p "$spaced"
+eq "a segment needing quotes is left literal" \
+  "~/my dir/leafname-that-is-quite-long-here" "$(cwdline "$spaced")"
 cleanup
 
 echo "== incremental reads match a cold full scan =="
