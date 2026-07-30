@@ -37,6 +37,7 @@ ESC=$'\033'
 C_PRIMARY=253   # the two numbers worth reading
 C_BODY=248      # identity fields
 C_DETAIL=245    # detail, and anything at rest
+C_RULE=240      # the group fence on line 4, the one glyph carrying no value
 C_OK=108        # under 60%
 C_WARN=179      # 60-85%, and a dirty worktree
 C_CRIT=174      # over 85%
@@ -100,12 +101,12 @@ transcript() {
 JSONL
 }
 
-# The five expected lines for the fixture above, worked out from the spec:
+# The four expected lines for the fixture above, worked out from the spec:
 #   model      "Opus 5 (1M context)" -> parenthetical stripped
 #   context    147000/1000000 = 14.7% -> round(1.47) = 1 filled cell of 10. The
 #              percentage itself is not printed; it only grades the bar's colour
-#   tokens     3800 -> "3.8k"; 3973 -> fix1(3.973) = "4.0k"
-#   five_hour  2160s   -> "36ᵐ"
+#   tokens     3973 -> fix1(3.973) = "4.0k" (the cached/in/out split is not shown)
+#   five_hour  2160s   -> 36m, printed to the full width -> "0ʰ36ᵐ"
 #   seven_day  232560s -> 64h36m -> "2ᵈ16ʰ36ᵐ"
 expected_golden() { # expected_golden <cwd>
   ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
@@ -114,18 +115,16 @@ expected_golden() { # expected_golden <cwd>
   printf '\n'
   ln_ "$(c $C_BODY "$1")"
   printf '\n'
-  ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.8k) $(c $C_DETAIL 16) $(c $C_DETAIL 157) $(c $C_PRIMARY 4.0k)"
-  printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
 }
 
-echo "== golden: five lines, exact bytes =="
+echo "== golden: four lines, exact bytes =="
 new_sandbox
 transcript >"$SANDBOX/t.jsonl"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "rendered output" "$(expected_golden "$SANDBOX/nogit")" "$out"
-eq "line count" "5" "$(printf '%s\n' "$out" | wc -l)"
+eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
 cleanup
 
 echo "== incremental reads match a cold full scan =="
@@ -152,15 +151,19 @@ new_sandbox
 t="$SANDBOX/t.jsonl"
 transcript >"$t"
 before=$(payload s1 "$t" "$SANDBOX/nogit" | render)
-# Append a line with no terminating newline — a write caught mid-flight.
-printf '%s' '{"type":"assistant","message":{"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}' >>"$t"
+# Append a line with no terminating newline — a write caught mid-flight. Its
+# cache_read is large enough to move the printed total, which is now the only
+# token field on the line: at the old 0 the demotion moved 3973 -> 3965 and both
+# render "4.0k", so the assertion would have passed either way.
+printf '%s' '{"type":"assistant","message":{"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":100000}}}' >>"$t"
 torn=$(payload s1 "$t" "$SANDBOX/nogit" | render)
 eq "torn tick reuses the cached totals" "$before" "$torn"
 printf '\n' >>"$t"
 after=$(payload s1 "$t" "$SANDBOX/nogit" | render)
 # Entry 5 was only counted because it was last, and the new entry demotes it —
-# so its 300/1/7 drops back out while the new 0/100/200 comes in:
-# stable 3500/15/150 + 0/100/200 => cached 3500, in 115, out 350, total 3965.
+# so its 300/1/7 drops back out while the new 100000/100/200 comes in: stable
+# 3500/15/150 + 100000/100/200 => cached 103500, in 115, out 350, total 103965
+# -> fix1(103.965) = "104.0k".
 expected_after=$(
   ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
@@ -168,9 +171,7 @@ expected_after=$(
   printf '\n'
   ln_ "$(c $C_BODY "$SANDBOX/nogit")"
   printf '\n'
-  ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 115) $(c $C_DETAIL 350) $(c $C_PRIMARY 4.0k)"
-  printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
 )
 eq "completed line is counted, provisional one demoted" "$expected_after" "$after"
 cleanup
@@ -357,7 +358,7 @@ JSONL
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # cached 3500, in 15, out 150, total 3665 -> fix1(3.665) = "3.7k"
 eq "legacy totals" \
-  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 15) $(c $C_DETAIL 150) $(c $C_PRIMARY 3.7k)")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 
@@ -372,7 +373,7 @@ t="$SANDBOX/t.jsonl"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "totals ignore the bad line" \
-  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 15) $(c $C_DETAIL 150) $(c $C_PRIMARY 3.7k)")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$(printf '%s\n' "$out" | sed -n 4p)"
 cleanup
 
@@ -384,16 +385,15 @@ out=$(printf '%s' "$sparse" | render); rc=$?
 eq "exit 0" "0" "$rc"
 # Every widget on lines 1 and 3 is empty except the context bar, and a line
 # whose widgets are all empty is dropped entirely — so the cwd line disappears.
-eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
+eq "line count" "3" "$(printf '%s\n' "$out" | wc -l)"
 eq "context bar at zero" \
   "$(ln_ "$(c $C_OK '░░░░░░░░░░ 0/0')")" \
   "$(printf '%s\n' "$out" | sed -n 1p)"
-eq "zeroed cost and tokens" \
-  "$(ln_ "$(c $C_BODY '$0.00') $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_PRIMARY 0)")" \
+# Absent rate_limits leave both countdowns at zero, and zero still occupies the
+# full width — that is the whole point of padding them.
+eq "zeroed usage line" \
+  "$(ln_ "$(c $C_OK 00.0%) $(c $C_DETAIL 0ʰ00ᵐ) $(c $C_OK 00.0%) $(c $C_DETAIL 0ᵈ00ʰ00ᵐ) $(c $C_RULE '·') $(c $C_PRIMARY 0) $(c $C_BODY '$0.00')")" \
   "$(printf '%s\n' "$out" | sed -n 3p)"
-eq "zeroed usage and timers" \
-  "$(ln_ "$(c $C_OK 0.0%) $(c $C_DETAIL 0ᵐ) $(c $C_OK 0.0%) $(c $C_DETAIL 0ᵐ)")" \
-  "$(printf '%s\n' "$out" | sed -n 4p)"
 cleanup
 
 echo "== severity: colour tracks the value, at the boundaries =="
@@ -409,10 +409,10 @@ sev_payload() { # sev_payload <ctx_pct> <five_hour_pct> <seven_day_pct>
     rate_limits: { five_hour: { used_percentage: $f, resets_at: $now },
                    seven_day: { used_percentage: $s, resets_at: $now } } }'
 }
-# With no cwd the working-directory line drops out entirely, leaving four lines:
-# bar, git, cost/tokens, limits.
+# With no cwd the working-directory line drops out entirely, leaving three
+# lines: bar, git, usage.
 bar_colour()    { sev_payload "$1" 0 0 | render | sed -n 1p | grep -o '38;5;[0-9]*' | head -1 | cut -d';' -f3; }
-limit_colours() { sev_payload 0 "$1" "$2" | render | sed -n 4p | grep -o '38;5;[0-9]*' | cut -d';' -f3 | tr '\n' ' '; }
+limit_colours() { sev_payload 0 "$1" "$2" | render | sed -n 3p | grep -o '38;5;[0-9]*' | cut -d';' -f3 | tr '\n' ' '; }
 
 eq "context 0% is quiet"       "$C_OK"   "$(bar_colour 0)"
 eq "context 59% is quiet"      "$C_OK"   "$(bar_colour 59)"
@@ -446,10 +446,46 @@ eq "130k of a 200k window is amber" "$C_WARN" "$(tok_colour 130000 200000)"
 eq "100k of a 200k window is quiet" "$C_OK"   "$(tok_colour 100000 200000)"
 
 # The two windows are graded independently, and the reset timers never colour.
+# The trailing three are the fence, the token total and the cost, all fixed.
 eq "5h rose, 7d amber, both timers at rest" \
-  "$C_CRIT $C_DETAIL $C_WARN $C_DETAIL " "$(limit_colours 88 71)"
+  "$C_CRIT $C_DETAIL $C_WARN $C_DETAIL $C_RULE $C_PRIMARY $C_BODY " "$(limit_colours 88 71)"
 eq "both windows quiet" \
-  "$C_OK $C_DETAIL $C_OK $C_DETAIL " "$(limit_colours 12 4)"
+  "$C_OK $C_DETAIL $C_OK $C_DETAIL $C_RULE $C_PRIMARY $C_BODY " "$(limit_colours 12 4)"
+cleanup
+
+echo "== the four rate-limit fields hold a constant width in every state =="
+# The reason they lead the line: whatever they are, the fence and everything
+# right of it start at the same column. Asserting the shape rather than a
+# character count keeps this free of locale and wcwidth questions — the claim
+# is that the digit counts never change, which is what fixes the columns.
+new_sandbox
+usage_fields() { # usage_fields <pct5> <secs_to_5h_reset> <pct7> <secs_to_7d_reset>
+  jq -nc --argjson f "$1" --argjson fr "$(( NOW + $2 ))" \
+         --argjson s "$3" --argjson sr "$(( NOW + $4 ))" '{
+    session_id: "pad", transcript_path: "", cwd: "",
+    rate_limits: { five_hour:  { used_percentage: $f, resets_at: $fr },
+                   seven_day:  { used_percentage: $s, resets_at: $sr } } }' \
+  | render | sed -n 3p | sed 's/\x1b\[[0-9;]*m//g'
+}
+# 5h window: floor, one minute in, mid-window, and its 4h59m ceiling.
+# 7d window: floor, one minute in, mid-window, and its 6d23h59m ceiling.
+for st in "0 0 0 0" "8.2 60 3.1 60" "33 10800 28 232560" "62 3599 47 86400" "99.9 17940 85 604740"; do
+  set -- $st
+  IFS="$NB" read -r p5 d5 p7 d7 _ <<<"$(usage_fields "$1" "$2" "$3" "$4")"
+  case "$p5$p7" in
+    *[!0-9.%]*) bad "state [$st]: percent has unexpected characters ($p5 $p7)" ;;
+    *) if [[ $p5 =~ ^[0-9][0-9]\.[0-9]%$ && $p7 =~ ^[0-9][0-9]\.[0-9]%$ ]]
+       then ok; else bad "state [$st]: percent not 2 integer digits ($p5 $p7)"; fi ;;
+  esac
+  if [[ $d5 =~ ^[0-9]ʰ[0-9][0-9]ᵐ$ ]]; then ok
+  else bad "state [$st]: 5h timer is not HʰMMᵐ ($d5)"; fi
+  if [[ $d7 =~ ^[0-9]ᵈ[0-9][0-9]ʰ[0-9][0-9]ᵐ$ ]]; then ok
+  else bad "state [$st]: weekly timer is not DᵈHHʰMMᵐ ($d7)"; fi
+done
+# The documented exception: 100.0% is one wider than every other percent, and
+# is the only state that moves the fields to its right.
+IFS="$NB" read -r p5 _ <<<"$(usage_fields 100 0 100 0)"
+eq "100.0% is the one widening state" "100.0%" "$p5"
 cleanup
 
 echo "== empty stdin exits quietly =="
@@ -469,7 +505,7 @@ head -n 1 "$t" >"$t.small" && mv "$t.small" "$t"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # Only entry 1 remains: cached 1500, in 10, out 100, total 1610 -> "1.6k"
 eq "totals recomputed from scratch" \
-  "$(ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 1.5k) $(c $C_DETAIL 10) $(c $C_DETAIL 100) $(c $C_PRIMARY 1.6k)")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 

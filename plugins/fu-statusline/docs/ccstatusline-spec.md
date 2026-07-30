@@ -75,10 +75,15 @@ true` (so no `Model: ` style labels), `defaultSeparator: " "`, `colorLevel: 2` (
 | 4 | session-cost (70), tokens-cached (30), tokens-input (26), tokens-output (188), tokens-total (30) |
 | 5 | session-usage (111), reset-timer (111), weekly-usage (111), weekly-reset-timer (111) |
 
-The codes are not — see [Palette](#palette-a-deliberate-divergence). The composition is, with one
-addition: since v0.4.0 line 2 carries a **divergence widget** between the branch and the changes,
-which ccstatusline has no equivalent of. See **Git** under
-[Formatting rules](#formatting-rules) below.
+The codes are not — see [Palette](#palette-a-deliberate-divergence). The composition no longer is
+either:
+
+- Since v0.4.0 line 2 carries a **divergence widget** between the branch and the changes, which
+  ccstatusline has no equivalent of. See **Git** under [Formatting rules](#formatting-rules).
+- Since v0.6.0 lines 4 and 5 are **one line**, ordered by volatility — see
+  [The usage line](#the-usage-line).
+
+So the render is four lines, not five.
 
 Each widget renders as `ESC[38;5;<code>m<text>ESC[39m`. A widget producing no value is dropped
 **along with its separator**, and a line whose widgets are all empty is dropped entirely. Each
@@ -190,31 +195,72 @@ const d = Math.floor(totalHours / 24), h = totalHours % 24;
 
 Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
 
-**Since v0.5.1 the units are compacted, and since v0.5.2 they are superscript** — one divergence
-in two steps, both aimed at reading the countdown as a single value. v0.5.1 dropped `hr` → `h` and
-joined the parts with no separator, because a space is the same character line 5 puts between its
-four widgets, so a two- or three-part countdown read as several fields. v0.5.2 raised the units off
-the baseline (`ᵈ` U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50) — with the spaces gone the digits and their unit
-letters sit flush, and baseline letters at digit size blur into the number:
+**The timer has diverged in three steps**, the first two aimed at reading it as a single value and
+the third at making it stop moving:
 
 ```
 2d 16hr 36m     ccstatusline
-2d16h36m        v0.5.1
-2ᵈ16ʰ36ᵐ        v0.5.2
+2d16h36m        v0.5.1   hr -> h, no inner separator
+2ᵈ16ʰ36ᵐ        v0.5.2   units raised off the baseline
+2ᵈ16ʰ36ᵐ        v0.6.0   every unit always printed, zero-padded
+0ᵈ00ʰ36ᵐ        v0.6.0   ...which is what the 36m case now looks like
 ```
 
-Separating by glyph rather than colour keeps the whole timer at one grey — the palette spends hue
-on state only, and a countdown ticking down is not a state change. The cost is a font dependency:
-these are the standard Unicode modifier letters, but a terminal font lacking them renders tofu, and
-a terminal that treats East Asian Ambiguous as wide renders `ʰ` double-width. The arithmetic is
-unchanged throughout.
+v0.5.1 dropped the inner spaces, because a space is the same character the line puts between its
+widgets, so a multi-part countdown read as several fields. v0.5.2 raised the units off the baseline
+(`ᵈ` U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50) — with the spaces gone the digits and their unit letters sit
+flush, and baseline letters at digit size blur into the number. Separating by glyph rather than by
+colour keeps the whole timer at one grey: the palette spends hue on state only, and a countdown
+ticking down is not a state change. The cost is a font dependency — these are the standard Unicode
+modifier letters, but a terminal font lacking them renders tofu, and a terminal that treats East
+Asian Ambiguous as wide renders `ʰ` double-width.
+
+v0.6.0 stopped dropping zero-valued units and zero-padded the trailing ones, which is what makes
+the width constant. ccstatusline's rule collapses `3ʰ28ᵐ` to `3ʰ` on the hour and `0ᵈ16ʰ36ᵐ` to
+`16ʰ36ᵐ` for six days of every seven — six columns of movement in a group that now shares a line
+with four other fields. The largest unit printed depends on the window: `Dᵈ HHʰ MMᵐ` for the weekly
+timer, `Hʰ MMᵐ` for the 5-hour one, whose hours field is *total* hours so a value past 24 widens
+rather than silently wrapping into a day it does not print.
+
+The arithmetic is unchanged throughout.
 
 The countdown is `resets_at - now`, both epoch seconds — `resets_at` straight off the payload,
 `now` from `$CC_SL_NOW` when set (the test clock) else `printf '%(%s)T'`. Nothing is polled or
 tracked between renders. A missing `resets_at` defaults to `now`, and a past one clamps at zero;
-both print `0ᵐ`.
+both print `0ʰ00ᵐ` / `0ᵈ00ʰ00ᵐ`.
 
-**Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. **Cost** — `$` plus `toFixed(2)`.
+**Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. Since v0.6.0 the integer part is
+zero-padded to two digits (`08.0%`) for the same width reason. `100.0%` is one wider and is the
+only state that shifts the fields to its right. **Cost** — `$` plus `toFixed(2)`.
+
+## The usage line
+
+Since v0.6.0 ccstatusline's lines 4 and 5 are one line, ordered by how much each field moves:
+
+```
+33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
+└──────── constant width ────────┘   └── grows ──┘
+```
+
+The four rate-limit fields are constant-width by construction, so they lead and hold fixed columns
+for the whole session. The token total and the cost only ever grow, so they trail — where a
+widening field has nothing to its right to push. The fence (`·`, colour 240) marks the boundary.
+
+That fence is the only glyph on the line carrying no value, and the only one below the AA floor the
+other greys hold. It has to be findable enough to group its neighbours and quiet enough not to be
+read as one of them — which is why it is a middot and not a box-drawing rule. The padding already
+does the grouping; a `│` drew a wall where the boundary only wanted a pause.
+
+`·` is East Asian Ambiguous, the same caveat as `ʰ`: a terminal configured to render that class
+wide gives it two columns. It costs a column, not correctness.
+
+**The cached / input / output breakdown is dropped.** It was three of the five most volatile fields
+on the old line 4, its sum is the total that is still printed, and line 1 already carries the
+context-window reading that made a cache-vs-input split worth seeing.
+
+Widths, for the record: percent 5 (6 at exactly 100.0%), 5-hour timer 5, weekly timer 8, total 1–6,
+cost 5–7. `test/statusline.test.sh` asserts the first four hold their shape across the floor, the
+ceiling and several mid-window states of both windows.
 
 ## Palette: a deliberate divergence
 
@@ -243,7 +289,8 @@ The replacement puts structure in greys and spends hue only on state:
 |---|---|---|---|
 | primary | 253 | 11.73 | model, tokens-total |
 | body | 248 | 6.90 | session name, git branch, cwd, cost |
-| detail | 245 | 4.75 | effort, tokens cached/in/out, both reset timers |
+| detail | 245 | 4.75 | effort, both reset timers, anything at rest |
+| rule | 240 | 2.60 | the usage-line fence, and nothing else |
 | ok | 108 | 6.65 | value under 60% |
 | warn | 179 | 7.96 | 60–85%, and a dirty worktree |
 | crit | 174 | 6.02 | value over 85% |

@@ -1,14 +1,15 @@
 # fu-statusline
 
-A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@latest`: the same
-five lines and every one of its formatting rules, at **12.3 ms / 11 MB** per render instead of
-**605 ms / 103 MB** (49× / 9.4×).
+A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@latest`: every one
+of its formatting rules, at **12.3 ms / 11 MB** per render instead of **605 ms / 103 MB**
+(49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Four deliberate divergences since, all
-below: v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
+It matched ccstatusline byte for byte through v0.1.1. Five deliberate divergences since, all below:
+v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
 equivalent of, v0.5.0 **dropped the context percentage** — the bar and the token count already say
-it — and v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`. Everything else about the render
-contract is unchanged and still tested against it.
+it — v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`, and v0.6.0 **merged the last two
+lines** into one that mostly holds its width. Everything else about the render contract is
+unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -61,7 +62,8 @@ So the palette is now three tiers of grey for structure, with hue reserved for s
 |---|---|---|---|
 | primary | 253 | 11.73:1 | model, total tokens |
 | body | 248 | 6.90:1 | session name, git branch, working dir, cost |
-| detail | 245 | 4.75:1 | effort, cached/in/out tokens, reset timers, anything at rest |
+| detail | 245 | 4.75:1 | effort, reset timers, anything at rest |
+| rule | 240 | 2.60:1 | the usage-line fence, and nothing else |
 | ok | 108 | 6.65:1 | under 60%, and under 256k tokens |
 | warn | 179 | 7.96:1 | 60–85% or 256k–512k tokens, and a worktree with changes |
 | crit | 174 | 6.02:1 | over 85% or at least 512k tokens |
@@ -91,24 +93,45 @@ amber bar on a large window as a prompt to look at the printed token count, not 
 Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
 terminal the old `188` measured 1.33:1, and these greys would need to invert.
 
-## Reset timers
+## The usage line
 
-Line 5 ends with the 5-hour and weekly countdowns. ccstatusline prints `2d 16hr 36m`; this prints
-`2ᵈ16ʰ36ᵐ`.
+ccstatusline puts cost and a four-way token breakdown on one line and the rate limits on the next.
+Since v0.6.0 they are one line, ordered by how much each field moves:
 
-The spaces went first. Line 5 already separates its four widgets with a space, so a countdown that
-also used spaces internally read as two or three fields rather than one value. Dropping them left
-digits and unit letters flush against each other, where baseline letters at digit size blur into
-the number — so the units moved above the baseline (`ᵈ` U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50).
+```
+33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
+└──────── constant width ────────┘   └── grows ──┘
+```
 
-Separating them by glyph rather than by colour keeps the whole timer at one grey, which the palette
-below wants: hue means a value crossed a threshold, and a countdown ticking down has not crossed
-anything. The cost is a font dependency — a terminal font without the modifier letters renders
-tofu, and a terminal treating East Asian Ambiguous as wide renders `ʰ` double-width.
+The four rate-limit fields are constant-width by construction, so they lead and hold fixed columns
+for the whole session. The token total and the cost only ever grow, so they trail — where a
+widening field has nothing to its right to push. Net effect: the line stops reflowing under the
+cursor every ten seconds.
 
-It is display only. The value is `resets_at - now` in epoch seconds, straight off the payload;
-zero-valued leading units drop, a past or absent reset prints `0ᵐ`. Nothing is polled or kept
-between renders.
+The fence is a middot rather than a box-drawing rule: the padding already groups the left half, so
+the boundary wants a pause, not a wall. Like `ʰ` it is East Asian Ambiguous, so a terminal set to
+render that class wide gives it two columns.
+
+**The countdowns** print `2ᵈ16ʰ36ᵐ` where ccstatusline prints `2d 16hr 36m`. The spaces went first,
+since the line already separates its widgets with a space and a countdown using spaces internally
+read as two or three fields rather than one value. That left digits and unit letters flush, where
+baseline letters at digit size blur into the number — so the units moved above the baseline (`ᵈ`
+U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50). Separating them by glyph rather than by colour keeps the timer at
+one grey, which the palette above wants: hue means a value crossed a threshold, and a countdown
+ticking down has not crossed anything. The cost is a font dependency — a font without the modifier
+letters renders tofu, and a terminal treating East Asian Ambiguous as wide renders `ʰ` double-width.
+
+**Constant width** comes from printing every unit and zero-padding the trailing ones, rather than
+dropping zero-valued ones as ccstatusline does. That rule collapses `3ʰ28ᵐ` to `3ʰ` on the hour and
+`0ᵈ16ʰ36ᵐ` to `16ʰ36ᵐ` for six days in seven. Percentages are zero-padded to two integer digits for
+the same reason (`08.0%`); `100.0%` is one wider and is the only state that shifts anything.
+
+**The cached / input / output breakdown is gone.** It was three of the five most volatile fields on
+the old line, its sum is the total still printed, and line 1 already carries the context-window
+reading that made the split worth seeing.
+
+The values are display-only: `resets_at - now` in epoch seconds straight off the payload, a past or
+absent reset clamped to zero. Nothing is polled or kept between renders.
 
 ## Divergence from the default branch
 
