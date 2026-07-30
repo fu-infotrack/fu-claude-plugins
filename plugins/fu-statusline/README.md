@@ -4,9 +4,10 @@ A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@l
 five lines and every one of its formatting rules, at **12.3 ms / 11 MB** per render instead of
 **605 ms / 103 MB** (49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Since v0.2.0 the **palette deliberately
-diverges**, and v0.4.0 adds a **divergence widget** ccstatusline has no equivalent of — both
-below. Everything else about the render contract is unchanged and still tested against it.
+It matched ccstatusline byte for byte through v0.1.1. Three deliberate divergences since, all
+below: v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
+equivalent of, and v0.5.0 **dropped the context percentage** — the bar and the token count already
+say it. Everything else about the render contract is unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -68,6 +69,10 @@ The context bar and the two rate-limit percentages take their colour from their 
 diffstat colours only once the tree is dirty. A line with no colour in it needs nothing from you,
 which is the property worth having — the reset timers stay grey precisely because a countdown is
 not news.
+
+The context bar no longer *prints* its percentage (v0.5.0) — ten cells and `147k/1.0M` are two
+renderings of the same thing already, and the third was the widest field on line 1. The number
+still grades the bar, so it shows up as colour instead of digits.
 
 The rate-limit percentages are graded on percent alone. The **context bar is graded on both**
 percent and absolute tokens, and shows whichever reading is worse, because percent alone is the

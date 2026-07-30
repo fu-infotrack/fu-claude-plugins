@@ -102,13 +102,13 @@ JSONL
 
 # The five expected lines for the fixture above, worked out from the spec:
 #   model      "Opus 5 (1M context)" -> parenthetical stripped
-#   context    147000/1000000 = 14.7% -> round(1.47) = 1 filled cell of 10,
-#              but the printed percentage is the payload's already-rounded 15
+#   context    147000/1000000 = 14.7% -> round(1.47) = 1 filled cell of 10. The
+#              percentage itself is not printed; it only grades the bar's colour
 #   tokens     3800 -> "3.8k"; 3973 -> fix1(3.973) = "4.0k"
 #   five_hour  2160s   -> "36m"
 #   seven_day  232560s -> 64h36m -> "2d 16hr 36m"
 expected_golden() { # expected_golden <cwd>
-  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M (15%)') $(c $C_BODY log-sweep)"
+  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
   ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
   printf '\n'
@@ -162,7 +162,7 @@ after=$(payload s1 "$t" "$SANDBOX/nogit" | render)
 # so its 300/1/7 drops back out while the new 0/100/200 comes in:
 # stable 3500/15/150 + 0/100/200 => cached 3500, in 115, out 350, total 3965.
 expected_after=$(
-  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M (15%)') $(c $C_BODY log-sweep)"
+  ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
   ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
   printf '\n'
@@ -386,7 +386,7 @@ eq "exit 0" "0" "$rc"
 # whose widgets are all empty is dropped entirely — so the cwd line disappears.
 eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
 eq "context bar at zero" \
-  "$(ln_ "$(c $C_OK '░░░░░░░░░░ 0/0 (0%)')")" \
+  "$(ln_ "$(c $C_OK '░░░░░░░░░░ 0/0')")" \
   "$(printf '%s\n' "$out" | sed -n 1p)"
 eq "zeroed cost and tokens" \
   "$(ln_ "$(c $C_BODY '$0.00') $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_DETAIL 0) $(c $C_PRIMARY 0)")" \

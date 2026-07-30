@@ -109,13 +109,19 @@ always one decimal regardless. Token widgets use `decimals=1`; the context bar u
 `filled = Math.round(pct / 100 * width)`.
 
 > The bar is computed from the **unrounded** ratio (`total_input_tokens / context_window_size *
-> 100`) while the printed percentage is the **already-rounded** `used_percentage` from the
-> payload. So 14.7% prints `(15%)` but fills only one cell. Using the rounded value for both is
-> an off-by-one that shows up around each x.5% boundary.
+> 100`) while ccstatusline printed the **already-rounded** `used_percentage` from the payload. So
+> 14.7% printed `(15%)` but filled only one cell. Using the rounded value for both is an
+> off-by-one that shows up around each x.5% boundary.
 
-Full text: `<bar> <ftok(total_input_tokens, 0)>/<ftok(context_window_size, 0)>
+ccstatusline text: `<bar> <ftok(total_input_tokens, 0)>/<ftok(context_window_size, 0)>
 (<used_percentage>%)`. The token count is `total_input_tokens` **only** — output tokens are not
 included.
+
+**Since v0.5.0 the trailing `(<pct>%)` is dropped** — a divergence. Ten cells and an explicit
+`147k/1.0M` are already two renderings of how full the window is; the third was the widest field
+on line 1 and the least specific of the three. `used_percentage` is still read, because it is one
+of the two readings that **grade** the bar (see [Palette](#palette-a-deliberate-divergence)) —
+that grading is where the number now shows up, as colour rather than digits.
 
 **Session name** — *not* the payload's `session_name`. The widget scans the transcript backwards
 for the last entry with `type === "custom-title"` and returns `entry.customTitle`, i.e. the
@@ -308,3 +314,8 @@ relies on both of those.
   for the `stop_reason` logic.
 - A transcript can contain a malformed JSON line. Any parser here must skip bad lines rather
   than abort — `jq` without `fromjson?` dies on it.
+- The whole render program is one **single-quoted** bash argument, so an apostrophe anywhere in
+  it — including inside a `#` comment — closes the quote and breaks the script. Measured: a
+  comment reading `ccstatusline's` turned into `syntax error near unexpected token '|'` 4 lines
+  later. `bash -n statusline.sh` catches it instantly; the test suite reports it as 40 failures
+  with empty output, which reads like something much worse.
