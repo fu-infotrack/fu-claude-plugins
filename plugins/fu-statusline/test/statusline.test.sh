@@ -106,7 +106,7 @@ JSONL
 #              percentage itself is not printed; it only grades the bar's colour
 #   tokens     3800 -> "3.8k"; 3973 -> fix1(3.973) = "4.0k"
 #   five_hour  2160s   -> "36m"
-#   seven_day  232560s -> 64h36m -> "2d 16hr 36m"
+#   seven_day  232560s -> 64h36m -> "2d16h36m"
 expected_golden() { # expected_golden <cwd>
   ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
@@ -116,7 +116,7 @@ expected_golden() { # expected_golden <cwd>
   printf '\n'
   ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.8k) $(c $C_DETAIL 16) $(c $C_DETAIL 157) $(c $C_PRIMARY 4.0k)"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d 16hr 36m')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d16h36m')"
 }
 
 echo "== golden: five lines, exact bytes =="
@@ -170,7 +170,7 @@ expected_after=$(
   printf '\n'
   ln_ "$(c $C_BODY '$80.09') $(c $C_DETAIL 3.5k) $(c $C_DETAIL 115) $(c $C_DETAIL 350) $(c $C_PRIMARY 4.0k)"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d 16hr 36m')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 36m) $(c $C_OK 28.0%) $(c $C_DETAIL '2d16h36m')"
 )
 eq "completed line is counted, provisional one demoted" "$expected_after" "$after"
 cleanup

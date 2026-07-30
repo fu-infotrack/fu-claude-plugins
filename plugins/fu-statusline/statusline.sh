@@ -239,15 +239,18 @@ jq -rn \
         elif $c >= 1000 then (if $d == 0 then (($c / 1000) | round | tostring) else fix1($c / 1000) end) + "k"
         else ($c | tostring) end;
 
-    # Countdown as "2d 16hr 56m", dropping zero-valued leading units.
+    # Countdown as "2d16h36m", dropping zero-valued leading units. Diverges from
+    # ccstatusline "2d 16hr 36m": the units are already unambiguous one letter
+    # each, and the inner spaces read as field separators on a line whose only
+    # other separator is a space, so the timer looked like three widgets.
     def dur($secs):
         (if $secs < 0 then 0 else $secs end) as $x
         | (($x / 3600) | floor) as $th
         | ((($x % 3600) / 60) | floor) as $m
         | [ (($th / 24) | floor) as $d | if $d > 0 then "\($d)d" else empty end,
-            ($th % 24) as $h | if $h > 0 then "\($h)hr" else empty end,
+            ($th % 24) as $h | if $h > 0 then "\($h)h" else empty end,
             (if $m > 0 then "\($m)m" else empty end) ]
-        | if length > 0 then join(" ") else "0m" end;
+        | if length > 0 then join("") else "0m" end;
 
     def slider($pct):
         ((([0, ([100, $pct] | min)] | max) / 100 * 10) | round) as $f
