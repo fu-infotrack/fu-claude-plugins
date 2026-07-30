@@ -239,18 +239,30 @@ jq -rn \
         elif $c >= 1000 then (if $d == 0 then (($c / 1000) | round | tostring) else fix1($c / 1000) end) + "k"
         else ($c | tostring) end;
 
-    # Countdown as "2d16h36m", dropping zero-valued leading units. Diverges from
-    # ccstatusline "2d 16hr 36m": the units are already unambiguous one letter
-    # each, and the inner spaces read as field separators on a line whose only
-    # other separator is a space, so the timer looked like three widgets.
+    # Countdown as "2ᵈ16ʰ36ᵐ", dropping zero-valued leading units. Two divergences
+    # from ccstatusline "2d 16hr 36m", both aimed at reading the timer as ONE
+    # value rather than several.
+    #
+    # No inner spaces: a space is what line 5 puts between its four widgets, so a
+    # two- or three-part countdown was separated by the same character as the
+    # widget boundaries and read as separate fields.
+    #
+    # Superscript units (U+1D48 ᵈ, U+02B0 ʰ, U+1D50 ᵐ): with the spaces gone the
+    # digits and their unit letters sit flush, and baseline letters at digit size
+    # blur into the number. Raising the units off the digit line separates them by
+    # glyph instead, which keeps the whole timer at one colour — the palette
+    # spends hue on state only, and a countdown is not a state change. Cost is a
+    # font dependency: these are the standard modifier letters, but a terminal
+    # font without them renders tofu, and terminals set to treat East Asian
+    # Ambiguous as wide will render ʰ double-width.
     def dur($secs):
         (if $secs < 0 then 0 else $secs end) as $x
         | (($x / 3600) | floor) as $th
         | ((($x % 3600) / 60) | floor) as $m
-        | [ (($th / 24) | floor) as $d | if $d > 0 then "\($d)d" else empty end,
-            ($th % 24) as $h | if $h > 0 then "\($h)h" else empty end,
-            (if $m > 0 then "\($m)m" else empty end) ]
-        | if length > 0 then join("") else "0m" end;
+        | [ (($th / 24) | floor) as $d | if $d > 0 then "\($d)ᵈ" else empty end,
+            ($th % 24) as $h | if $h > 0 then "\($h)ʰ" else empty end,
+            (if $m > 0 then "\($m)ᵐ" else empty end) ]
+        | if length > 0 then join("") else "0ᵐ" end;
 
     def slider($pct):
         ((([0, ([100, $pct] | min)] | max) / 100 * 10) | round) as $f

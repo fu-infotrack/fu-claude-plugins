@@ -4,10 +4,11 @@ A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@l
 five lines and every one of its formatting rules, at **12.3 ms / 11 MB** per render instead of
 **605 ms / 103 MB** (49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Three deliberate divergences since, all
+It matched ccstatusline byte for byte through v0.1.1. Four deliberate divergences since, all
 below: v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
-equivalent of, and v0.5.0 **dropped the context percentage** — the bar and the token count already
-say it. Everything else about the render contract is unchanged and still tested against it.
+equivalent of, v0.5.0 **dropped the context percentage** — the bar and the token count already say
+it — and v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`. Everything else about the render
+contract is unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -89,6 +90,25 @@ amber bar on a large window as a prompt to look at the printed token count, not 
 
 Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
 terminal the old `188` measured 1.33:1, and these greys would need to invert.
+
+## Reset timers
+
+Line 5 ends with the 5-hour and weekly countdowns. ccstatusline prints `2d 16hr 36m`; this prints
+`2ᵈ16ʰ36ᵐ`.
+
+The spaces went first. Line 5 already separates its four widgets with a space, so a countdown that
+also used spaces internally read as two or three fields rather than one value. Dropping them left
+digits and unit letters flush against each other, where baseline letters at digit size blur into
+the number — so the units moved above the baseline (`ᵈ` U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50).
+
+Separating them by glyph rather than by colour keeps the whole timer at one grey, which the palette
+below wants: hue means a value crossed a threshold, and a countdown ticking down has not crossed
+anything. The cost is a font dependency — a terminal font without the modifier letters renders
+tofu, and a terminal treating East Asian Ambiguous as wide renders `ʰ` double-width.
+
+It is display only. The value is `resets_at - now` in epoch seconds, straight off the payload;
+zero-valued leading units drop, a past or absent reset prints `0ᵐ`. Nothing is polled or kept
+between renders.
 
 ## Divergence from the default branch
 

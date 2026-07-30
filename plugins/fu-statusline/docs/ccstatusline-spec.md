@@ -190,15 +190,29 @@ const d = Math.floor(totalHours / 24), h = totalHours % 24;
 
 Zero-valued leading units are dropped: `36m`, `2d 16hr 56m`.
 
-**Since v0.5.1 the units are compacted to `2d16h56m`** — a divergence: `hr` → `h`, and the parts
-join with no separator. One letter per unit is already unambiguous, and the inner spaces were the
-same character line 5 uses between its four widgets, so a two- or three-part countdown read as
-several fields instead of one. The arithmetic is unchanged.
+**Since v0.5.1 the units are compacted, and since v0.5.2 they are superscript** — one divergence
+in two steps, both aimed at reading the countdown as a single value. v0.5.1 dropped `hr` → `h` and
+joined the parts with no separator, because a space is the same character line 5 puts between its
+four widgets, so a two- or three-part countdown read as several fields. v0.5.2 raised the units off
+the baseline (`ᵈ` U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50) — with the spaces gone the digits and their unit
+letters sit flush, and baseline letters at digit size blur into the number:
+
+```
+2d 16hr 36m     ccstatusline
+2d16h36m        v0.5.1
+2ᵈ16ʰ36ᵐ        v0.5.2
+```
+
+Separating by glyph rather than colour keeps the whole timer at one grey — the palette spends hue
+on state only, and a countdown ticking down is not a state change. The cost is a font dependency:
+these are the standard Unicode modifier letters, but a terminal font lacking them renders tofu, and
+a terminal that treats East Asian Ambiguous as wide renders `ʰ` double-width. The arithmetic is
+unchanged throughout.
 
 The countdown is `resets_at - now`, both epoch seconds — `resets_at` straight off the payload,
 `now` from `$CC_SL_NOW` when set (the test clock) else `printf '%(%s)T'`. Nothing is polled or
 tracked between renders. A missing `resets_at` defaults to `now`, and a past one clamps at zero;
-both print `0m`.
+both print `0ᵐ`.
 
 **Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. **Cost** — `$` plus `toFixed(2)`.
 
