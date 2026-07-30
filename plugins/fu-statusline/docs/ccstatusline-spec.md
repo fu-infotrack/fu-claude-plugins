@@ -238,17 +238,21 @@ only state that shifts the fields to its right. **Cost** — `$` plus `toFixed(2
 Since v0.6.0 ccstatusline's lines 4 and 5 are one line, ordered by how much each field moves:
 
 ```
-33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ │ 4.0k $80.09
+33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
 └──────── constant width ────────┘   └── grows ──┘
 ```
 
 The four rate-limit fields are constant-width by construction, so they lead and hold fixed columns
 for the whole session. The token total and the cost only ever grow, so they trail — where a
-widening field has nothing to its right to push. The fence (`│`, colour 240) marks the boundary.
+widening field has nothing to its right to push. The fence (`·`, colour 240) marks the boundary.
 
 That fence is the only glyph on the line carrying no value, and the only one below the AA floor the
 other greys hold. It has to be findable enough to group its neighbours and quiet enough not to be
-read as one of them.
+read as one of them — which is why it is a middot and not a box-drawing rule. The padding already
+does the grouping; a `│` drew a wall where the boundary only wanted a pause.
+
+`·` is East Asian Ambiguous, the same caveat as `ʰ`: a terminal configured to render that class
+wide gives it two columns. It costs a column, not correctness.
 
 **The cached / input / output breakdown is dropped.** It was three of the five most volatile fields
 on the old line 4, its sum is the total that is still printed, and line 1 already carries the

@@ -99,7 +99,7 @@ ccstatusline puts cost and a four-way token breakdown on one line and the rate l
 Since v0.6.0 they are one line, ordered by how much each field moves:
 
 ```
-33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ │ 4.0k $80.09
+33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
 └──────── constant width ────────┘   └── grows ──┘
 ```
 
@@ -107,6 +107,10 @@ The four rate-limit fields are constant-width by construction, so they lead and 
 for the whole session. The token total and the cost only ever grow, so they trail — where a
 widening field has nothing to its right to push. Net effect: the line stops reflowing under the
 cursor every ten seconds.
+
+The fence is a middot rather than a box-drawing rule: the padding already groups the left half, so
+the boundary wants a pause, not a wall. Like `ʰ` it is East Asian Ambiguous, so a terminal set to
+render that class wide gives it two columns.
 
 **The countdowns** print `2ᵈ16ʰ36ᵐ` where ccstatusline prints `2d 16hr 36m`. The spaces went first,
 since the line already separates its widgets with a space and a countdown using spaces internally

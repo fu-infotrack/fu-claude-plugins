@@ -115,7 +115,7 @@ expected_golden() { # expected_golden <cwd>
   printf '\n'
   ln_ "$(c $C_BODY "$1")"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '│') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
 }
 
 echo "== golden: four lines, exact bytes =="
@@ -171,7 +171,7 @@ expected_after=$(
   printf '\n'
   ln_ "$(c $C_BODY "$SANDBOX/nogit")"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '│') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
+  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
 )
 eq "completed line is counted, provisional one demoted" "$expected_after" "$after"
 cleanup
@@ -358,7 +358,7 @@ JSONL
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # cached 3500, in 15, out 150, total 3665 -> fix1(3.665) = "3.7k"
 eq "legacy totals" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '│') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 
@@ -373,7 +373,7 @@ t="$SANDBOX/t.jsonl"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "totals ignore the bad line" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '│') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$(printf '%s\n' "$out" | sed -n 4p)"
 cleanup
 
@@ -392,7 +392,7 @@ eq "context bar at zero" \
 # Absent rate_limits leave both countdowns at zero, and zero still occupies the
 # full width — that is the whole point of padding them.
 eq "zeroed usage line" \
-  "$(ln_ "$(c $C_OK 00.0%) $(c $C_DETAIL 0ʰ00ᵐ) $(c $C_OK 00.0%) $(c $C_DETAIL 0ᵈ00ʰ00ᵐ) $(c $C_RULE '│') $(c $C_PRIMARY 0) $(c $C_BODY '$0.00')")" \
+  "$(ln_ "$(c $C_OK 00.0%) $(c $C_DETAIL 0ʰ00ᵐ) $(c $C_OK 00.0%) $(c $C_DETAIL 0ᵈ00ʰ00ᵐ) $(c $C_RULE '·') $(c $C_PRIMARY 0) $(c $C_BODY '$0.00')")" \
   "$(printf '%s\n' "$out" | sed -n 3p)"
 cleanup
 
@@ -505,7 +505,7 @@ head -n 1 "$t" >"$t.small" && mv "$t.small" "$t"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
 # Only entry 1 remains: cached 1500, in 10, out 100, total 1610 -> "1.6k"
 eq "totals recomputed from scratch" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '│') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 

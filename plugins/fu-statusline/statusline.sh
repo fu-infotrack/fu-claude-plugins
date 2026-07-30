@@ -369,7 +369,9 @@ jq -rn \
         # moves. The four rate-limit fields are constant-width by construction, so
         # they lead and hold fixed columns for the whole session. Tokens and cost
         # only grow, so they trail — where a widening field has nothing to its
-        # right to push. The fence marks where the fixed part ends.
+        # right to push. The fence (·, U+00B7) marks where the fixed part ends —
+        # a pause rather than a wall, since the padding does the grouping and a
+        # box-drawing rule would be louder than the boundary deserves.
         #
         # The cached/in/out breakdown is dropped. It was three of the five most
         # volatile fields on the line and its sum is the total already printed;
@@ -378,7 +380,7 @@ jq -rn \
            w(dur(($rl.five_hour.resets_at // $now) - $now; "h"); c_detail),
            w(pct($pct7); sev($pct7)),
            w(dur(($rl.seven_day.resets_at // $now) - $now; "d"); c_detail),
-           w("│"; c_rule),
+           w("·"; c_rule),
            w(ftok($tok_total; 1); c_primary),
            w("$" + fix2($p.cost.total_cost_usd // 0); c_body) ] | line)
       ]
