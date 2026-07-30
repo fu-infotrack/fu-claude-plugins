@@ -37,7 +37,7 @@ ESC=$'\033'
 C_PRIMARY=253   # the two numbers worth reading
 C_BODY=248      # identity fields
 C_DETAIL=245    # detail, and anything at rest
-C_RULE=240      # the group fence on line 4, the one glyph carrying no value
+C_RULE=240      # the group fence on line 3, the one glyph carrying no value
 C_OK=108        # under 60%
 C_WARN=179      # 60-85%, and a dirty worktree
 C_CRIT=174      # over 85%
@@ -53,10 +53,10 @@ ln_() { local s="$*"; printf '%s[0m%s' "$ESC" "${s// /$NB}"; }
 SANDBOX=""
 new_sandbox() {
   # TMPDIR is forced to /tmp and HOME into the sandbox so that the sandbox path
-  # is both short and outside $HOME. Line 3 now collapses $HOME to ~ and
-  # abbreviates past CWD_BUDGET=44 columns, so a long TMPDIR (macOS defaults to
-  # one) or a TMPDIR under $HOME would otherwise rewrite the cwd the goldens
-  # below print verbatim. Pinning HOME also keeps git off the real ~/.gitconfig.
+  # is both short and outside $HOME. Line 2 collapses $HOME to ~ and abbreviates
+  # once it passes LINE_TARGET, so a long TMPDIR (macOS defaults to one) or a
+  # TMPDIR under $HOME would otherwise rewrite the directory the goldens below
+  # print verbatim. Pinning HOME also keeps git off the real ~/.gitconfig.
   SANDBOX=$(TMPDIR=/tmp mktemp -d)
   export XDG_CACHE_HOME="$SANDBOX/cache"
   export HOME="$SANDBOX/home"
@@ -67,7 +67,7 @@ trap cleanup EXIT
 
 render() { CC_SL_NOW=$NOW bash "$SL"; }
 
-# A payload with every field the five lines read.
+# A payload with every field the three lines read.
 payload() { # payload <session_id> <transcript_path> <cwd>
   jq -nc \
     --arg sid "$1" --arg tp "$2" --arg cwd "$3" --argjson now "$NOW" '{
@@ -107,44 +107,49 @@ transcript() {
 JSONL
 }
 
-# The four expected lines for the fixture above, worked out from the spec:
+# The three expected lines for the fixture above, worked out from the spec:
 #   model      "Opus 5 (1M context)" -> parenthetical stripped
 #   context    147000/1000000 = 14.7% -> round(1.47) = 1 filled cell of 10. The
 #              percentage itself is not printed; it only grades the bar's colour
+#   line 2     directory then the git widgets, one merged line since v0.8.0. The
+#              fixture directory is not a repo, so `⎇ no git` says so once — the
+#              second widget repeating it as `(no git)` is gone with the merge
 #   tokens     3973 -> fix1(3.973) = "4.0k" (the cached/in/out split is not shown)
 #   five_hour  2160s   -> 36m, printed to the full width -> "0ʰ36ᵐ"
 #   seven_day  232560s -> 64h36m -> "2ᵈ16ʰ36ᵐ"
 expected_golden() { # expected_golden <cwd>
   ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
-  ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
-  printf '\n'
-  ln_ "$(c $C_BODY "$1")"
+  ln_ "$(c $C_BODY "$1") $(c $C_BODY '⎇ no git')"
   printf '\n'
   ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
 }
 
-echo "== golden: four lines, exact bytes =="
+echo "== golden: three lines, exact bytes =="
 new_sandbox
 transcript >"$SANDBOX/t.jsonl"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "rendered output" "$(expected_golden "$SANDBOX/nogit")" "$out"
-eq "line count" "4" "$(printf '%s\n' "$out" | wc -l)"
+eq "line count" "3" "$(printf '%s\n' "$out" | wc -l)"
 cleanup
 
 echo "== working directory: ~ always, glob prefixes past the budget =="
-# The contract line 3 has to keep is that its text still reaches the directory
-# when pasted into another shell. So every case here asserts two things: the
-# rendered text, and that `cd <that text>` in a fresh bash lands on the real path.
+# The contract the directory has to keep is that its text still reaches it when
+# pasted into another shell. So every case here asserts two things: the rendered
+# text, and that `cd <that text>` in a fresh bash lands on the real path.
+#
+# None of these directories is a repo, so the git side of line 2 is the 8-column
+# `⎇ no git` and the directory may spend LINE_TARGET - 9 = 47 columns.
 new_sandbox
 cwdline() { # cwdline <cwd>
-  # Colour off, and the line-wide space -> NBSP substitution undone. Undone
-  # rather than stripped: a directory name can contain a space, and that space
-  # is NBSP by the time it is printed.
+  # Colour off, the line-wide space -> NBSP substitution undone, and the git
+  # widget that shares line 2 removed. Undone rather than stripped: a directory
+  # name can contain a space, and that space is NBSP by the time it is printed.
   local s
-  s=$(payload s1 "" "$1" | render | sed -n 3p | sed 's/\x1b\[[0-9;]*m//g')
-  printf '%s' "${s//$NB/ }"
+  s=$(payload s1 "" "$1" | render | sed -n 2p | sed 's/\x1b\[[0-9;]*m//g')
+  s=${s//$NB/ }
+  printf '%s' "${s% ⎇ no git}"
 }
 cd_reaches() { # cd_reaches <desc> <rendered> <expected real path>
   # HOME is exported, so ~ expands to the sandbox home in the child too.
@@ -159,12 +164,15 @@ eq "home itself is just ~" "~" "$(cwdline "$HOME")"
 eq "a short path keeps every segment" "~/repo/proj" "$(cwdline "$HOME/repo/proj")"
 eq "a path outside \$HOME stays absolute" "$SANDBOX/nogit" "$(cwdline "$SANDBOX/nogit")"
 
-# Past it, every middle segment collapses to its shortest unique prefix and the
-# last one is left whole: 52 columns down to 35.
+# Past it, middle segments collapse to their shortest unique prefix, outermost
+# first, and the loop stops the moment the line fits — 52 columns, and `a*` `b*`
+# already reach 46, so `charlie` and `deltadir` are left whole even though `c*`
+# and `d*` were both available.
 deep="$HOME/alpha/bravo/charlie/deltadir/leafname-that-is-long"
 mkdir -p "$deep"
 got=$(cwdline "$deep")
-eq "long path abbreviates to unique prefixes" "~/a*/b*/c*/d*/leafname-that-is-long" "$got"
+eq "abbreviates from the outside in, and stops when it fits" \
+  "~/a*/b*/charlie/deltadir/leafname-that-is-long" "$got"
 cd_reaches "abbreviated path" "$got" "$deep"
 
 # A sibling sharing a prefix pushes the prefix out until it is unique, and a
@@ -188,10 +196,89 @@ eq "segments not on disk stay literal" \
 # middle segment literal the result is no shorter, so the whole path prints as-is.
 # No cd assertion here: a path holding a space needs quoting whatever we print,
 # which is the reason such a segment is never abbreviated rather than a claim.
-spaced="$HOME/my dir/leafname-that-is-quite-long-here"
+spaced="$HOME/my dir/leafname-that-is-quite-long-here-and-longer"
 mkdir -p "$spaced"
 eq "a segment needing quotes is left literal" \
-  "~/my dir/leafname-that-is-quite-long-here" "$(cwdline "$spaced")"
+  "~/my dir/leafname-that-is-quite-long-here-and-longer" "$(cwdline "$spaced")"
+cleanup
+
+echo "== line 2: the branch a worktree already implies is not printed twice =="
+# EnterWorktree puts a worktree at <repo>/.claude/worktrees/<name> on a branch
+# named worktree-<name>, so the old lines 2 and 3 printed that name twice. The
+# branch widget is dropped exactly when the checkout implies it — which is why a
+# detached HEAD now says `⎇ detached` instead of also rendering as absence.
+#
+# Every path here is short enough to print verbatim at its budget, so these cases
+# assert the composition and nothing about abbreviation.
+new_sandbox
+line2() { # line2 <cwd>
+  # Cold git cache: these cases change the branch of one directory, and the 5 s
+  # TTL would serve the previous state back.
+  rm -rf "$XDG_CACHE_HOME/cc-statusline"
+  payload s1 "" "$1" | render | sed -n 2p
+}
+r="$HOME/r"
+git init -q "$r" >/dev/null 2>&1
+git -C "$r" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+printf '1\n' >"$r/a.txt"
+git -C "$r" add a.txt >/dev/null 2>&1
+git -C "$r" -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+wt="$r/.claude/worktrees/w"
+git -C "$r" worktree add -q -b worktree-w "$wt" >/dev/null 2>&1
+
+eq "the worktree branch is implied, so only the directory prints" \
+  "$(ln_ "$(c $C_BODY '~/r/.claude/worktrees/w') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(line2 "$wt")"
+
+# A subdirectory of the worktree still implies it — the test is the worktree root
+# from `rev-parse --show-toplevel`, not the basename of the printed path.
+mkdir -p "$wt/src"
+eq "a subdirectory of the worktree implies it too" \
+  "$(ln_ "$(c $C_BODY '~/r/.claude/worktrees/w/src') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(line2 "$wt/src")"
+
+# Switch the worktree onto some other branch and the name is news again.
+git -C "$wt" checkout -q -b feature-x >/dev/null 2>&1
+eq "any other branch in the same worktree is printed" \
+  "$(ln_ "$(c $C_BODY '~/r/.claude/worktrees/w') $(c $C_BODY feature-x) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(line2 "$wt")"
+
+# Detached HEAD used to render as no branch widget at all, which is now the
+# statement "the branch is this worktree's own". It gets its own text, and the one
+# hue on the line: losing commits to it is worth more than a grey.
+git -C "$wt" checkout -q --detach HEAD >/dev/null 2>&1
+eq "detached HEAD says so, in warn" \
+  "$(ln_ "$(c $C_BODY '~/r/.claude/worktrees/w') $(c $C_WARN '⎇ detached') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(line2 "$wt")"
+cleanup
+
+echo "== line 2: the git widgets decide what the directory may spend =="
+# LINE_TARGET is a target for the whole line, not a budget for the directory. The
+# same directory therefore abbreviates differently under a long branch name than
+# under a short one, which is the property a fixed cwd budget could not have.
+new_sandbox
+line2() { rm -rf "$XDG_CACHE_HOME/cc-statusline"
+          payload s1 "" "$1" | render | sed -n 2p | sed 's/\x1b\[[0-9;]*m//g' | tr -d "$NB"; }
+r2="$HOME/r2"
+mkdir -p "$r2/alpha/bravo/leafdir"
+git init -q "$r2" >/dev/null 2>&1
+git -C "$r2" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
+# Named so it does not share a prefix with `alpha` — `a*` would otherwise be
+# ambiguous and the assertion would be about that instead of about the budget.
+printf '1\n' >"$r2/seed.txt"
+git -C "$r2" add seed.txt >/dev/null 2>&1
+git -C "$r2" -c user.email=t@t -c user.name=t commit -qm init >/dev/null 2>&1
+deep2="$r2/alpha/bravo/leafdir"
+
+# `main` plus `(+0,-0)` costs 13, leaving 43 for a 24-column path.
+eq "a short branch leaves the path whole" \
+  "~/r2/alpha/bravo/leafdirmain(+0,-0)" "$(line2 "$deep2")"
+
+# A 26-column branch leaves 21, so one segment goes — and only one, because
+# `~/r2/a*/bravo/leafdir` is exactly 21.
+git -C "$r2" checkout -q -b very-long-branch-name-here >/dev/null 2>&1
+eq "a long branch spends the path down" \
+  "~/r2/a*/bravo/leafdirvery-long-branch-name-here(+0,-0)" "$(line2 "$deep2")"
 cleanup
 
 echo "== incremental reads match a cold full scan =="
@@ -234,9 +321,7 @@ after=$(payload s1 "$t" "$SANDBOX/nogit" | render)
 expected_after=$(
   ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_DETAIL xhigh) $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)"
   printf '\n'
-  ln_ "$(c $C_BODY '⎇ no git') $(c $C_DETAIL '(no git)')"
-  printf '\n'
-  ln_ "$(c $C_BODY "$SANDBOX/nogit")"
+  ln_ "$(c $C_BODY "$SANDBOX/nogit") $(c $C_BODY '⎇ no git')"
   printf '\n'
   ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
 )
@@ -259,7 +344,7 @@ printf '3\n' >"$repo/a.txt"      # unstaged: +1 -1
 transcript >"$SANDBOX/t.jsonl"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | render)
 eq "branch and summed diffstat" \
-  "$(ln_ "$(c $C_BODY testbr) $(c $C_WARN '(+2,-2)')")" \
+  "$(ln_ "$(c $C_BODY "$repo") $(c $C_BODY testbr) $(c $C_WARN '(+2,-2)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
@@ -283,7 +368,7 @@ transcript >"$SANDBOX/t.jsonl"
 payload s1 "$SANDBOX/t.jsonl" "$SANDBOX/nogit" | bash "$SL" >/dev/null
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | bash "$SL")
 eq "repo not poisoned by the non-repo render" \
-  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$repo") $(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 
 # Within the TTL a second render must not re-shell out to git, so a change made
@@ -291,7 +376,7 @@ eq "repo not poisoned by the non-repo render" \
 printf '2\n' >"$repo/a.txt"
 out=$(payload s1 "$SANDBOX/t.jsonl" "$repo" | bash "$SL")
 eq "cached entry served inside the TTL" \
-  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$repo") $(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 cleanup
 
@@ -324,13 +409,13 @@ clone="$SANDBOX/clone"
 git clone -q "$SANDBOX/origin.git" "$clone" >/dev/null 2>&1
 
 eq "level with origin/main drops the widget entirely" \
-  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$clone")"
 
 printf '2\n' >"$clone/a.txt"; gitc "$clone" commit -qam two
 printf '3\n' >"$clone/a.txt"; gitc "$clone" commit -qam three
 eq "two unpushed commits read as ahead" \
-  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$clone")"
 
 # origin moves and the clone fetches: both sides now count.
@@ -340,7 +425,7 @@ gitc "$seed" commit -qm remote
 gitc "$seed" push -q "$SANDBOX/origin.git" main
 gitc "$clone" fetch -q
 eq "a fetched remote commit reads as behind alongside ahead" \
-  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$clone")"
 
 # Detached HEAD leaves the branch field empty, and it now sits ahead of two more
@@ -349,7 +434,7 @@ gitc "$clone" update-ref --no-deref HEAD "$(git -C "$clone" rev-parse HEAD)"
 cold=$(gitline "$clone")
 warm=$(payload s1 "$SANDBOX/t.jsonl" "$clone" | render | sed -n 2p)
 eq "detached HEAD still counts, with no branch widget" \
-  "$(ln_ "$(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" "$cold"
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_WARN '⎇ detached') $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" "$cold"
 eq "and the cached read agrees with the cold one" "$cold" "$warm"
 
 # With no origin/HEAD the fallback list decides, and a remote candidate outranks
@@ -367,7 +452,7 @@ gitc "$loc" update-ref refs/heads/feature HEAD
 git -C "$loc" symbolic-ref HEAD refs/heads/feature >/dev/null 2>&1
 printf '3\n' >"$loc/a.txt"; gitc "$loc" commit -qam c3
 eq "origin/master outranks the local master as the base" \
-  "$(ln_ "$(c $C_BODY feature) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$loc") $(c $C_BODY feature) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$loc")"
 
 # An unborn HEAD has nothing to count against and must not fail the render.
@@ -375,7 +460,7 @@ empty="$SANDBOX/empty"
 git init -q "$empty" >/dev/null 2>&1
 git -C "$empty" symbolic-ref HEAD refs/heads/main >/dev/null 2>&1
 eq "a repo with no commits renders without a widget" \
-  "$(ln_ "$(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$empty") $(c $C_BODY main) $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$empty")"
 cleanup
 
@@ -399,7 +484,7 @@ no_tp=$(jq -nc --arg cwd "$repo" --argjson now "$NOW" '{
   context_window: { total_input_tokens: 0, context_window_size: 0, used_percentage: 0 } }')
 out=$(printf '%s' "$no_tp" | render)
 eq "cwd survives an empty transcript_path" \
-  "$(ln_ "$(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$repo") $(c $C_BODY testbr) $(c $C_DETAIL '(+0,-0)')")" \
   "$(printf '%s\n' "$out" | sed -n 2p)"
 
 # A detached HEAD has no branch name, and that empty field sits in the middle of
@@ -411,7 +496,8 @@ transcript >"$SANDBOX/t.jsonl"
 rm -rf "$XDG_CACHE_HOME/cc-statusline"
 cold=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
 warm=$(payload s2 "$SANDBOX/t.jsonl" "$repo" | bash "$SL" | sed -n 2p)
-eq "detached HEAD drops the branch widget" "$(ln_ "$(c $C_DETAIL '(+0,-0)')")" "$cold"
+eq "detached HEAD names itself" \
+  "$(ln_ "$(c $C_BODY "$repo") $(c $C_WARN '⎇ detached') $(c $C_DETAIL '(+0,-0)')")" "$cold"
 eq "and the cached read agrees with the cold one" "$cold" "$warm"
 cleanup
 
@@ -422,7 +508,7 @@ cat >"$t" <<'JSONL'
 {"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":100,"cache_creation_input_tokens":500,"cache_read_input_tokens":1000}}}
 {"type":"assistant","message":{"usage":{"input_tokens":5,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000}}}
 JSONL
-out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
+out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 3p)
 # cached 3500, in 15, out 150, total 3665 -> fix1(3.665) = "3.7k"
 eq "legacy totals" \
   "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
@@ -441,7 +527,7 @@ out=$(payload s1 "$t" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "totals ignore the bad line" \
   "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
-  "$(printf '%s\n' "$out" | sed -n 4p)"
+  "$(printf '%s\n' "$out" | sed -n 3p)"
 cleanup
 
 echo "== a fresh session with a sparse payload still renders =="
@@ -450,9 +536,13 @@ sparse=$(jq -nc '{ session_id: "s9", transcript_path: "", cwd: "",
                    context_window: { current_usage: null } }')
 out=$(printf '%s' "$sparse" | render); rc=$?
 eq "exit 0" "0" "$rc"
-# Every widget on lines 1 and 3 is empty except the context bar, and a line
-# whose widgets are all empty is dropped entirely — so the cwd line disappears.
+# Every widget on line 1 is empty except the context bar, and with no cwd line 2
+# keeps only `⎇ no git` — an empty widget is dropped along with its separator,
+# and a line whose widgets are all empty would be dropped entirely.
 eq "line count" "3" "$(printf '%s\n' "$out" | wc -l)"
+eq "line 2 is the no-git widget alone" \
+  "$(ln_ "$(c $C_BODY '⎇ no git')")" \
+  "$(printf '%s\n' "$out" | sed -n 2p)"
 eq "context bar at zero" \
   "$(ln_ "$(c $C_OK '░░░░░░░░░░ 0/0')")" \
   "$(printf '%s\n' "$out" | sed -n 1p)"
@@ -569,7 +659,7 @@ transcript >"$t"
 payload s1 "$t" "$SANDBOX/nogit" | render >/dev/null
 # A compaction rewrites the transcript shorter than the recorded offset.
 head -n 1 "$t" >"$t.small" && mv "$t.small" "$t"
-out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 4p)
+out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 3p)
 # Only entry 1 remains: cached 1500, in 10, out 100, total 1610 -> "1.6k"
 eq "totals recomputed from scratch" \
   "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
