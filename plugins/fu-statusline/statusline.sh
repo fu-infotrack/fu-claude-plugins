@@ -16,7 +16,7 @@
 # Layout started from ~/.config/ccstatusline/settings.json and has diverged:
 #   1. model | thinking effort | context bar (slider) | session name
 #   2. git branch | ahead/behind the default branch | git changes
-#   3. working directory
+#   3. working directory, $HOME-collapsed and glob-abbreviated past CWD_BUDGET
 #   4. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
 #
 # Line 4 is ccstatusline's last two lines merged. The four rate-limit fields are
@@ -27,6 +27,8 @@ set -uo pipefail
 
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/cc-statusline"
 GIT_TTL=5
+# Columns of working directory printed verbatim before line 3 starts abbreviating.
+CWD_BUDGET=44
 
 payload=$(cat)
 [ -n "$payload" ] || exit 0
@@ -216,6 +218,116 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     fi
 fi
 
+# --- working directory -------------------------------------------------------
+# Line 3 is there to be copy-pasted into another terminal, so any shortening has
+# to survive `cd <paste>`. That rules out every usual one — a middle ellipsis,
+# one letter per segment, a repo-relative path — and leaves the two a shell puts
+# back for you: `~` for $HOME, and a glob prefix for a directory name.
+#
+# So: always collapse $HOME, and past CWD_BUDGET columns replace each middle
+# segment with the shortest prefix unique among its siblings, plus `*`. The last
+# segment is never touched — it is the part actually read. `cd` on the result
+# reaches the same directory, and a prefix that a later sibling makes ambiguous
+# fails loudly (`cd: too many arguments`) rather than landing somewhere else.
+#
+# What it costs: pasting into something that is not a shell — an editor, a tool
+# argument — now needs the `*`s expanded first. Only paths over the budget pay.
+
+# Shortest prefix of <segment> that no sibling in <parent-dir> shares, plus `*`,
+# assigned to $cwd_g. Leaves it empty (and the caller keeps the segment literal)
+# when there is no prefix shorter than the name itself, when the name would need
+# quoting to paste, or when the directory is not on disk.
+#
+# The result comes back in a global rather than on stdout because a `$(...)` here
+# is a fork per path segment — 5 ms per render on a worktree path, half the whole
+# render budget, for work that takes microseconds in-process.
+cwd_glob() { # cwd_glob <parent-dir> <segment>
+    # Separate statements: a builtin's words are all expanded before it runs, so
+    # `local seg=$2 n=${#seg}` would read the *outer* seg — unset, which under
+    # `set -u` kills the function and silently drops every abbreviation.
+    local parent=$1 seg=$2
+    local n=${#seg}
+    cwd_g=""
+    [ -d "$parent" ] || return 1
+    # A name outside this set either needs quoting to paste as a bare word or
+    # already holds glob metacharacters, neither of which prefix-matches safely.
+    case $seg in *[^A-Za-z0-9._+@-]*) return 1 ;; esac
+    # "ab" cannot beat "a*", so there is nothing to win below three characters.
+    ((n > 2)) || return 1
+
+    # One readdir, not one per candidate prefix. A pattern starting with `.`
+    # matches only hidden entries and a pattern not starting with one matches
+    # only visible entries, so the siblings that can collide are whichever class
+    # the segment itself is in.
+    local -a sibs names=()
+    if [[ $seg == .* ]]; then sibs=("$parent"/.*); else sibs=("$parent"/*); fi
+    local s base found=0
+    for s in "${sibs[@]}"; do
+        # nullglob is off, so an unmatched pattern comes back as itself.
+        [ -e "$s" ] || continue
+        base=${s##*/}
+        case $base in . | ..) continue ;; esac
+        [ "$base" = "$seg" ] && found=1
+        names+=("$base")
+    done
+    # The segment has to be on disk, or the glob printed would match nothing.
+    ((found)) || return 1
+
+    local k pre clash
+    for ((k = 1; k < n - 1; k++)); do
+        pre=${seg:0:k}
+        clash=0
+        for base in "${names[@]}"; do
+            [ "$base" = "$seg" ] && continue
+            if [[ $base == "$pre"* ]]; then
+                clash=1
+                break
+            fi
+        done
+        ((clash)) || {
+            cwd_g="$pre*"
+            return 0
+        }
+    done
+    return 1
+}
+
+cwd_disp=$dir
+if [ -n "${HOME:-}" ] && [ -n "$cwd_disp" ]; then
+    if [ "$cwd_disp" = "$HOME" ]; then
+        cwd_disp="~"
+    elif [ "${cwd_disp#"$HOME"/}" != "$cwd_disp" ]; then
+        cwd_disp="~/${cwd_disp#"$HOME"/}"
+    fi
+fi
+
+if [ ${#cwd_disp} -gt "$CWD_BUDGET" ] && [[ $cwd_disp == "~/"* || $cwd_disp == /?* ]]; then
+    # Walk the display segments while accumulating the real path alongside, since
+    # the sibling lookup happens on disk and the display root may be `~`.
+    cwd_root="" cwd_acc="" cwd_rest="" cwd_out=""
+    if [[ $cwd_disp == "~/"* ]]; then
+        cwd_root="~" cwd_acc="$HOME" cwd_rest=${cwd_disp#\~/}
+    else
+        cwd_rest=${cwd_disp#/}
+    fi
+    IFS=/ read -r -a cwd_segs <<<"$cwd_rest"
+    cwd_out=$cwd_root
+    cwd_last=$((${#cwd_segs[@]} - 1))
+    for cwd_i in "${!cwd_segs[@]}"; do
+        cwd_seg=${cwd_segs[cwd_i]}
+        if [ "$cwd_i" = "$cwd_last" ]; then
+            cwd_out+="/$cwd_seg"
+        else
+            cwd_glob "${cwd_acc:-/}" "$cwd_seg"
+            cwd_out+="/${cwd_g:-$cwd_seg}"
+        fi
+        cwd_acc+="/$cwd_seg"
+    done
+    # Take it only if it bought columns — a path of all-unabbreviable segments
+    # comes back the same length, and a one-segment path has nothing to abbreviate.
+    [ ${#cwd_out} -lt ${#cwd_disp} ] && cwd_disp=$cwd_out
+fi
+
 # --- render ------------------------------------------------------------------
 jq -rn \
     --argjson p "$payload" \
@@ -229,6 +341,7 @@ jq -rn \
     --argjson dels "${dels:-0}" \
     --argjson ahead "${ahead:-0}" \
     --argjson behind "${behind:-0}" \
+    --arg cwd "${cwd_disp:-}" \
     --arg title "${title:-}" '
     # One decimal place, matching JS toFixed(1).
     def fix1($x): (($x * 10) | round) as $t | "\(($t / 10) | floor).\($t % 10)";
@@ -362,7 +475,8 @@ jq -rn \
            w(if $inrepo == 1 then "(+\($ins),-\($dels))" else "(no git)" end;
              if $inrepo == 1 then $c_changes else c_detail end) ] | line),
 
-        ([ w($p.cwd // ""; c_body) ] | line),
+        # $cwd, not $p.cwd: shortened in bash above, where the filesystem is.
+        ([ w($cwd; c_body) ] | line),
 
         # ccstatusline splits usage across two lines: cost and the four-way token
         # breakdown, then the rate limits. Merged, ordered by how much each field

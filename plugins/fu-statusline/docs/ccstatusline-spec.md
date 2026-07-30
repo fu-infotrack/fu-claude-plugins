@@ -82,6 +82,9 @@ either:
   ccstatusline has no equivalent of. See **Git** under [Formatting rules](#formatting-rules).
 - Since v0.6.0 lines 4 and 5 are **one line**, ordered by volatility — see
   [The usage line](#the-usage-line).
+- Since v0.7.0 line 3 **shortens the working directory** instead of printing `cwd` verbatim, under
+  the constraint that the text still `cd`s. See **Working directory** under
+  [Formatting rules](#formatting-rules).
 
 So the render is four lines, not five.
 
@@ -183,6 +186,26 @@ not a threshold crossing, and the count itself is what you read.
 **A status line must never fetch**, so the remote side of that comparison is only as current as
 your last fetch: `⇣` understates silently and `⇡` may already be pushed. Treat it as divergence
 from the last-known base, which is what the local refs actually record.
+
+**Working directory** — ccstatusline prints `cwd` verbatim. Since v0.7.0 (a divergence) it is
+shortened, bounded by the rule that the printed text must still reach the directory when pasted
+into another shell. Only two shortenings survive that: `~` for `$HOME`, and a **glob prefix** for a
+directory name.
+
+`$HOME` always collapses. Past `CWD_BUDGET` (44 columns of the `~`-collapsed path) each middle
+segment becomes the shortest prefix unique among its siblings plus `*`, with the last segment left
+whole — `~/repo/fu-claude-plugins/.claude/worktrees/foo` → `~/r*/f*/.claude/w*/foo`.
+
+Prefixes are computed against the real filesystem, one `readdir` per segment: the sibling set is
+the hidden entries when the segment starts with `.` and the visible ones otherwise, matching how
+the shell's own globbing treats a leading dot. A segment is left literal when it has no unique
+prefix shorter than itself (`.claude` beside `.claude-plugin` — every candidate matches both), when
+it is not on disk (the glob would expand to nothing), or when its name would need quoting to paste.
+If the result is not shorter than what it replaced, the original is printed.
+
+Ambiguity introduced later — a new sibling sharing a printed prefix — makes `cd` fail with `too
+many arguments` rather than land elsewhere, which is what makes the trade acceptable. The prefix
+search returns through a global, not `$(...)`: a fork per segment cost 5 ms of an 11 ms render.
 
 **Durations** (reset timers)
 

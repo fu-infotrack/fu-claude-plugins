@@ -4,12 +4,13 @@ A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@l
 of its formatting rules, at **12.3 ms / 11 MB** per render instead of **605 ms / 103 MB**
 (49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Five deliberate divergences since, all below:
+It matched ccstatusline byte for byte through v0.1.1. Six deliberate divergences since, all below:
 v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
 equivalent of, v0.5.0 **dropped the context percentage** — the bar and the token count already say
-it — v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`, and v0.6.0 **merged the last two
-lines** into one that mostly holds its width. Everything else about the render contract is
-unchanged and still tested against it.
+it — v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`, v0.6.0 **merged the last two lines**
+into one that mostly holds its width, and v0.7.0 **shortened the working directory** while keeping
+it copy-pasteable. Everything else about the render contract is unchanged and still tested
+against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -132,6 +133,39 @@ reading that made the split worth seeing.
 
 The values are display-only: `resets_at - now` in epoch seconds straight off the payload, a past or
 absent reset clamped to zero. Nothing is polled or kept between renders.
+
+## The working directory line
+
+Line 3 exists to be copy-pasted into another terminal, so every shortening has to survive
+`cd <paste>`. That rules out the usual ones — a middle ellipsis, one letter per segment, a
+repo-relative path — and leaves the two a shell puts back for you: `~` for `$HOME`, and a **glob
+prefix** for a directory name.
+
+`$HOME` always collapses. Past **44 columns** each middle segment is replaced by the shortest
+prefix that is unique among its siblings, plus `*`; the last segment is never touched, since it is
+the part actually read:
+
+```
+~/repo/fu-claude-plugins                                    (24, printed as-is)
+~/r*/f*/.claude/w*/statusline-cwd-shorten                   (41, was 72)
+~/r*/f*/p*/fu-s*/docs                                       (21, was 99)
+```
+
+Both forms `cd` to the same place in bash, zsh and fish. The prefixes are computed against what is
+actually on disk, so a segment with no unique prefix stays literal — `.claude` alongside
+`.claude-plugin` has none, every candidate matches both — as does a segment that is not on disk, or
+one whose name would need quoting to paste (a space, a glob character). A path whose segments all
+resist abbreviation prints unchanged rather than half-shortened.
+
+**Failure mode, and why it is acceptable:** clone a new sibling that shares a printed prefix and
+that prefix becomes ambiguous. `cd` then fails with `too many arguments` — loudly, without landing
+in the wrong directory, which is the property that makes the trade worth taking. The real cost is
+pasting into something that is *not* a shell: an editor, a tool argument, a commit message. Only
+paths over the budget carry `*` at all.
+
+Cost is one `readdir` per abbreviated segment and no forks — the prefix search returns through a
+variable, because a `$(...)` per segment measured **+5 ms** on a worktree path, half the render
+budget. Measured 20 cold renders on a 99-column path: **10 ms → 11 ms**.
 
 ## Divergence from the default branch
 
