@@ -4,21 +4,24 @@
 # token on this line is the marker install/uninstall use to recognise their own
 # copy, so do not remove it.
 #
-# Renders the same five lines from the JSON payload on stdin, but without the
-# 3.3 MB React/Ink bundle and without re-reading the whole transcript on every
-# tick. Two things make it cheap:
+# Renders the payload on stdin as four lines, without the 3.3 MB React/Ink
+# bundle and without re-reading the whole transcript on every tick. Two things
+# make it cheap:
 #
 #   * Token totals are cumulative over the entire session, so we keep a per-session
 #     cache of the running totals plus the byte offset already consumed, and parse
 #     only the bytes appended since the previous render.
 #   * Git output is cached per directory for GIT_TTL seconds.
 #
-# Layout mirrors ~/.config/ccstatusline/settings.json as of the switchover:
+# Layout started from ~/.config/ccstatusline/settings.json and has diverged:
 #   1. model | thinking effort | context bar (slider) | session name
 #   2. git branch | ahead/behind the default branch | git changes
 #   3. working directory
-#   4. session cost | tokens cached/in/out/total
-#   5. 5h usage | 5h reset | weekly usage | weekly reset
+#   4. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
+#
+# Line 4 is ccstatusline's last two lines merged. The four rate-limit fields are
+# padded to a constant width and lead, so they hold fixed columns; the two that
+# grow with the session trail, where their jitter has nothing to push.
 
 set -uo pipefail
 
@@ -239,13 +242,15 @@ jq -rn \
         elif $c >= 1000 then (if $d == 0 then (($c / 1000) | round | tostring) else fix1($c / 1000) end) + "k"
         else ($c | tostring) end;
 
-    # Countdown as "2ᵈ16ʰ36ᵐ", dropping zero-valued leading units. Two divergences
-    # from ccstatusline "2d 16hr 36m", both aimed at reading the timer as ONE
-    # value rather than several.
+    def z2($n): if $n < 10 then "0\($n)" else "\($n)" end;
+
+    # Countdown as "2ᵈ16ʰ36ᵐ" (weekly) or "0ʰ28ᵐ" (5-hour). Three divergences from
+    # ccstatusline "2d 16hr 36m", the first two aimed at reading the timer as ONE
+    # value and the third at making it stop moving.
     #
-    # No inner spaces: a space is what line 5 puts between its four widgets, so a
-    # two- or three-part countdown was separated by the same character as the
-    # widget boundaries and read as separate fields.
+    # No inner spaces: a space is what this line puts between its widgets, so a
+    # multi-part countdown was separated by the same character as the widget
+    # boundaries and read as separate fields.
     #
     # Superscript units (U+1D48 ᵈ, U+02B0 ʰ, U+1D50 ᵐ): with the spaces gone the
     # digits and their unit letters sit flush, and baseline letters at digit size
@@ -255,14 +260,28 @@ jq -rn \
     # font dependency: these are the standard modifier letters, but a terminal
     # font without them renders tofu, and terminals set to treat East Asian
     # Ambiguous as wide will render ʰ double-width.
-    def dur($secs):
+    #
+    # Constant width: every unit is always printed and the trailing ones are
+    # zero-padded to two digits, so a timer is the same width in every state it
+    # can reach. ccstatusline drops zero-valued units, which collapses 3ʰ28ᵐ to 3ʰ
+    # on the hour and 0ᵈ16ʰ36ᵐ to 16ʰ36ᵐ for six of every seven days — six columns
+    # of movement in the group these two fields share with four others.
+    #
+    # $lead names the largest unit printed: "d" for the weekly window, "h" for the
+    # 5-hour. The hours field of an "h" timer is total hours, so a value past 24
+    # widens rather than silently wrapping to a day it does not print.
+    def dur($secs; $lead):
         (if $secs < 0 then 0 else $secs end) as $x
         | (($x / 3600) | floor) as $th
         | ((($x % 3600) / 60) | floor) as $m
-        | [ (($th / 24) | floor) as $d | if $d > 0 then "\($d)ᵈ" else empty end,
-            ($th % 24) as $h | if $h > 0 then "\($h)ʰ" else empty end,
-            (if $m > 0 then "\($m)ᵐ" else empty end) ]
-        | if length > 0 then join("") else "0ᵐ" end;
+        | if $lead == "d"
+          then "\((($th / 24) | floor))ᵈ\(z2($th % 24))ʰ\(z2($m))ᵐ"
+          else "\($th)ʰ\(z2($m))ᵐ" end;
+
+    # Usage percent, zero-padded to two integer digits for the same reason: 8.0%
+    # and 33.0% must occupy the same columns. 100.0% is one wider and is the only
+    # state that moves the fields after it.
+    def pct($x): (if $x < 10 then "0" else "" end) + fix1($x) + "%";
 
     def slider($pct):
         ((([0, ([100, $pct] | min)] | max) / 100 * 10) | round) as $f
@@ -277,6 +296,10 @@ jq -rn \
     def c_primary: 253;   # the two numbers actually worth reading
     def c_body:    248;   # identity fields
     def c_detail:  245;   # diagnostic detail, and anything at rest
+    # Below the AA floor the other greys hold, deliberately: the fence is the one
+    # glyph on the line carrying no value. It has to be findable enough to group
+    # its neighbours and quiet enough not to be read as one of them.
+    def c_rule:    240;   # group fence only — never a value
     def c_ok:      108;
     def c_warn:    179;
     def c_crit:    174;
@@ -341,16 +364,23 @@ jq -rn \
 
         ([ w($p.cwd // ""; c_body) ] | line),
 
-        ([ w("$" + fix2($p.cost.total_cost_usd // 0); c_body),
-           w(ftok($cached; 1); c_detail),
-           w(ftok($tin; 1); c_detail),
-           w(ftok($tout; 1); c_detail),
-           w(ftok($tok_total; 1); c_primary) ] | line),
-
-        ([ w(fix1($pct5) + "%"; sev($pct5)),
-           w(dur(($rl.five_hour.resets_at // $now) - $now); c_detail),
-           w(fix1($pct7) + "%"; sev($pct7)),
-           w(dur(($rl.seven_day.resets_at // $now) - $now); c_detail) ] | line)
+        # ccstatusline splits usage across two lines: cost and the four-way token
+        # breakdown, then the rate limits. Merged, ordered by how much each field
+        # moves. The four rate-limit fields are constant-width by construction, so
+        # they lead and hold fixed columns for the whole session. Tokens and cost
+        # only grow, so they trail — where a widening field has nothing to its
+        # right to push. The fence marks where the fixed part ends.
+        #
+        # The cached/in/out breakdown is dropped. It was three of the five most
+        # volatile fields on the line and its sum is the total already printed;
+        # line 1 carries the context-window reading that made it useful.
+        ([ w(pct($pct5); sev($pct5)),
+           w(dur(($rl.five_hour.resets_at // $now) - $now; "h"); c_detail),
+           w(pct($pct7); sev($pct7)),
+           w(dur(($rl.seven_day.resets_at // $now) - $now; "d"); c_detail),
+           w("│"; c_rule),
+           w(ftok($tok_total; 1); c_primary),
+           w("$" + fix2($p.cost.total_cost_usd // 0); c_body) ] | line)
       ]
     | .[]
 '
