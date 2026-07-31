@@ -455,15 +455,19 @@ jq -rn \
           then "\((($th / 24) | floor))ᵈ\(z2($th % 24))ʰ\(z2($m))ᵐ"
           else "\($th)ʰ\(z2($m))ᵐ" end;
 
-    # Usage percent, right-aligned in the width of its widest state (`100.0%`, 6)
-    # by padding with spaces: 8.0%, 33.0% and 100.0% all occupy the same columns,
-    # so nothing to the right of them ever moves. Space rather than a leading zero
-    # because the pad is not a digit — `08.0%` reads as a value with two integer
-    # digits, and there is no zero-padded spelling of 100.0% to match it. The pad
-    # sits inside the widget, so it becomes NBSP with every other space on the line.
+    # Usage percent, right-aligned in 5 columns with spaces: ` 8.0%` and `33.0%`
+    # occupy the same columns, so a window filling from single to double digits
+    # moves nothing to its right. Space rather than a leading zero because the pad
+    # is not a digit — `08.0%` reads as a value with two integer digits.
+    #
+    # `100.0%` is deliberately left one wider, the only state that shifts the
+    # fields after it. Padding to 6 everywhere would buy stillness in a state that
+    # almost never happens, at the cost of the one state where a line that jumps is
+    # exactly the signal wanted. The pad sits inside the widget, so it becomes NBSP
+    # with every other space on the line.
     def pct($x):
         (fix1($x) + "%") as $s
-        | ((" " * (6 - ($s | length))) // "") + $s;
+        | ((" " * (5 - ($s | length))) // "") + $s;
 
     def slider($pct):
         ((([0, ([100, $pct] | min)] | max) / 100 * 10) | round) as $f
