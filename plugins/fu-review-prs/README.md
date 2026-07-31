@@ -191,3 +191,13 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
   to the one the other plugins ship); used only by the notifier.
 - `test/auto-approve.test.sh`, `test/notify.test.sh` — the posting-policy and
   notification contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
+
+## Docs
+
+- `docs/orchestrator-subagent-pr-review-bot.md` — why this bot is shaped the way
+  it is (the design rationale, in the order the lessons were learned).
+- `docs/pr-review-bot-spec.md` — the same design as a portable conformance spec:
+  OS-, language- and forge-agnostic ports, numbered requirements with their
+  failure modes, a 32-case conformance suite, GitHub/GitLab/Azure DevOps
+  bindings, and where this bash implementation deviates. Read it to port the bot
+  to another language or platform.

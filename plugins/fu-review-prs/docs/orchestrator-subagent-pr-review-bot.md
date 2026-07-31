@@ -169,5 +169,9 @@ git_err=$(git -C "$REPO_DIR" pull origin main --quiet 2>&1) \
 
 ## Related
 
+- Portable restatement: `pr-review-bot-spec.md` in this directory — the same
+  guidance as a numbered, testable conformance spec with the OS/language/forge
+  dependencies pushed behind ports, plus the deviations this bash implementation
+  has from it. Use this doc for *why*, that one to *port* the bot.
 - Authoritative implementation: the `fu-review-prs` plugin in the `fu-claude-plugins` marketplace — `commands/review-prs.md` (orchestrator), `scripts/lib.sh` (helpers), `review-task.md` (sub-agent spec), and the plugin `README.md`. Resolved via `${CLAUDE_PLUGIN_ROOT}`; runtime state under `~/.claude/pr-review/`.
 - Originally lived in a standalone `pr-review-bot` repo (now deleted); this doc was rescued and updated when the bot was folded into the plugin.
