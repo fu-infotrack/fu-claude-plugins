@@ -14,6 +14,7 @@ REVIEW_MARKER="<!-- claude-pr-review -->"
 # (locks, logs, per-PR state) lives under BASE_DIR, OUTSIDE the plugin cache
 # (which is wiped on reinstall). REVIEW_TASK_FILE resolves next to this script.
 BASE_DIR="$HOME/.claude/pr-review"
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # Locate review-task.md (ships beside this script in the plugin). Prefer the
 # plugin root the command exports; fall back to this script's own dir.
 if [ -n "${REVIEW_TASK_FILE:-}" ]; then
@@ -21,9 +22,10 @@ if [ -n "${REVIEW_TASK_FILE:-}" ]; then
 elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "$CLAUDE_PLUGIN_ROOT/review-task.md" ]; then
     REVIEW_TASK_FILE="$CLAUDE_PLUGIN_ROOT/review-task.md"
 else
-    LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
     REVIEW_TASK_FILE="$(cd "$LIB_DIR/.." && pwd)/review-task.md"
 fi
+# fu-tools layered config (the repo standard), used only for notifications.
+FU_CONFIG_SH="$LIB_DIR/fu-config.sh"
 # Namespace lock/state/log per repo so concurrent loops on different remotes
 # don't contend on one lock, and PR-number-keyed state files don't collide
 # across repos (e.g. owner-a/repo PR #5 vs owner-b/repo PR #5).
@@ -171,6 +173,164 @@ pr_review_set_mode() {
 }
 
 auto_approve_enabled() { [ -f "$AUTO_APPROVE_FILE" ]; }
+
+# ---------------------------------------------------------------------------
+# Notifications
+#
+# The bot posts reviews as YOUR GitHub account, and GitHub never notifies you
+# about your own actions — so without this, a completed review is invisible
+# until you read the log. Channels are opt-in via fu-tools config (the repo
+# standard); no config means silent, which is the historical behaviour:
+#
+#   { "review-prs": { "notify": ["teams"],
+#                     "teams_webhook": "https://…/triggers/manual/…&sig=…" } }
+#
+# The webhook URL is a bearer credential (anyone holding it can post to the
+# chat), so it belongs in USER config (~/.claude/fu-tools/config.json, 0600) and
+# is never logged, echoed, or included in an error message here.
+#
+# Every channel is best-effort and time-bounded: a notifier that fails, hangs,
+# or is misconfigured must never fail a tick or block the next PR.
+# ---------------------------------------------------------------------------
+
+# Read a review-prs key from the fu-tools layered config. Arrays come back one
+# element per line. Missing config/script/key -> nothing.
+fu_cfg() {
+    [ -f "$FU_CONFIG_SH" ] || return 0
+    bash "$FU_CONFIG_SH" review-prs "$1" 2>/dev/null || true
+}
+
+# Collect the facts of one outcome into a JSON object. Channels render FROM this,
+# so adding a channel never means re-deriving the facts. The PR title costs one
+# extra gh call and is best-effort — a notification is worth sending without it.
+# notify_event <kind> <pr> <blockers> <decision> <detail>
+#   kind: clean | blockers | failed | nobody
+notify_event() {
+    local kind=$1 pr=$2 blockers=$3 decision=$4 detail=$5 title
+    title=$(gh pr view "$pr" --repo "$REPO" --json title --jq '.title' 2>/dev/null || true)
+    jq -n --arg kind "$kind" --arg repo "$REPO" --arg pr "$pr" --arg title "$title" \
+          --arg decision "$decision" --arg blockers "$blockers" --arg detail "$detail" \
+          --arg url "https://github.com/$REPO/pull/$pr" \
+          '{kind:$kind, repo:$repo, pr:$pr, title:$title,
+            decision:$decision, blockers:$blockers, detail:$detail, url:$url}'
+}
+
+# POST to a Power Automate ("Workflows") webhook. The body carries the same
+# content three ways, so ONE payload fits whichever shape the flow was built in:
+#   text         — HTML. Teams' "Post message in a chat or channel" action renders
+#                  <b>/<i>/<br>/<a>/<ul> and ignores markdown. (Measured.)
+#   messageJson  — the full {type,summary,attachments} envelope PRE-SERIALIZED, for
+#                  a DIRECT channel webhook, which honours `summary` as the
+#                  notification preview. The flowbot action does NOT take it: it
+#                  wants a bare card and answers "adaptive card request is missing
+#                  or invalid" (tested), so `summary` cannot reach Teams that way.
+#   cardJson     — the bare card PRE-SERIALIZED, for a "Post card in a chat or
+#                  channel" action. Serializing here rather than with the flow's
+#                  string() avoids "message body is invalid JSON" on an untyped
+#                  field. Cards posted this way always preview as "sent a card".
+#   card         — the same card as a JSON object, for flows that want one.
+#   attachments  — the same card in the {type:"message",attachments:[…]} envelope
+#                  the ready-made Workflows templates consume.
+# All interpolated values go through @html — a PR title containing < & > must not
+# be able to inject markup.
+notify_teams() {
+    local ev=$1 hook code payload
+    hook=$(fu_cfg teams_webhook | head -n1)
+    if [ -z "$hook" ]; then
+        log "notify: 'teams' selected but review-prs.teams_webhook is unset — skipping"
+        return 0
+    fi
+    payload=$(jq -n --argjson e "$ev" '
+        ($e.kind) as $k
+        | (if $k == "blockers" then "🚧"
+           elif $k == "clean"  then "✅"
+           elif $k == "failed" then "❌"
+           else "⚠️" end) as $icon
+        | (if $k == "blockers" then "Attention"
+           elif $k == "clean"  then "Good"
+           else "Warning" end) as $colour
+        | (if $k == "blockers" then ($e.blockers + " blocker(s)")
+           elif $k == "clean"  then "no blockers"
+           elif $k == "failed" then "POST to GitHub failed"
+           else "no review body produced" end) as $summary
+        # Headline uses the bare repo name — the owner eats toast width and never
+        # varies in practice. The full owner/name stays in the FactSet.
+        | ($e.repo | split("/") | last) as $repo_short
+        | ($repo_short + " PR #" + $e.pr + " — " + $summary) as $headline
+        | ([ (if $e.decision != "" then "posted " + $e.decision else empty end),
+             (if $e.detail   != "" then $e.detail else empty end) ]
+           | join(" · ")) as $meta
+        | ([ "<b>" + ($icon + " " + $headline | @html) + "</b>",
+             (if $e.title != "" then "<i>" + ($e.title | @html) + "</i>" else empty end),
+             ($meta | @html),
+             "<a href=\"" + ($e.url | @html) + "\">Open PR</a>" ]
+           | join("<br>")) as $html
+        | ([ ($icon + " " + $headline), $meta ] | join(" · ")) as $plain
+        | ({
+            type: "AdaptiveCard",
+            version: "1.4",
+            # For clients that cannot render the card. NOT a notification summary:
+            # Teams previews a bot-posted card as "sent a card" regardless (tested),
+            # which is why the HTML `text` shape is the recommended one.
+            fallbackText: $plain,
+            body: ([
+                { type: "TextBlock", text: ($icon + " " + $headline),
+                  weight: "Bolder", size: "Medium", color: $colour, wrap: true }
+            ] + (if $e.title != ""
+                 then [{ type: "TextBlock", text: $e.title, wrap: true, isSubtle: true, spacing: "None" }]
+                 else [] end)
+              + [{ type: "FactSet", facts: ([
+                    { title: "Repo", value: $e.repo }
+                  ] + (if $e.decision != "" then [{ title: "Posted", value: $e.decision }] else [] end)
+                    + (if $e.kind == "blockers" then [{ title: "Blockers", value: $e.blockers }] else [] end)
+                    + (if $e.detail != "" then [{ title: "Note", value: $e.detail }] else [] end)) }]),
+            actions: [{ type: "Action.OpenUrl", title: "Open PR", url: $e.url }]
+        }) as $card
+        | ({
+            type: "message",
+            # The notification preview. It belongs on the message/attachment
+            # envelope — a `summary` inside the Adaptive Card does nothing, which
+            # is why a bot-posted card otherwise previews as "sent a card".
+            summary: $plain,
+            attachments: [{
+                contentType: "application/vnd.microsoft.card.adaptive",
+                summary: $plain,
+                content: $card
+            }]
+        }) as $msg
+        | $msg + {
+            text: $html,
+            card: $card,
+            cardJson: ($card | tojson),
+            messageJson: ($msg | tojson)
+        }')
+    code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+        -H 'Content-Type: application/json' --data-binary "$payload" "$hook" 2>/dev/null) \
+        || code="000"
+    case "$code" in
+        2*) log "notify: teams ok (http $code)" ;;
+        *)  log "notify: teams FAILED (http $code)" ;;  # never log the URL itself
+    esac
+}
+
+# Fan one outcome out to every configured channel. Called at the points where a
+# tick's outcome becomes final: a posted review, or a failure to post. Returns
+# immediately (no gh call, no work) when no channel is configured.
+# pr_review_notify <kind> <pr> <blockers> <decision> <detail>
+pr_review_notify() {
+    local channels ev ch
+    channels=$(fu_cfg notify)
+    [ -z "$channels" ] && return 0
+    ev=$(notify_event "$@")
+    while IFS= read -r ch; do
+        case "$ch" in
+            "")      ;;
+            teams)   notify_teams "$ev" ;;
+            bell)    printf '\a' >&2 ;;
+            *)       log "notify: unknown channel '$ch' in review-prs.notify — skipping" ;;
+        esac
+    done <<< "$channels"
+}
 
 fetch_prior_findings() {
     local pr=$1
@@ -433,6 +593,7 @@ pr_review_finish() {
 
     if [ ! -s "$body_file" ]; then
         log "PR #$pr: no review body produced — NOT posting, NOT saving state (will retry next tick)"
+        pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
     else
         # commit/tree from disk; re-derive from the live head only if pending is
         # missing (anomaly) — logged, since that risks recording a newer commit.
@@ -471,6 +632,11 @@ $review_body
 ---
 $footer"
 
+        # Blocker count comes from the body the sub-agent wrote — it is the one
+        # number worth pushing to a phone, and it needs no extra API call.
+        local blockers
+        blockers=$(grep -c '\[BLOCKER\]' "$body_file" || true)
+
         if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
             log "PR #$pr: posted $decision review"
@@ -479,8 +645,14 @@ $footer"
             else
                 log "PR #$pr: posted but commit/tree unresolved — state NOT saved (will re-review next tick)"
             fi
+            if [ "$blockers" -gt 0 ] 2>/dev/null; then
+                pr_review_notify blockers "$pr" "$blockers" "$decision" ""
+            else
+                pr_review_notify clean "$pr" 0 "$decision" ""
+            fi
         else
             log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"
+            pr_review_notify failed "$pr" "$blockers" "$decision" "retries next tick"
         fi
     fi
     # Always clear this PR's transients; the next tick regenerates them.
