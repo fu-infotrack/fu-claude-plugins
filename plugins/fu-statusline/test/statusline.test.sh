@@ -122,7 +122,7 @@ expected_golden() { # expected_golden <cwd>
   printf '\n'
   ln_ "$(c $C_BODY "$1") $(c $C_BODY '⎇ no git')"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
+  ln_ "$(c $C_OK ' 33.0%') $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK ' 28.0%') $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 4.0k) $(c $C_BODY '$80.09')"
 }
 
 echo "== golden: three lines, exact bytes =="
@@ -323,7 +323,7 @@ expected_after=$(
   printf '\n'
   ln_ "$(c $C_BODY "$SANDBOX/nogit") $(c $C_BODY '⎇ no git')"
   printf '\n'
-  ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
+  ln_ "$(c $C_OK ' 33.0%') $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK ' 28.0%') $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 104.0k) $(c $C_BODY '$80.09')"
 )
 eq "completed line is counted, provisional one demoted" "$expected_after" "$after"
 cleanup
@@ -511,7 +511,7 @@ JSONL
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 3p)
 # cached 3500, in 15, out 150, total 3665 -> fix1(3.665) = "3.7k"
 eq "legacy totals" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK ' 33.0%') $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK ' 28.0%') $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 
@@ -526,7 +526,7 @@ t="$SANDBOX/t.jsonl"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render); rc=$?
 eq "exit 0" "0" "$rc"
 eq "totals ignore the bad line" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK ' 33.0%') $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK ' 28.0%') $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 3.7k) $(c $C_BODY '$80.09')")" \
   "$(printf '%s\n' "$out" | sed -n 3p)"
 cleanup
 
@@ -549,7 +549,7 @@ eq "context bar at zero" \
 # Absent rate_limits leave both countdowns at zero, and zero still occupies the
 # full width — that is the whole point of padding them.
 eq "zeroed usage line" \
-  "$(ln_ "$(c $C_OK 00.0%) $(c $C_DETAIL 0ʰ00ᵐ) $(c $C_OK 00.0%) $(c $C_DETAIL 0ᵈ00ʰ00ᵐ) $(c $C_RULE '·') $(c $C_PRIMARY 0) $(c $C_BODY '$0.00')")" \
+  "$(ln_ "$(c $C_OK '  0.0%') $(c $C_DETAIL 0ʰ00ᵐ) $(c $C_OK '  0.0%') $(c $C_DETAIL 0ᵈ00ʰ00ᵐ) $(c $C_RULE '·') $(c $C_PRIMARY 0) $(c $C_BODY '$0.00')")" \
   "$(printf '%s\n' "$out" | sed -n 3p)"
 cleanup
 
@@ -612,11 +612,18 @@ cleanup
 
 echo "== the four rate-limit fields hold a constant width in every state =="
 # The reason they lead the line: whatever they are, the fence and everything
-# right of it start at the same column. Asserting the shape rather than a
-# character count keeps this free of locale and wcwidth questions — the claim
-# is that the digit counts never change, which is what fixes the columns.
+# right of it start at the same column. Asserted as one shape for the whole
+# fixed run rather than as a character count, which keeps this free of locale
+# and wcwidth questions — the claim is that each field's glyph count never
+# changes, and that is what fixes the columns.
+#
+# The percent pad is a space and so is the widget separator (both NBSP by the
+# time they are printed), which is why the fields cannot be split apart and
+# checked one at a time: an empty field and a padded one look identical. The
+# pattern instead pins all four plus the fence in one match, so the pad width
+# is part of what is asserted.
 new_sandbox
-usage_fields() { # usage_fields <pct5> <secs_to_5h_reset> <pct7> <secs_to_7d_reset>
+usage_line() { # usage_line <pct5> <secs_to_5h_reset> <pct7> <secs_to_7d_reset>
   jq -nc --argjson f "$1" --argjson fr "$(( NOW + $2 ))" \
          --argjson s "$3" --argjson sr "$(( NOW + $4 ))" '{
     session_id: "pad", transcript_path: "", cwd: "",
@@ -624,25 +631,28 @@ usage_fields() { # usage_fields <pct5> <secs_to_5h_reset> <pct7> <secs_to_7d_res
                    seven_day:  { used_percentage: $s, resets_at: $sr } } }' \
   | render | sed -n 3p | sed 's/\x1b\[[0-9;]*m//g'
 }
-# 5h window: floor, one minute in, mid-window, and its 4h59m ceiling.
-# 7d window: floor, one minute in, mid-window, and its 6d23h59m ceiling.
-for st in "0 0 0 0" "8.2 60 3.1 60" "33 10800 28 232560" "62 3599 47 86400" "99.9 17940 85 604740"; do
+# Six columns of percent however the pad and the integer part divide them.
+PCT6='(  [0-9]| [0-9][0-9]|[0-9][0-9][0-9])\.[0-9]%'
+FIXED_RUN="^$PCT6 [0-9]ʰ[0-9][0-9]ᵐ $PCT6 [0-9]ᵈ[0-9][0-9]ʰ[0-9][0-9]ᵐ ·"
+# 5h window: floor, one minute in, mid-window, its 4h59m ceiling, and the state
+# that used to widen the line. 7d window: floor, one minute in, mid-window, its
+# 6d23h59m ceiling, and 100% likewise.
+for st in "0 0 0 0" "8.2 60 3.1 60" "33 10800 28 232560" "62 3599 47 86400" \
+  "99.9 17940 85 604740" "100 0 100 0"; do
   set -- $st
-  IFS="$NB" read -r p5 d5 p7 d7 _ <<<"$(usage_fields "$1" "$2" "$3" "$4")"
-  case "$p5$p7" in
-    *[!0-9.%]*) bad "state [$st]: percent has unexpected characters ($p5 $p7)" ;;
-    *) if [[ $p5 =~ ^[0-9][0-9]\.[0-9]%$ && $p7 =~ ^[0-9][0-9]\.[0-9]%$ ]]
-       then ok; else bad "state [$st]: percent not 2 integer digits ($p5 $p7)"; fi ;;
-  esac
-  if [[ $d5 =~ ^[0-9]ʰ[0-9][0-9]ᵐ$ ]]; then ok
-  else bad "state [$st]: 5h timer is not HʰMMᵐ ($d5)"; fi
-  if [[ $d7 =~ ^[0-9]ᵈ[0-9][0-9]ʰ[0-9][0-9]ᵐ$ ]]; then ok
-  else bad "state [$st]: weekly timer is not DᵈHHʰMMᵐ ($d7)"; fi
+  line=$(usage_line "$1" "$2" "$3" "$4"); line=${line//$NB/ }
+  if [[ $line =~ $FIXED_RUN ]]; then ok
+  else bad "state [$st]: fixed run is not <pct6> <Hʰ MMᵐ> <pct6> <Dᵈ HHʰ MMᵐ> · ($line)"; fi
 done
-# The documented exception: 100.0% is one wider than every other percent, and
-# is the only state that moves the fields to its right.
-IFS="$NB" read -r p5 _ <<<"$(usage_fields 100 0 100 0)"
-eq "100.0% is the one widening state" "100.0%" "$p5"
+# Where the padding goes, spelled out at both ends of the range: the single-digit
+# state is two spaces then the value, and 100.0% fills the field with no pad —
+# one space between it and the 5-hour timer to its left, the separator alone.
+# Matched rather than sliced, since a slice would count bytes under LC_ALL=C.
+line=$(usage_line 8.2 60 100 0); line=${line//$NB/ }
+if [[ $line == "  8.2% "* ]]; then ok
+else bad "8.2% is not right-aligned in six columns ($line)"; fi
+if [[ $line == *"ᵐ 100.0% "* ]]; then ok
+else bad "100.0% does not fill the field pad-free ($line)"; fi
 cleanup
 
 echo "== empty stdin exits quietly =="
@@ -662,7 +672,7 @@ head -n 1 "$t" >"$t.small" && mv "$t.small" "$t"
 out=$(payload s1 "$t" "$SANDBOX/nogit" | render | sed -n 3p)
 # Only entry 1 remains: cached 1500, in 10, out 100, total 1610 -> "1.6k"
 eq "totals recomputed from scratch" \
-  "$(ln_ "$(c $C_OK 33.0%) $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK 28.0%) $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
+  "$(ln_ "$(c $C_OK ' 33.0%') $(c $C_DETAIL 0ʰ36ᵐ) $(c $C_OK ' 28.0%') $(c $C_DETAIL '2ᵈ16ʰ36ᵐ') $(c $C_RULE '·') $(c $C_PRIMARY 1.6k) $(c $C_BODY '$80.09')")" \
   "$out"
 cleanup
 

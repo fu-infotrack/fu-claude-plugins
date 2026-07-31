@@ -272,17 +272,20 @@ The countdown is `resets_at - now`, both epoch seconds — `resets_at` straight 
 tracked between renders. A missing `resets_at` defaults to `now`, and a past one clamps at zero;
 both print `0ʰ00ᵐ` / `0ᵈ00ʰ00ᵐ`.
 
-**Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. Since v0.6.0 the integer part is
-zero-padded to two digits (`08.0%`) for the same width reason. `100.0%` is one wider and is the
-only state that shifts the fields to its right. **Cost** — `$` plus `toFixed(2)`.
+**Usage percentages** — `toFixed(1)` plus `%`, e.g. `33.0%`. v0.6.0 zero-padded the integer part to
+two digits (`08.0%`) for the same width reason, which still left `100.0%` one wider and shifting
+every field to its right. Since v0.9.0 the value is instead **right-aligned with spaces in the
+6 columns `100.0%` needs** (`␠␠8.2%`, `␠33.0%`, `100.0%`), so no state moves anything and the pad
+is not mistakable for a digit — a leading zero reads as a two-digit value, and there is no
+zero-padded spelling of `100.0%` to match `08.0%` anyway. **Cost** — `$` plus `toFixed(2)`.
 
 ## The usage line
 
 Since v0.6.0 ccstatusline's lines 4 and 5 are one line, ordered by how much each field moves:
 
 ```
-33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
-└──────── constant width ────────┘   └── grows ──┘
+ 33.0% 0ʰ36ᵐ  28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
+└───────── constant width ─────────┘   └── grows ──┘
 ```
 
 The four rate-limit fields are constant-width by construction, so they lead and hold fixed columns
@@ -301,9 +304,11 @@ wide gives it two columns. It costs a column, not correctness.
 on the old line 4, its sum is the total that is still printed, and line 1 already carries the
 context-window reading that made a cache-vs-input split worth seeing.
 
-Widths, for the record: percent 5 (6 at exactly 100.0%), 5-hour timer 5, weekly timer 8, total 1–6,
-cost 5–7. `test/statusline.test.sh` asserts the first four hold their shape across the floor, the
-ceiling and several mid-window states of both windows.
+Widths, for the record: percent 6 in every state since v0.9.0, 5-hour timer 5, weekly timer 8,
+total 1–6, cost 5–7. `test/statusline.test.sh` asserts the first four hold their shape across the
+floor, the ceiling, 100% and several mid-window states of both windows — as one match over the whole
+fixed run, since the percent pad and the widget separator are the same character and a field-by-field
+split cannot tell a padded field from an empty one.
 
 ## Palette: a deliberate divergence
 
