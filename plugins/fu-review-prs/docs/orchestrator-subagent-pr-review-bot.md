@@ -71,7 +71,7 @@ Ordered highest-leverage first.
 
 9. **Auto-detect identity from cwd.** `REPO_DIR=$(git rev-parse --show-toplevel)`, `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. Run from a dedicated throwaway clone; bail (logged, lock released) if the repo can't be detected. No hardcoded repo means the same bot reviews whatever clone it is launched in.
 
-10. **Choose safe defaults for the side effect.** `DECISION: APPROVE|COMMENT` sentinel on the last line; missing/malformed → COMMENT (the safe default); never `REQUEST_CHANGES` (reserved for humans). Tree-SHA dedup so pure rebases don't re-trigger; re-request detection compares the `review_requested` event timestamp against the state-file mtime. Delta mode reconciles prior findings as RESOLVED / STILL OPEN / REINTRODUCED.
+10. **Choose safe defaults for the side effect, and make the strongest one opt-in.** `DECISION: APPROVE|COMMENT` sentinel on the last line; missing/malformed → COMMENT (the safe default); never `REQUEST_CHANGES` (reserved for humans). Go further for the one decision that is *outward-facing and durable*: an approval can satisfy branch protection and unblock a merge, so the sub-agent's `APPROVE` is treated as nothing more than "zero BLOCKERs found" and is **downgraded to COMMENT unless the tick was explicitly started with `--auto-approve`**. The gate is deterministic bash in `pr_review_finish` (the model has no discretion over it), and the mode is recorded on disk for the tick — same reasoning as #14, so a compaction can't flip a comment-only tick into an approving one — then cleared at cleanup so it never leaks into the next tick. The safe direction is also the *lossless* one: the findings post either way; only the event changes. Tree-SHA dedup so pure rebases don't re-trigger; re-request detection compares the `review_requested` event timestamp against the state-file mtime. Delta mode reconciles prior findings as RESOLVED / STILL OPEN / REINTRODUCED.
 
 11. **Keep living docs, delete stale ones.** Delete the brainstorm spec/plan once the implementation diverges; keep the plugin README + this doc as the single source of truth, and revise them when the design moves (as this doc was when the bot became a plugin and gained per-repo namespacing).
 
@@ -141,7 +141,8 @@ write_pending "$PR" "$commit" "$tree"
 # loses nothing.
 pr_review_finish "$PR"
 #   - body from review-body-<pr>.md (header line stripped before posting)
-#   - decision from decision-<pr>.txt -> body header -> COMMENT (#10 safe default)
+#   - decision from decision-<pr>.txt -> body header -> COMMENT (#10 safe default),
+#     then APPROVE -> COMMENT unless this tick recorded --auto-approve (#10 opt-in)
 #   - commit/tree from pending-<pr> (re-derived from live head only if missing)
 #   - save_review_state ONLY on a successful post (#6) -> failures retry next tick
 ```

@@ -15,7 +15,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 |---|---|---|
 | et-sweep | command + agents + scripts | Datadog Error Tracking -> GitHub issues (via the `pup` CLI) |
 | fu-log-sweep | command + agents + scripts | Datadog error-level **Logs** → de-duped GitHub issues with root-cause writeups; dedups on a computed error signature (no Error Tracking required) |
-| review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo) |
+| review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo). Comment-only by default; `--auto-approve` to approve clean PRs |
 | inspecting-orders-api | skill | Orders API inspection |
 | pg-stage | skill | Postgres via Vault (psql; caches dynamic creds) |
 | mssql-stage | skill | SQL Server via Windows (integrated) auth (`sqlcmd`; Windows-host `sqlcmd.exe` under WSL; named hosts + default, `-S` name or literal) |
