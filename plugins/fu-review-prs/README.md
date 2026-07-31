@@ -85,6 +85,48 @@ Office 365 connectors are retired — use a Power Automate flow:
    symptom is `401 DirectApiAuthorizationRequired`.
 3. Copy the trigger URL (it contains `&sig=…`) into user config as above.
 
+### Debugging the webhook
+
+Test the flow without waiting for a review. Reads the URL from config, so it
+never appears in your shell history or terminal:
+
+```bash
+hook=$(jq -r '."review-prs".teams_webhook' ~/.claude/fu-tools/config.json)
+curl -sS -o /dev/null -w 'http %{http_code}\n' --max-time 20 \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"<b>fu-review-prs</b> webhook test<br>if you can read this, the flow works"}' \
+  "$hook"
+```
+
+To exercise the real renderer — same code path a tick uses, all payload shapes:
+
+```bash
+source ~/.claude/plugins/cache/fu-claude-plugins/fu-review-prs/<version>/scripts/lib.sh
+ev=$(jq -n '{kind:"blockers", repo:"owner/repo", pr:"123", title:"Test PR title",
+             decision:"COMMENT", blockers:"2", detail:"",
+             url:"https://github.com/owner/repo/pull/123"}')
+notify_teams "$ev"     # logs "notify: teams ok (http 202)"
+```
+
+`kind` is one of `clean`, `blockers`, `failed`, `nobody` — each renders a
+different icon and colour. To see the exact bytes without sending, put a `curl`
+stub earlier on `PATH` that dumps `--data-binary` (that is what
+`test/notify.test.sh` does).
+
+| Response | Meaning |
+|---|---|
+| `202` | Power Automate accepted the trigger — **not** proof the flow's action succeeded |
+| `401` `DirectApiAuthorizationRequired` | trigger is not set to *"Who can trigger the flow?" → Anyone* |
+| `403` | tenant policy / DLP blocking the call |
+| `404` | URL wrong, or the flow was deleted or its URL rotated |
+| `000` | timeout or no route out (`curl` never got a response) |
+| `202`, but nothing in Teams | the flow ran and its **action** failed — open the run in Power Automate → the failed action → **Inputs** to see what it actually received |
+
+That last row is the common one. `InvalidBotRequestMessageBody` means the field
+got something that is not JSON — usually an expression typed into the plain
+field instead of the **fx** tab, so it arrived as the literal text
+`triggerBody()?['text']`.
+
 ### Which Teams action to use — measured
 
 One payload carries the same content four ways, so any flow shape works:
