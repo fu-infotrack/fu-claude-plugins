@@ -29,6 +29,14 @@ fi
 # across repos (e.g. owner-a/repo PR #5 vs owner-b/repo PR #5).
 REPO_SLUG="$(printf '%s' "${REPO:-unknown}" | tr '/' '-')"
 STATE_DIR="$BASE_DIR/state/$REPO_SLUG"
+# Auto-approve is OPT-IN. By default every review posts as COMMENT, even when the
+# sub-agent found zero BLOCKERs: an APPROVE is a durable, outward-facing GitHub
+# signal (it can satisfy branch protection and unblock a merge), so it has to be
+# asked for. Enable it for a tick with `/review-prs --auto-approve`, or by setting
+# PR_REVIEW_AUTO_APPROVE=1. The mode is recorded on DISK for the tick so the post
+# step reads it back the same way it reads the decision — a mid-tick compaction
+# can never flip a COMMENT tick into an approving one.
+AUTO_APPROVE_FILE="$STATE_DIR/auto-approve"
 LOG_FILE="$BASE_DIR/review-$REPO_SLUG.log"
 LOCK_FILE="$BASE_DIR/review-prs-$REPO_SLUG.lock"
 HOLDER_FILE="$BASE_DIR/review-prs-$REPO_SLUG.lock.holder"
@@ -138,6 +146,31 @@ read_decision() {
     fi
     case "$d" in APPROVE|COMMENT) printf '%s' "$d" ;; *) printf 'COMMENT' ;; esac
 }
+
+# Record this tick's auto-approve mode from the command's arguments. Called by
+# pr_review_init ONLY after the lock is held, so a LOCKED tick can never rewrite
+# the running tick's mode. Absent flag => the file is removed, i.e. every tick
+# re-declares its mode and a stale flag cannot leak into a later tick.
+pr_review_set_mode() {
+    local want=0 a
+    for a in "$@"; do
+        case "$a" in
+            "") ;;
+            --auto-approve|--approve) want=1 ;;
+            *) log "WARNING: ignoring unrecognised argument '$a'" ;;
+        esac
+    done
+    [ "${PR_REVIEW_AUTO_APPROVE:-0}" = "1" ] && want=1
+    if [ "$want" = 1 ]; then
+        : > "$AUTO_APPROVE_FILE"
+        log "auto-approve ENABLED — a review with zero BLOCKERs will post as APPROVE"
+    else
+        rm -f "$AUTO_APPROVE_FILE"
+        log "auto-approve off (default) — every review posts as COMMENT"
+    fi
+}
+
+auto_approve_enabled() { [ -f "$AUTO_APPROVE_FILE" ]; }
 
 fetch_prior_findings() {
     local pr=$1
@@ -268,7 +301,9 @@ pr_review_reset_tree() {
     fi
 }
 
-# Acquire lock, setup, purge stale files, detect queued PRs.
+# Acquire lock, setup, purge stale files, detect queued PRs. Pass the command's
+# arguments through (`pr_review_init $ARGUMENTS`) — `--auto-approve` is the only
+# one recognised, and it is recorded on disk for this tick.
 # Outputs: "LOCKED", "NO_WORK", or "PR_NUM REASON" lines.
 # On LOCKED or NO_WORK the lock is already released — the caller is done.
 pr_review_init() {
@@ -292,6 +327,9 @@ pr_review_init() {
         return 0
     fi
     log "Target repo: $REPO (checkout: $REPO_DIR)"
+    # After the REPO check, so the flag always lands in the right repo's state dir
+    # (and an undetected-repo bail writes no flag at all).
+    pr_review_set_mode "$@"
     # Refresh the ambient-context baseline that /code-review's sub-agents read
     # (CLAUDE.md, neighbouring code). Force-reset to clean main: a prior tick's
     # sub-agent may have left the clone on a PR branch with stray untracked files.
@@ -304,6 +342,7 @@ pr_review_init() {
     if [ -z "$queued" ]; then
         log "No PRs to review"
         log "=== PR review check complete ==="
+        rm -f "$AUTO_APPROVE_FILE"
         pr_review_release_lock
         echo "NO_WORK"
     else
@@ -406,17 +445,31 @@ pr_review_finish() {
             hi=$(get_pr_head_info "$pr") && { commit=${hi%%$'\t'*}; tree=${hi##*$'\t'}; }
         fi
 
-        local decision review_body
+        local decision review_body downgraded=0
         decision=$(read_decision "$pr" "$body_file")
+        # Policy gate: the sub-agent's APPROVE only means "zero BLOCKERs". Turning
+        # that into a posted GitHub approval needs the opt-in flag (see
+        # AUTO_APPROVE_FILE); without it the same findings post as a COMMENT.
+        if [ "$decision" = "APPROVE" ] && ! auto_approve_enabled; then
+            log "PR #$pr: no blockers found, but auto-approve is off — posting COMMENT"
+            decision="COMMENT"
+            downgraded=1
+        fi
         # Drop a leading "<!-- DECISION: X -->" header line so the posted body is clean.
         review_body=$(sed '1{/^<!-- *DECISION:/d}' "$body_file")
+
+        local footer="*Automated review by Claude Code via /code-review*"
+        if [ "$downgraded" = 1 ]; then
+            footer="$footer
+*No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
+        fi
 
         local body
         body="$REVIEW_MARKER
 $review_body
 
 ---
-*Automated review by Claude Code via /code-review*"
+$footer"
 
         if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
@@ -443,5 +496,8 @@ $review_body
 # in init). If the agent skips this, the 7200s holder timeout releases the lock.
 pr_review_cleanup() {
     log "=== PR review check complete ==="
+    # Drop the tick's auto-approve flag so it cannot outlive this run. (init also
+    # re-declares the mode, so this is belt-and-braces.)
+    rm -f "$AUTO_APPROVE_FILE"
     pr_review_release_lock
 }

@@ -81,6 +81,11 @@ Found N issues:
 - A core scope mismatch (Step 2) is a BLOCKER like any other.
 - APPROVE if zero BLOCKERs. COMMENT if one or more BLOCKERs.
 
+`APPROVE` here means exactly "I found zero BLOCKERs" — it is **not** a promise that
+GitHub receives an approval. The orchestrator posts approvals only when the tick was
+started with `--auto-approve`; otherwise it posts your findings as a COMMENT. Report
+your honest verdict and leave that policy to the orchestrator.
+
 ## Step 4 — Write the body file and the decision sidecar
 
 Use the `Write` tool to write **both** files. Writing the decision to disk (both

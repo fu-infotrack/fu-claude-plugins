@@ -1,18 +1,23 @@
 ---
-description: One tick of the automated PR-review loop for the current repo (auto-detected from cwd) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review. Run via /loop from inside the review clone.
+description: One tick of the automated PR-review loop for the current repo (auto-detected from cwd) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review as a COMMENT (pass --auto-approve to let clean PRs be approved). Run via /loop from inside the review clone.
+argument-hint: [--auto-approve]
 ---
 
 # /review-prs — Automated PR Review Orchestrator
 
 You are an automated PR review orchestrator. Follow these steps exactly, in order. Do not skip steps.
 
+**Posting policy:** reviews post as `COMMENT` by default, including reviews that found zero BLOCKERs. `APPROVE` is only ever posted when the tick was started with `--auto-approve`. You do not decide this — `pr_review_finish` enforces it from the flag recorded in Step 1.
+
 ---
 
 ## Step 1 — Lock, setup, detect work
 
+Pass this tick's arguments straight through (empty is fine — that is the default, comment-only mode):
+
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
-pr_review_init
+pr_review_init $ARGUMENTS
 ```
 
 - `LOCKED` → **stop**. Another instance is running (lock not held by us).
@@ -66,6 +71,8 @@ pr_review_finish <PR>
 ```
 
 `pr_review_finish` needs **only the PR number** — it recovers everything from disk: the reviewed commit/tree (from pre-flight's `pending-<PR>`), the decision (from the sub-agent's `decision-<PR>.txt` sidecar, falling back to the body's `<!-- DECISION: X -->` header, then `COMMENT`), and the body (from `review-body-<PR>.md`). So a context compaction landing right after the Task returns loses nothing. It posts the GitHub Review and saves state only on a successful post (a sub-agent that produced no body retries next tick).
+
+It also applies the posting policy: an `APPROVE` decision is downgraded to `COMMENT` unless Step 1 recorded `--auto-approve` (the body then notes that no blockers were found). The findings are posted either way.
 
 ---
 
