@@ -100,8 +100,8 @@ ccstatusline puts cost and a four-way token breakdown on one line and the rate l
 Since v0.6.0 they are one line, ordered by how much each field moves:
 
 ```
- 33.0% 0ʰ36ᵐ  28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
-└───────── constant width ─────────┘   └── grows ──┘
+33.0% 0ʰ36ᵐ 28.0% 2ᵈ16ʰ36ᵐ · 4.0k $80.09
+└──────── constant width ────────┘   └── grows ──┘
 ```
 
 The four rate-limit fields are constant-width by construction, so they lead and hold fixed columns
@@ -124,10 +124,11 @@ letters renders tofu, and a terminal treating East Asian Ambiguous as wide rende
 
 **Constant width** comes from printing every unit and zero-padding the trailing ones, rather than
 dropping zero-valued ones as ccstatusline does. That rule collapses `3ʰ28ᵐ` to `3ʰ` on the hour and
-`0ᵈ16ʰ36ᵐ` to `16ʰ36ᵐ` for six days in seven. The percentages hold their width the same way, but
-with spaces: each is right-aligned in the 6 columns `100.0%` needs (`␠␠8.2%`, `␠33.0%`, `100.0%`),
-so the fence and everything right of it never move. v0.8.0 and earlier zero-padded to two digits
-(`08.0%`), which read as a two-digit value and still left `100.0%` shifting the line.
+`0ᵈ16ʰ36ᵐ` to `16ʰ36ᵐ` for six days in seven. The percentages hold their width the same way, right-
+aligned in 5 columns — with a **space** since v0.9.1 (`␠8.2%`), where v0.6.0 used a zero (`08.0%`)
+and so read as a value with two integer digits. `100.0%` is one wider and is the only state that
+shifts anything, deliberately: it almost never happens, and when it does a line that jumps is the
+point.
 
 **The cached / input / output breakdown is gone.** It was three of the five most volatile fields on
 the old line, its sum is the total still printed, and line 1 already carries the context-window
