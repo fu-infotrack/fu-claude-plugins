@@ -88,6 +88,10 @@ vault login -method=oidc                     # opens a browser to your IdP
 vault login -method=oidc skip_browser=true   # WSL/headless: prints the URL to paste
 ```
 
+If the IdP's sign-in page then rejects the callback (Entra: `AADSTS50011`), the method
+is right and the **app registration** is the problem — see Troubleshooting; the Vault UI
+remains a working way to get a token in the meantime.
+
 - **The callback lands on `localhost:8250` *inside* the distro**, while under WSL you
   paste that URL into the **Windows** browser. It still completes, because WSL2 forwards
   Windows `localhost` into the distro — verified here: a Windows request to `:8250`
@@ -206,6 +210,52 @@ wsl -d wsl-vpnkit --cd /app wsl-vpnkit
 `ip route` inside the distro should then show `default via 192.168.127.1 dev wsltap`
 rather than an `eth0` default. (Mirrored networking — `networkingMode=mirrored` in
 `.wslconfig` — is the other way to fix it.)
+
+### `vault login -method=oidc` is rejected by the IdP, not by Vault
+
+A redirect-URI mismatch on the provider's own sign-in page — for Entra,
+`AADSTS50011: The redirect URI 'http://localhost:8250/oidc/callback' … does not match
+the redirect URIs configured for the application`. **This is not a wrong method, a
+wrong `-path`, or a Vault problem**, and no CLI flag fixes it. There are *two
+independent allow-lists* and the CLI's default callback can pass the first while
+failing the second:
+
+| Allow-list | Who owns it | Checked when |
+|---|---|---|
+| the Vault role's `allowed_redirect_uris` | Vault | `auth_url` is requested — a rejection returns an **empty** `auth_url` |
+| the app registration's redirect URIs | the IdP (Entra) | the browser hits the sign-in page |
+
+Confirm Vault's side is innocent without needing read access on `auth/oidc/config`
+(which is typically `403` for a developer token) — an allowed URI gets a real
+`auth_url`, a disallowed one comes back empty:
+
+```bash
+curl -sS -X POST -d '{"redirect_uri":"http://localhost:8250/oidc/callback"}' \
+  "$VAULT_ADDR/v1/auth/oidc/oidc/auth_url" | jq -r '.data.auth_url // "rejected by Vault"'
+```
+
+Measured 2026-08-13: Vault issued an `auth_url` for `localhost:8250` **and** `:8300`
+and for the Vault UI's own callback, but rejected `127.0.0.1:8250` and a wrong path —
+so Vault allows the CLI callback and **Entra is the blocker**. Two consequences worth
+knowing before you spend time on it:
+
+- **`port=` won't help.** Vault permits other localhost ports, but the IdP registration
+  is what's missing, so every port fails the same way. `127.0.0.1` isn't a dodge either
+  — Vault itself rejects it while allowing `localhost`.
+- **The real fix is an IdP change**: add `http://localhost:8250/oidc/callback` to the
+  app registration as a *public client / desktop* redirect URI. That's a platform-team
+  request, not something the CLI can route around.
+
+Until then the **UI flow still works** — its callback *is* registered — so log in at
+`$VAULT_ADDR` in a browser, copy the token, and hand it to the CLI via **stdin** so it
+stays out of argv and shell history:
+
+```bash
+vault login -    # paste the token, then Ctrl-D
+```
+
+Check what you ended up with using `vault token lookup`; `display_name` names the
+method that minted it.
 
 ## Common Mistakes
 
