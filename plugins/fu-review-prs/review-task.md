@@ -36,7 +36,12 @@ The orchestrator only spawns you when there is work to do — do not re-check wh
 
 ## Step 1 — Run `/code-review` to gather findings
 
-Invoke the `/code-review` slash command on PR #<PR>. Capture its findings — do not act on its own posting behaviour (you are not posting).
+Invoke the `/code-review` slash command on PR #<PR>, always with an explicit level — `low` or `medium` — never bare `/code-review`: without an explicit level it reuses whatever level was last typed in the invoking context, which for a fresh sub-agent is undefined. Pick the level yourself from the scope you're about to review (the intersected file list in DELTA mode, the full PR file list in FULL mode):
+
+- **`low`** — small/simple scope: a handful of files, a small diff, or changes confined to docs/config/tests/formatting.
+- **`medium`** — anything larger or touching actual logic (the default when in doubt).
+
+Never go above `medium` (`high`/`xhigh`/`max` are out of scope for automated PR review — too slow and too noisy for an unattended tick). Capture its findings — do not act on its own posting behaviour (you are not posting).
 
 For a DELTA review, scope `/code-review` to the PR's actual changed files (not the raw old-head→new-head diff, which includes rebased-in main commits):
 
