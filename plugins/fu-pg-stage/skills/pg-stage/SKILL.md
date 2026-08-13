@@ -239,12 +239,21 @@ and for the Vault UI's own callback, but rejected `127.0.0.1:8250` and a wrong p
 so Vault allows the CLI callback and **Entra is the blocker**. Two consequences worth
 knowing before you spend time on it:
 
-- **`port=` won't help.** Vault permits other localhost ports, but the IdP registration
-  is what's missing, so every port fails the same way. `127.0.0.1` isn't a dodge either
-  — Vault itself rejects it while allowing `localhost`.
-- **The real fix is an IdP change**: add `http://localhost:8250/oidc/callback` to the
-  app registration as a *public client / desktop* redirect URI. That's a platform-team
-  request, not something the CLI can route around.
+- **`8250` is a CLI default, not a server setting.** `redirect_uri` is composed by the
+  *client* and merely allow-listed by Vault, so it is yours to change — `vault auth help
+  oidc` documents `port` (default `8250`) plus, separately, `callbackport` (defaults to
+  `port`), `callbackhost` (`localhost`), `callbackmethod` (`http`) and `listenaddress`.
+  The callback trio is what goes *in* the redirect_uri; `port`/`listenaddress` are only
+  where the local listener sits, and they need not match.
+- **So first ask what the registration actually contains**, don't assume it needs
+  changing. If it already lists a localhost callback on another host/port/scheme, match
+  it with `callbackhost=`/`callbackport=`/`callbackmethod=` and it works with **no IdP
+  change**. Only if there is *no* localhost callback at all does someone have to add one
+  (as a *public client / desktop* redirect URI) — and you cannot infer which case you are
+  in from Vault: `auth/oidc/config` is `403` for a developer token, and the role
+  allow-lists localhost ports broadly, so it will happily issue an `auth_url` for a port
+  the IdP has never heard of. `127.0.0.1` is not a substitute for `localhost` either —
+  Vault rejects it while allowing `localhost`.
 
 Until then the **UI flow still works** — its callback *is* registered — so log in at
 `$VAULT_ADDR` in a browser, copy the token, and hand it to the CLI via **stdin** so it
