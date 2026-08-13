@@ -72,8 +72,16 @@ curl -sS "$VAULT_ADDR/v1/sys/internal/ui/mounts" | jq '.data.auth'
 # {"oidc/": {"type":"oidc", …}}   →  the mount path is the key, minus the trailing slash
 ```
 
-That endpoint is unauthenticated, so it answers before you hold a token. Log in with
-the method it actually names — for an `oidc/` mount:
+That endpoint is unauthenticated, so it answers before you hold a token. **Enumerate
+with it rather than probing mount paths one at a time** — Vault's ACL check runs
+*before* it validates the request body, so an absent mount answers `403 permission
+denied` no matter what you send it, while a mount that exists grades your payload
+(`400 missing redirect_uri` for a malformed probe, `200` for a good one). Only
+**"not 403"** is therefore a reliable existence signal; a specific success code
+depends on getting the body right, which is not what you were trying to find out.
+Measured against `auth/{oidc,azure,entra,aad,ldap}/oidc/auth_url` on 2026-08-13.
+
+Log in with the method it actually names — for an `oidc/` mount:
 
 ```bash
 vault login -method=oidc                     # opens a browser to your IdP
