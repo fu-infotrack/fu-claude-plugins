@@ -88,6 +88,13 @@ vault login -method=oidc                     # opens a browser to your IdP
 vault login -method=oidc skip_browser=true   # WSL/headless: prints the URL to paste
 ```
 
+- **The callback lands on `localhost:8250` *inside* the distro**, while under WSL you
+  paste that URL into the **Windows** browser. It still completes, because WSL2 forwards
+  Windows `localhost` into the distro — verified here: a Windows request to `:8250`
+  reaches a WSL listener. If `localhostForwarding` is off in `.wslconfig`, the command
+  prints its URL and then waits **forever** — that hang is a *networking* symptom, not a
+  rejected login. Aborting a half-finished login is safe: `vault` writes
+  `~/.vault-token` only on success, so your existing token survives a `Ctrl-C`.
 - **`-method=azure` is not "log in with Entra".** It is Vault's Azure auth method for
   *machine* identities (MSI / service principals) and will not authenticate a human.
   Entra / Azure-AD federated login arrives as **`oidc`** — the Vault UI labelling the
