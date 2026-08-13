@@ -256,6 +256,21 @@ wsl -d $DISTRO -u $USER -- bash -lc 'curl -sSfL -o /dev/null https://www.google.
 
 Internal resources (e.g. the Vault server in Phase 14) additionally need the VPN up. Validate that reachability at the phase that needs it, asking the user for an internal URL to test — do not gate the public-internet phases below on it.
 
+**VPN routes are not shared into WSL2 by default.** Under the default NAT networking the Windows VPN client's routes stay on the host, so internal hosts **resolve and then time out** — which reads as "the service is down" or "my token expired" rather than a networking problem. Diagnose by asking the Windows curl the same question; if Windows succeeds where WSL times out, the route is what's missing:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'getent hosts <internal-host>; curl -sS -m 8 -o /dev/null -w "wsl:%{http_code}\n" <internal-url>'
+curl.exe -sS -m 8 -o $null -w "win:%{http_code}`n" <internal-url>
+```
+
+The fix is [`wsl-vpnkit`](https://github.com/sakai135/wsl-vpnkit), run from a Windows terminal and **left running** for as long as the VPN is needed (`ip route` in the distro then shows `default via 192.168.127.1 dev wsltap`):
+
+```powershell
+wsl -d wsl-vpnkit --cd /app wsl-vpnkit
+```
+
+If it isn't installed yet, install it per its README, or switch the host to mirrored networking (`networkingMode=mirrored` in `%UserProfile%\.wslconfig`, then `wsl --shutdown`) — ask the user which they prefer rather than reconfiguring their networking unprompted.
+
 ## Phase 4 — GitHub CLI
 
 Probe:
@@ -531,7 +546,7 @@ $vaultAddr = ([uri]'<vault-url>').GetLeftPart([System.UriPartials]::Authority)
 $vaultAddr   # confirm with the user; this is <vault-addr> below
 ```
 
-(e.g. `https://example-vault.internal/ui/vault/secrets` → `https://example-vault.internal`.) Also ask for their **LDAP username** (`<ldap-username>`).
+(e.g. `https://example-vault.internal/ui/vault/secrets` → `https://example-vault.internal`.)
 
 Vault is an **internal** resource, so ensure the corporate VPN is up first and test reachability against the derived `<vault-addr>`. Persist `VAULT_ADDR` for future interactive shells (no sudo):
 
@@ -539,11 +554,24 @@ Vault is an **internal** resource, so ensure the corporate VPN is up first and t
 wsl -d $DISTRO -u $USER -- bash -lc 'grep -q VAULT_ADDR ~/.bashrc || echo "export VAULT_ADDR=\"<vault-addr>\"" >> ~/.bashrc'
 ```
 
-Then log in — `vault login -method=ldap` prompts for a password, so the user runs it in a **real terminal** (pass `VAULT_ADDR` inline, since a non-interactive shell won't have sourced `~/.bashrc`): `wsl -d $DISTRO`, then
+**Then find out which auth method this Vault accepts — do not assume one.** This probe is unauthenticated and credential-free, so Claude runs it directly (per the placeholder rule above); the mount path is the key minus its trailing slash:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'curl -sS "<vault-addr>/v1/sys/internal/ui/mounts" | jq ".data.auth"'
+```
+
+- **`oidc/`** → browser/SSO login (this is how Entra / Azure-AD federated login shows up). **Not** `-method=azure`, which is Vault's method for *machine* identities and will not authenticate a human — the UI's "Azure" button makes that the natural wrong guess. Under WSL add `skip_browser=true` so it prints a URL to paste rather than trying to launch a browser.
+- **`ldap/`** → password login; ask the user for their **LDAP username** (`<ldap-username>`) and use `-method=ldap username=<ldap-username>`.
+- Anything else → match `-method=` to the mount's `type`, adding `-path=<mount>` when the mount path differs from the method name.
+
+Logging in is **credential entry**, so the user runs it in a **real terminal** (pass `VAULT_ADDR` inline — a non-interactive shell won't have sourced `~/.bashrc`): `wsl -d $DISTRO`, then whichever the probe indicated:
 
 ```
+VAULT_ADDR="<vault-addr>" vault login -method=oidc skip_browser=true
 VAULT_ADDR="<vault-addr>" vault login -method=ldap username=<ldap-username>
 ```
+
+Confirm afterwards with `vault token lookup`. Note a cached `~/.vault-token` keeps working even after the method that minted it is retired, so an existing token is **not** evidence that a documented login still exists — and if `vault` fails here, rule out the WSL2 VPN-routing gotcha (Phase 3) before concluding it is an auth problem; the CLI reports both identically.
 
 ## Phase 15 — postgresql-client
 

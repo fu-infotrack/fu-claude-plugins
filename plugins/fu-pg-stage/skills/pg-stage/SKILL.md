@@ -63,16 +63,43 @@ export VAULT_ADDR="$("${CLAUDE_PLUGIN_ROOT}/scripts/fu-config.sh" pg-stage vault
 
 Persist it once in your shell rc so every session has it (`echo 'export VAULT_ADDR=...' >> ~/.zshrc`).
 
-Then log in:
+Then log in. **Ask Vault which methods it accepts rather than assuming one** — an org
+that has moved to federated SSO will have retired its old method, and using the
+retired one fails with a 403 that reads like a *permissions* problem:
 
 ```bash
-vault login -method=ldap username=<your-ldap-username>     # prompts for password
+curl -sS "$VAULT_ADDR/v1/sys/internal/ui/mounts" | jq '.data.auth'
+# {"oidc/": {"type":"oidc", …}}   →  the mount path is the key, minus the trailing slash
 ```
 
-LDAP is a common method (dynamic users come back as `v-ldap-<user>-…`); use whatever
-method your Vault is configured for. The token is cached in `~/.vault-token`, so you
-only re-login when it expires. Check with `vault token lookup`. A non-interactive
-shell may not source your rc — if `VAULT_ADDR` is empty, export it inline first.
+That endpoint is unauthenticated, so it answers before you hold a token. Log in with
+the method it actually names — for an `oidc/` mount:
+
+```bash
+vault login -method=oidc                     # opens a browser to your IdP
+vault login -method=oidc skip_browser=true   # WSL/headless: prints the URL to paste
+```
+
+- **`-method=azure` is not "log in with Entra".** It is Vault's Azure auth method for
+  *machine* identities (MSI / service principals) and will not authenticate a human.
+  Entra / Azure-AD federated login arrives as **`oidc`** — the Vault UI labelling the
+  button "Azure" makes this the natural wrong guess.
+- **`-method=ldap username=<user>`** is the classic password login. If
+  `sys/internal/ui/mounts` shows no `ldap/`, it has been retired; don't reach for it
+  because a runbook says so.
+- A **non-default mount path** needs `-path` (`vault login -method=oidc -path=oidc-alt`).
+  The example above needs none, because `oidc/` *is* the default path for `-method=oidc`.
+
+Dynamic Postgres usernames are built by the **database role's** creation statement, not
+by how you logged in — so they can still come back as `v-ldap-<user>-…` long after the
+LDAP *auth* method is gone. That is not a sign you logged in the wrong way.
+
+The token is cached in `~/.vault-token`, so you only re-login when it expires — and a
+token keeps working even if the method that minted it has since been retired, so a
+valid `~/.vault-token` is not evidence that the documented login still exists. Check
+with `vault token lookup` (`display_name` names the method that minted it). A
+non-interactive shell may not source your rc — if `VAULT_ADDR` is empty, export it
+inline first.
 
 ## Quick Reference
 
@@ -86,7 +113,7 @@ to `pg-stage.role`.
 | Explicit db-config | `connect.sh <db-config>` |
 | Explicit role | `connect.sh <db-config> <role>` |
 | Open psql shell | `connect.sh <db-config> --psql` |
-| Export `PG*` into shell | `eval "$(connect.sh <db-config> --export)"` |
+| Export `PG*` into shell | `eval "$(connect.sh <db-config> --export)"` — non-zero on failure |
 | Non-default mount | `connect.sh <db-config> --mount <mount>` |
 | Bypass cache, mint fresh | `connect.sh --fresh` |
 | Purge cached credentials | `connect.sh --purge` |
@@ -118,6 +145,53 @@ lease=$(jq -r '.lease_duration' <<<"$creds")     # seconds until creds die
 #    strip everything before '@', substitute the dynamic creds
 ```
 
+## Troubleshooting
+
+### Is Vault unreachable, or are you unauthenticated?
+
+`vault token lookup` — and every `vault read` — fails the **same way** whether your
+token expired or the host simply isn't routable. "Log in again" is therefore the
+usual wrong first move. Discriminate before you touch auth:
+
+```bash
+getent hosts <vault-host>                   # does the name resolve at all?
+curl -sS -m 8 "$VAULT_ADDR/v1/sys/health"   # can you reach it?
+```
+
+| What comes back | What it means |
+|---|---|
+| JSON (`initialized`, `sealed`, …) | Reachable — a `vault` failure really is auth. Re-login |
+| `curl: (28) … timed out` | **Routing**, not auth. Your cached token may be perfectly valid |
+| `curl: (6) Could not resolve host` | DNS — VPN or split-DNS down, or the host is wrong |
+| HTTP `429` | Rate-limited at the gateway, and it happens **unauthenticated too**. Retry before reading anything into it |
+| HTTP `403` | Genuinely reachable and answering — this one *is* permissions |
+
+A host that **resolves but times out** is the signature of an internal service
+reachable only over the corporate VPN.
+
+### WSL2: resolves but times out (the VPN's routes aren't shared)
+
+Under WSL2's default NAT networking the Windows VPN client's routes are not
+propagated into the distro, so internal hosts resolve and then hang. Confirm the
+split by asking the **Windows** curl the identical question:
+
+```bash
+curl -sS -m 8 "$VAULT_ADDR/v1/sys/health"                              # (28) timeout
+/mnt/c/Windows/System32/curl.exe -sS -m 8 "$VAULT_ADDR/v1/sys/health"  # succeeds
+```
+
+Windows succeeding where WSL times out means the **route** is missing, not Vault.
+Fix by running [`wsl-vpnkit`](https://github.com/sakai135/wsl-vpnkit) from a Windows
+terminal and leaving it running:
+
+```powershell
+wsl -d wsl-vpnkit --cd /app wsl-vpnkit
+```
+
+`ip route` inside the distro should then show `default via 192.168.127.1 dev wsltap`
+rather than an `eth0` default. (Mirrored networking — `networkingMode=mirrored` in
+`.wslconfig` — is the other way to fix it.)
+
 ## Common Mistakes
 
 - **Skipping the config read.** The config is the source of truth for both the host
@@ -130,4 +204,25 @@ lease=$(jq -r '.lease_duration' <<<"$creds")     # seconds until creds die
   keep it on the assembled string.
 - **Wrong mount.** If the engine isn't mounted at `database`, pass `--mount`.
 - **Not authenticated.** `vault read` fails with 403 / "missing client token" without
-  `vault login`. Set `VAULT_ADDR` first.
+  `vault login`. Set `VAULT_ADDR` first — and before re-logging in, check the failure
+  isn't really *unreachable* (see Troubleshooting); the two are indistinguishable from
+  the `vault` CLI alone.
+- **Trusting the exit status of a command substitution.** Every failure here writes to
+  stderr and **nothing to stdout**, so the fail-open is silent: psql falls back to the
+  local unix socket and the error reads as "the server is down" when the truth is "you
+  were never connected". `--export` now guards itself — it emits a `false` on failure,
+  so `eval "$(connect.sh … --export)"` returns non-zero and leaves `PG*` untouched. The
+  **connection-string mode cannot** self-guard, because its stdout is a URI rather than
+  shell code. Capture and check it:
+
+  ```bash
+  conn=$(connect.sh <db-config>) || return 1   # NOT  psql "$(connect.sh <db-config>)"
+  psql "$conn"
+  ```
+
+  The tell for having hit this: `psql: … connection to server on socket
+  "/var/run/postgresql/.s.PGSQL.5432" failed` — a *local socket* path, when you asked
+  for a remote host.
+- **Assuming the login method.** A retired auth method fails as 403, which looks like
+  missing permissions rather than a missing method — read `sys/internal/ui/mounts`
+  instead of trusting a runbook (see Authenticate).
