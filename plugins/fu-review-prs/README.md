@@ -185,8 +185,9 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
 - `commands/review-prs.md` — the per-tick orchestrator (context-thin).
 - `scripts/lib.sh` — lock/setup/detect/finish helpers; sourced per Bash call.
 - `review-task.md` — sub-agent spec: derive mode, read PR/linked-issue intent,
-  run `/code-review`, scope-check the diff against the intent, write body, emit a
-  `DECISION:` line. Posts nothing itself.
+  run `/code-review medium #<PR>` (effort pinned so review depth stays
+  deterministic across PRs), scope-check the diff against the intent, write
+  body, emit a `DECISION:` line. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
   to the one the other plugins ship); used only by the notifier.
 - `test/auto-approve.test.sh`, `test/notify.test.sh` — the posting-policy and

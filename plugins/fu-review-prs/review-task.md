@@ -36,7 +36,7 @@ The orchestrator only spawns you when there is work to do — do not re-check wh
 
 ## Step 1 — Run `/code-review` to gather findings
 
-Invoke the `/code-review` slash command on PR #<PR>. Capture its findings — do not act on its own posting behaviour (you are not posting).
+Invoke the `/code-review` slash command on PR #<PR> **at medium effort, always**: `/code-review medium #<PR>`. Pin the level explicitly — without it, `/code-review` reuses whatever level was last typed in the invoking context, which for a fresh sub-agent is undefined and would make review depth nondeterministic across PRs. Capture its findings — do not act on its own posting behaviour (you are not posting).
 
 For a DELTA review, scope `/code-review` to the PR's actual changed files (not the raw old-head→new-head diff, which includes rebased-in main commits):
 
