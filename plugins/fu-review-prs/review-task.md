@@ -61,8 +61,25 @@ Review only the intersected file list. Do NOT re-audit unchanged code for new is
 ## Step 2 — Classify findings and assemble the body
 
 Map every finding to one severity:
-- **BLOCKER** — security vulnerability, correctness/logic bug, data loss, breaking API change, or CLAUDE.md correctness/safety rule violation.
+- **BLOCKER** — security vulnerability, correctness/logic bug, data loss, breaking API change, CLAUDE.md correctness/safety rule violation, or a **house rule** below.
 - **NIT** — everything else (style, naming, docs, dead code, missing tests, convention drift). List NITs even when approving.
+
+**House rule — `Mint` in a method name is a BLOCKER on its own.** Any method or
+function the PR **adds or renames** whose name carries the word `Mint` is a
+BLOCKER with no other defect required. `Mint` is a stock LLM verb, not vocabulary
+any codebase here uses: reaching for it means the author never settled what the
+method actually does, so the name tells a reader nothing they can rely on. List it
+like any other finding, and say what to do about it:
+
+```
+1. [BLOCKER] Naming: `MintCredentials` — `Mint` is not this codebase's vocabulary; rename to what the method actually does — `src/Auth/TokenService.cs:31`
+```
+
+Match on **name segments**, not raw substring — split the identifier on
+camelCase/PascalCase boundaries and on `_`/`-`, and flag it when a segment is
+exactly `mint`, case-insensitively. `MintToken`, `TryMintAsync`, and `mint_creds`
+hit; `ConfirmIntent` and `Minutes` do not. Methods the PR only calls, or leaves
+untouched, are out of scope — this is a rule about names the PR is introducing.
 
 **Scope check** (skip if Step 0 recorded "no stated intent"): measure the diff against the stated intent. A scope problem is a finding like any other — tag it BLOCKER or NIT and list it:
 - The PR does **not** address the linked issue's core ask, or implements something materially different/unrelated → **BLOCKER** (it won't actually resolve the issue it claims to). Prefix the description with `Scope:` and cite the issue, e.g. `[BLOCKER] Scope: issue #123 asks for X but the diff does Y / never touches X`.
@@ -84,6 +101,7 @@ Found N issues:
 
 - A STILL OPEN or REINTRODUCED prior BLOCKER counts as a current BLOCKER.
 - A core scope mismatch (Step 2) is a BLOCKER like any other.
+- A house-rule hit (Step 2 — a `Mint`-named method) is a BLOCKER like any other.
 - APPROVE if zero BLOCKERs. COMMENT if one or more BLOCKERs.
 
 `APPROVE` here means exactly "I found zero BLOCKERs" — it is **not** a promise that
