@@ -15,7 +15,9 @@
 #                else if the config allows exactly one role it is used automatically;
 #                if it allows several and none is resolved, the roles are listed and we stop.
 #   --psql       exec psql with the dynamic creds (needs psql installed).
-#   --export     print `export PG*` lines to eval in your shell.
+#   --export     print `export PG*` lines to eval in your shell. On failure it
+#                prints `false` instead, so `eval "$(...)"` returns non-zero
+#                rather than silently eval'ing nothing (see the guard below).
 #   --mount      database secrets engine mount path (default: database / pg-stage.mount).
 #   --fresh      ignore any cached credential, mint a new one (and refresh the cache).
 #   --purge      delete all cached pg-stage credentials, then exit.
@@ -30,17 +32,8 @@
 # Requires: vault (authenticated, VAULT_ADDR set), jq.
 set -euo pipefail
 
-command -v vault >/dev/null || { echo "vault CLI not found" >&2; exit 1; }
-command -v jq    >/dev/null || { echo "jq not found" >&2; exit 1; }
-
 # fu-tools config resolver (sibling plugin script); empty if unavailable.
 cfg() { "$(dirname "$0")/../../scripts/fu-config.sh" pg-stage "$1" 2>/dev/null || true; }
-
-# VAULT_ADDR: honour the environment, else resolve from config. Must be EXPORTED
-# so the `vault` child process sees it (otherwise it falls back to 127.0.0.1:8200).
-VAULT_ADDR="${VAULT_ADDR:-$(cfg vaultAddr)}"
-: "${VAULT_ADDR:?VAULT_ADDR not set — set it or configure pg-stage.vaultAddr, then \`vault login\`}"
-export VAULT_ADDR
 
 mount=""
 mode=""
@@ -59,6 +52,35 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# ── --export must fail LOUD ──────────────────────────────────────────────────
+# `eval "$(connect.sh --export)"` is the documented happy path, and every failure
+# below writes to stderr and nothing to stdout — so the caller eval'd an EMPTY
+# string, which succeeds with $? = 0 and leaves PG* unset. psql then silently
+# falls back to the local unix socket and the error reads as "stage is down"
+# when the truth is "you were never connected". Emit shell code that reports and
+# returns non-zero instead. `false`, never `exit`: this is eval'd in the caller's
+# own shell, where `exit` would close their terminal. Existing PG* are left
+# alone — they may belong to another database this script knows nothing about.
+export_ok=0
+export_guard() {
+  local rc=$?
+  [ "$mode" = --export ] && [ "$export_ok" = 0 ] && [ "$rc" != 0 ] || return 0
+  printf '%s\n' \
+    "echo 'pg-stage: FAILED to build a connection (rc=$rc; see stderr above). PG* not set.' >&2" \
+    'false'
+}
+trap export_guard EXIT
+
+# Dependency checks sit after the trap so they are guarded like everything else.
+command -v vault >/dev/null || { echo "vault CLI not found" >&2; exit 1; }
+command -v jq    >/dev/null || { echo "jq not found" >&2; exit 1; }
+
+# VAULT_ADDR: honour the environment, else resolve from config. Must be EXPORTED
+# so the `vault` child process sees it (otherwise it falls back to 127.0.0.1:8200).
+VAULT_ADDR="${VAULT_ADDR:-$(cfg vaultAddr)}"
+: "${VAULT_ADDR:?VAULT_ADDR not set — set it or configure pg-stage.vaultAddr, then \`vault login\`}"
+export VAULT_ADDR
 
 # Fall back to config for unset values.
 [ -n "$db" ]    || db="$(cfg dbConfig)"
@@ -192,6 +214,7 @@ case "$mode" in
     ;;
   --export)
     echo "export PGHOST=$(sq "$host") PGPORT=$(sq "$port") PGDATABASE=$(sq "$dbname") PGUSER=$(sq "$user") PGPASSWORD=$(sq "$pass")"
+    export_ok=1   # stdout now carries a real assignment — stand the guard down
     echo "# Role $role — $src creds, ~${remaining}s left; re-run after expiry" >&2
     ;;
   *)
