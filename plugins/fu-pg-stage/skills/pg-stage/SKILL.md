@@ -95,8 +95,13 @@ Stage is exactly this case: the listing returns only `oidc/`, yet `ldap/` works.
 To actually prove a mount exists, probe **its own login path**. Vault's ACL check runs
 before request-body validation, so an absent mount answers `403` no matter what you
 send, while a mount that exists grades your payload — making **"not 403"** the existence
-signal. Send a body with **no password** so Vault rejects it on shape and never attempts
-a bind; a wrong password would burn an attempt against Vault's user-lockout counter:
+signal. Probe with a **throwaway username** and **no password field**. The username is
+what matters: Vault's user-lockout counter (userpass/ldap, on by default since 1.13)
+keys on the *account*, so any attempt this probe is charged for lands on a name nobody
+owns rather than on yours. Omitting the password is a second-order courtesy — stage
+rejects it before a successful bind, though the `500` suggests it still reached the
+backend, so don't rely on it alone. **Never probe with your own username and a guessed
+password.**
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -d '{}' "$VAULT_ADDR/v1/auth/ldap/login/probeuser"
@@ -106,6 +111,9 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST -d '{}' "$VAULT_ADDR/v1/auth/ld
 The path must be one the mount actually serves: the ACL keys on the *full* path, so
 probing something unrelated under the mount returns `403` whether or not the mount
 exists, and tells you nothing. Use `auth/<mount>/login/<user>` for ldap/userpass.
+Measured 2026-08-19, on a mount known to exist: `auth/ldap/login/probeuser` → `500`
+(alive) while `auth/ldap/oidc/auth_url` → **`403`** (reads as "gone"). Same live mount,
+opposite verdicts — the probe path, not the mount, decides what you conclude.
 
 Dynamic Postgres usernames come back as `v-ldap-<user>-…` because the **database role's**
 creation statement builds them — that is unrelated to how you logged in.
@@ -172,11 +180,15 @@ curl -sS -m 8 "$VAULT_ADDR/v1/sys/health"   # can you reach it?
 | JSON (`initialized`, `sealed`, …) | Reachable — a `vault` failure really is auth. Re-login |
 | `curl: (28) … timed out` | **Routing**, not auth. Your cached token may be perfectly valid |
 | `curl: (6) Could not resolve host` | DNS — VPN or split-DNS down, or the host is wrong |
-| HTTP `429` | Rate-limited at the gateway, and it happens **unauthenticated too**. Retry before reading anything into it |
+| HTTP `429` | **Standby node — healthy and reachable**, not rate limiting. `sys/health` returns `429` for "unsealed but standby" by design (`200` = active, `473` = perf standby, `503` = sealed, `501` = uninitialized). Read the body: `standby: true` confirms it. Treat exactly like `200` |
 | HTTP `403` | Genuinely reachable and answering — this one *is* permissions |
 
 A host that **resolves but times out** is the signature of an internal service
 reachable only over the corporate VPN.
+
+Note the status codes here are **`sys/health`'s own vocabulary**, not generic HTTP —
+which is why `429` is a health state rather than a rate limit. Measured on stage
+2026-08-19: `429` with `{"initialized":true,"sealed":false,"standby":true}`.
 
 ### WSL2: resolves but times out (the VPN's routes aren't shared)
 
