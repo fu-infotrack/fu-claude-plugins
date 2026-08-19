@@ -256,6 +256,21 @@ wsl -d $DISTRO -u $USER -- bash -lc 'curl -sSfL -o /dev/null https://www.google.
 
 Internal resources (e.g. the Vault server in Phase 14) additionally need the VPN up. Validate that reachability at the phase that needs it, asking the user for an internal URL to test — do not gate the public-internet phases below on it.
 
+**VPN routes are not shared into WSL2 by default.** Under the default NAT networking the Windows VPN client's routes stay on the host, so internal hosts **resolve and then time out** — which reads as "the service is down" or "my token expired" rather than a networking problem. Diagnose by asking the Windows curl the same question; if Windows succeeds where WSL times out, the route is what's missing:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'getent hosts <internal-host>; curl -sS -m 8 -o /dev/null -w "wsl:%{http_code}\n" <internal-url>'
+curl.exe -sS -m 8 -o $null -w "win:%{http_code}`n" <internal-url>
+```
+
+The fix is [`wsl-vpnkit`](https://github.com/sakai135/wsl-vpnkit), run from a Windows terminal and **left running** for as long as the VPN is needed (`ip route` in the distro then shows `default via 192.168.127.1 dev wsltap`):
+
+```powershell
+wsl -d wsl-vpnkit --cd /app wsl-vpnkit
+```
+
+If it isn't installed yet, install it per its README, or switch the host to mirrored networking (`networkingMode=mirrored` in `%UserProfile%\.wslconfig`, then `wsl --shutdown`) — ask the user which they prefer rather than reconfiguring their networking unprompted.
+
 ## Phase 4 — GitHub CLI
 
 Probe:
@@ -531,7 +546,7 @@ $vaultAddr = ([uri]'<vault-url>').GetLeftPart([System.UriPartials]::Authority)
 $vaultAddr   # confirm with the user; this is <vault-addr> below
 ```
 
-(e.g. `https://example-vault.internal/ui/vault/secrets` → `https://example-vault.internal`.) Also ask for their **LDAP username** (`<ldap-username>`).
+(e.g. `https://example-vault.internal/ui/vault/secrets` → `https://example-vault.internal`.)
 
 Vault is an **internal** resource, so ensure the corporate VPN is up first and test reachability against the derived `<vault-addr>`. Persist `VAULT_ADDR` for future interactive shells (no sudo):
 
@@ -539,10 +554,25 @@ Vault is an **internal** resource, so ensure the corporate VPN is up first and t
 wsl -d $DISTRO -u $USER -- bash -lc 'grep -q VAULT_ADDR ~/.bashrc || echo "export VAULT_ADDR=\"<vault-addr>\"" >> ~/.bashrc'
 ```
 
-Then log in — `vault login -method=ldap` prompts for a password, so the user runs it in a **real terminal** (pass `VAULT_ADDR` inline, since a non-interactive shell won't have sourced `~/.bashrc`): `wsl -d $DISTRO`, then
+Also ask for their **LDAP username** (`<ldap-username>`). Logging in is **credential
+entry**, so the user runs it in a **real terminal** (pass `VAULT_ADDR` inline — a
+non-interactive shell won't have sourced `~/.bashrc`): `wsl -d $DISTRO`, then
 
 ```
 VAULT_ADDR="<vault-addr>" vault login -method=ldap username=<ldap-username>
+```
+
+Confirm afterwards with `vault token lookup`. Two things to rule out before treating a
+failure here as an auth problem: the WSL2 VPN-routing gotcha (Phase 3), which the CLI
+reports identically to a bad token; and, if `-method=ldap` is genuinely rejected, that
+the mount really is absent — `sys/internal/ui/mounts` lists only mounts marked
+`listing_visibility: unauth` (hidden is the default), so a working method can be missing
+from it. Probe its login path instead, with no password in the body so Vault rejects on
+shape rather than burning a lockout attempt — `403` means no such mount, anything else
+means it exists:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -d "{}" "<vault-addr>/v1/auth/ldap/login/probeuser"'
 ```
 
 ## Phase 15 — postgresql-client
