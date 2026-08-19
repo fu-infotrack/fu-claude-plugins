@@ -34,6 +34,27 @@ for the same reason the decision does — a mid-tick compaction can't flip it �
 cleared at cleanup so it never leaks into a later tick. `PR_REVIEW_AUTO_APPROVE=1`
 is an equivalent env seam (used by the tests).
 
+## House rules — findings that are BLOCKERs on their own
+
+Findings normally come from `/code-review` and are graded on their own merits
+(security, correctness, data loss, breaking interface change). On top of that,
+`review-task.md` carries **house rules** — named patterns that are a BLOCKER with
+no other defect required, because the pattern *is* the defect:
+
+| Rule | Why it blocks |
+|---|---|
+| A method or function the PR **adds or renames** whose name carries the word `Mint` | `Mint` is a stock LLM verb, not vocabulary any codebase here uses. Reaching for it means the author never settled what the method actually does, so the name tells a reader nothing they can rely on. |
+
+The `Mint` match is on **name segments**, not raw substring — the identifier is
+split on camelCase/PascalCase boundaries and on `_`/`-`, and a segment equal to
+`mint` (case-insensitive) hits. `MintToken`, `TryMintAsync`, `mint_creds` are
+findings; `ConfirmIntent` and `Minutes` are not. Methods the PR only calls, or
+leaves untouched, are out of scope: the rule is about names the PR introduces.
+
+House rules live in the sub-agent spec, not in the portable spec
+(`docs/pr-review-bot-spec.md`) — R31 already admits "documented-rule violation"
+as a blocker class, and *which* rules a shop documents is not portable.
+
 ## Code vs. state
 
 - **Code** ships in the plugin: `scripts/lib.sh` (orchestrator helpers) and
@@ -188,8 +209,8 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
   run `/code-review` with an explicit `low` or `medium` level picked from the
   reviewed scope (never bare, so it never inherits an undefined level from the
   invoking context, and never above `medium` in an unattended tick),
-  scope-check the diff against the intent, write body, emit a `DECISION:`
-  line. Posts nothing itself.
+  scope-check the diff against the intent, apply the house rules above, write
+  body, emit a `DECISION:` line. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
   to the one the other plugins ship); used only by the notifier.
 - `test/auto-approve.test.sh`, `test/notify.test.sh` — the posting-policy and
