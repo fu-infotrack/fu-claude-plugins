@@ -24,8 +24,6 @@
       "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
       "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, a session-start notice in protected checkouts, a session-id stamp for PR bodies, and dotnet format pre-commit." },
-    { "name": "fu-herdr-tabs", "source": "./plugins/fu-herdr-tabs", "category": "productivity",
-      "description": "Keep a Herdr tab's label in sync with the Claude session title — SessionStart/Stop hooks, plus an optional background watcher for panes and agents that never fire a Claude hook." },
     { "name": "fu-statusline", "source": "./plugins/fu-statusline", "category": "productivity",
       "description": "A bash + jq Claude Code status line renderer — drop-in replacement for `npx ccstatusline` at 49x less time and 9x less memory per render; install/uninstall commands patch settings.json." },
     { "name": "fu-wsl-setup", "source": "./plugins/fu-wsl-setup", "category": "productivity",
