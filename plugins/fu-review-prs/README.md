@@ -88,6 +88,28 @@ Fires at the three points where a tick's outcome becomes final: a posted review
 a sub-agent that produced no body. The failure cases matter most — they are the
 silent misses you would otherwise only find by reading the log.
 
+### Counting blockers (`count_blockers`)
+
+The notified count comes from the body the sub-agent wrote, so it needs no extra
+API call — but it is **not** a raw `[BLOCKER]` occurrence count. In DELTA mode the
+"Prior findings:" block re-prints each prior finding's *original* severity tag
+next to its new status, so a fixed blocker still carries the literal `[BLOCKER]`.
+Counting occurrences reported fixed findings as live ones: on `EntityPlatform`
+#2172 a lone RESOLVED prior blocker was notified as `🚧 … 1 blocker(s)` while the
+review it linked to said *"No blockers found"*.
+
+Two rules keep the number honest:
+
+1. A line counts unless `RESOLVED` appears **before** the tag — the status
+   position the prior-findings block uses. `STILL OPEN` and `REINTRODUCED` still
+   count (Step 3 treats them as current blockers), and the word "resolved" inside
+   a live finding's own description is prose, not a status.
+2. **The decision wins on disagreement.** `APPROVE` means exactly "zero
+   BLOCKERs", so when the sub-agent said APPROVE the count is forced to 0 and the
+   discrepancy is logged. A notification contradicting the body it links to is
+   the worst kind of false positive for something meant to be triaged from a
+   toast.
+
 Every channel is best-effort and time-bounded (`curl --max-time 20`): a webhook
 that 403s, hangs, or is misconfigured is logged and the tick carries on. The
 webhook URL is never logged, echoed, or included in an error message.

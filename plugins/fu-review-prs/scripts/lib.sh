@@ -149,6 +149,22 @@ read_decision() {
     case "$d" in APPROVE|COMMENT) printf '%s' "$d" ;; *) printf 'COMMENT' ;; esac
 }
 
+# How many CURRENT blockers a review body reports. Counting raw "[BLOCKER]"
+# occurrences is wrong in DELTA mode: review-task.md's "Prior findings:" block
+# re-prints each prior finding's ORIGINAL severity tag alongside its new status,
+# so a fixed blocker still carries the literal tag. Measured on EntityPlatform
+# #2172 — a lone RESOLVED prior blocker was notified as "1 blocker(s)" while the
+# body it linked to said "No blockers found".
+#
+# So drop a line only when RESOLVED appears BEFORE the tag, i.e. in the status
+# position the prior-findings block puts it in. STILL OPEN and REINTRODUCED lines
+# still count (Step 3 treats them as current blockers), and the word "resolved"
+# inside a live finding's own description is prose, not a status.
+count_blockers() { # count_blockers <body-file>
+    [ -f "$1" ] || { printf '0'; return 0; }
+    grep '\[BLOCKER\]' "$1" 2>/dev/null | grep -cv 'RESOLVED.*\[BLOCKER\]' || true
+}
+
 # Record this tick's auto-approve mode from the command's arguments. Called by
 # pr_review_init ONLY after the lock is held, so a LOCKED tick can never rewrite
 # the running tick's mode. Absent flag => the file is removed, i.e. every tick
@@ -606,8 +622,12 @@ pr_review_finish() {
             hi=$(get_pr_head_info "$pr") && { commit=${hi%%$'\t'*}; tree=${hi##*$'\t'}; }
         fi
 
-        local decision review_body downgraded=0
+        local decision agent_decision review_body downgraded=0
         decision=$(read_decision "$pr" "$body_file")
+        # Keep the sub-agent's own verdict: the downgrade below overwrites
+        # $decision, but "did the sub-agent find zero blockers" is what the
+        # blocker count is cross-checked against.
+        agent_decision=$decision
         # Policy gate: the sub-agent's APPROVE only means "zero BLOCKERs". Turning
         # that into a posted GitHub approval needs the opt-in flag (see
         # AUTO_APPROVE_FILE); without it the same findings post as a COMMENT.
@@ -635,7 +655,16 @@ $footer"
         # Blocker count comes from the body the sub-agent wrote — it is the one
         # number worth pushing to a phone, and it needs no extra API call.
         local blockers
-        blockers=$(grep -c '\[BLOCKER\]' "$body_file" || true)
+        blockers=$(count_blockers "$body_file")
+        # The decision wins on disagreement. APPROVE means exactly "zero
+        # BLOCKERs" (see the policy gate above), so a tag the count picked up out
+        # of prose must not contradict it — a notification saying "1 blocker(s)"
+        # over a body saying "No blockers found" is the worst kind of false
+        # positive for something meant to be triaged from a toast.
+        if [ "$agent_decision" = "APPROVE" ] && [ "$blockers" != 0 ]; then
+            log "PR #$pr: decision APPROVE but body shows $blockers blocker tag(s) — reporting 0"
+            blockers=0
+        fi
 
         if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then

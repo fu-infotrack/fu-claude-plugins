@@ -180,6 +180,74 @@ finish 7 COMMENT "1. [BLOCKER] Boom — a.cs:1
 has "blocker count" "2 blocker(s)" "$(curl_log)"
 cleanup
 
+# --- delta-mode prior findings ------------------------------------------------
+# The "Prior findings:" block re-prints each prior finding's ORIGINAL severity
+# tag, so a fixed blocker still carries the literal "[BLOCKER]". Counting raw
+# occurrences reported a fixed blocker as a live one — measured on
+# EntityPlatform #2172, where a lone RESOLVED prior blocker was notified as
+# "1 blocker(s)" while the body it linked to said "No blockers found".
+
+echo "== a RESOLVED prior blocker is not a current blocker =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+finish 7 APPROVE "Prior findings:
+1. RESOLVED — [BLOCKER] Correctness: unconditional write — a.cs:266
+
+Found 0 issues:"
+out=$(curl_log)
+has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
+has_no "not styled as blocking" "blocker(s)" "$out"
+has "card colour is Good" "Good" "$out"
+cleanup
+
+echo "== a STILL OPEN prior blocker does count =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+finish 7 COMMENT "Prior findings:
+1. STILL OPEN — [BLOCKER] Correctness: unconditional write — a.cs:266"
+has "counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
+cleanup
+
+echo "== a REINTRODUCED prior blocker does count =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+finish 7 COMMENT "Prior findings:
+1. REINTRODUCED — [BLOCKER] Correctness: unconditional write — a.cs:266"
+has "counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
+cleanup
+
+echo "== a RESOLVED prior blocker does not inflate a real count =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+finish 7 COMMENT "Prior findings:
+1. RESOLVED — [BLOCKER] Correctness: unconditional write — a.cs:266
+2. STILL OPEN — [BLOCKER] Scope: never touches the linked issue — b.cs:2
+
+Found 1 new issues:
+1. [BLOCKER] Boom — c.cs:3"
+has "resolved one excluded, other two counted" "🚧 widgets PR #7 — 2 blocker(s)" "$(curl_log)"
+cleanup
+
+echo "== 'resolved' inside a live blocker's own text still counts =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+# Only a RESOLVED status *preceding* the tag is a fixed finding. The word
+# appearing in the description is prose, not a status.
+finish 7 COMMENT "1. [BLOCKER] Race is not resolved by the retry — a.cs:1"
+has "still counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
+cleanup
+
+echo "== the sub-agent's APPROVE outranks any [BLOCKER] text in the body =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+# APPROVE means exactly "zero BLOCKERs" — the decision sidecar is authoritative,
+# so a stray tag in prose must not contradict it in the notification.
+finish 7 APPROVE "Found 0 issues: the prior [BLOCKER] no longer reproduces."
+out=$(curl_log)
+has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
+has_no "not styled as blocking" "blocker(s)" "$out"
+cleanup
+
 echo "== a failed GitHub post notifies too =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
