@@ -88,6 +88,38 @@ Fires at the three points where a tick's outcome becomes final: a posted review
 a sub-agent that produced no body. The failure cases matter most — they are the
 silent misses you would otherwise only find by reading the log.
 
+### Counting blockers (`count_blockers`)
+
+The notified count comes from the body the sub-agent wrote, so it needs no extra
+API call — but it is **not** a raw `[BLOCKER]` occurrence count. In DELTA mode the
+"Prior findings:" block re-prints each prior finding's *original* severity tag
+next to its new status, so a fixed blocker still carries the literal `[BLOCKER]`.
+Counting occurrences reported fixed findings as live ones: on `EntityPlatform`
+#2172 a lone RESOLVED prior blocker was notified as `🚧 … 1 blocker(s)` while the
+review it linked to said *"No blockers found"*.
+
+Two rules keep the number honest:
+
+1. A line counts unless `RESOLVED` appears **before** the tag — the status
+   position the prior-findings block uses. `STILL OPEN` and `REINTRODUCED` still
+   count (Step 3 treats them as current blockers), and the word "resolved" inside
+   a live finding's own description is prose, not a status.
+2. **The decision wins on disagreement.** `APPROVE` means exactly "zero
+   BLOCKERs", so when the sub-agent said APPROVE the count is forced to 0. A
+   notification contradicting the body it links to is the worst kind of false
+   positive for something meant to be triaged from a toast.
+
+Because rule 1 reads a line shape, `review-task.md` Step 2 **pins that shape** —
+status first, before the severity tag, on one line. Producer and parser have to
+agree, and only the prompt can hold the producer to it; the tests encode the
+shape, so a drift there fails them.
+
+Rule 2 does not swallow the disagreement. When it fires, the note
+`decision APPROVE despite N [BLOCKER] tag(s) in the body` rides along on the
+notification (not just the log — the log is what the notifier exists to avoid
+reading), so a sub-agent that writes blockers into the body and `APPROVE` into
+the sidecar still surfaces instead of producing a serene "no blockers" toast.
+
 Every channel is best-effort and time-bounded (`curl --max-time 20`): a webhook
 that 403s, hangs, or is misconfigured is logged and the tick carries on. The
 webhook URL is never logged, echoed, or included in an error message.
@@ -222,6 +254,6 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
   it is (the design rationale, in the order the lessons were learned).
 - `docs/pr-review-bot-spec.md` — the same design as a portable conformance spec:
   OS-, language- and forge-agnostic ports, numbered requirements with their
-  failure modes, a 32-case conformance suite, GitHub/GitLab/Azure DevOps
+  failure modes, a 34-case conformance suite, GitHub/GitLab/Azure DevOps
   bindings, and where this bash implementation deviates. Read it to port the bot
   to another language or platform.

@@ -24,7 +24,7 @@ implementation had to survive, stated as testable rules.
 
 - **MUST / MUST NOT / SHOULD / MAY** are used in the RFC 2119 sense.
 - **Core profile** — R1–R26. A conforming bot implements all of them.
-- **Extended profile** — R27–R31 (notifications, delta review, scope check).
+- **Extended profile** — R27–R32 (notifications, delta review, scope check, blocker counting).
   Optional, but if implemented, must be implemented as specified.
 - Every requirement carries a **failure mode**: what breaks, *silently*, when
   it is skipped. The failure modes are the reason the rule exists; a reviewer
@@ -718,6 +718,25 @@ count is zero.
 *Failure mode:* a graded severity scale makes the decision judgement-dependent
 and untestable.
 
+**R32 — `count_blockers(body_doc)` MUST count only CURRENT blockers, and the
+decision MUST win when the two disagree.** A delta review's prior-findings block
+restates each prior finding's original severity alongside its new status, so the
+blocker marker appears on findings that are already fixed. The counter MUST
+therefore be defined against a **pinned prior-findings line shape** — status
+before severity marker, on one line — and that shape MUST be stated in the
+review-agent contract (§7 R30), not only in the counter. A finding whose status
+is *resolved* MUST NOT count; *still open* and *reintroduced* MUST count (R30).
+Where the count disagrees with the decision, the decision governs: a decision of
+approve means exactly zero blockers, so the reported count MUST be zero — and the
+discrepancy MUST be surfaced on the notification itself, not only logged (R27).
+*Failure mode:* counting raw markers reports fixed findings as live ones, so the
+notification contradicts the review body it links to — the reader's only
+cross-check — and trust in every later notification goes with it. Defining the
+counter without pinning the producer's line shape is the same bug one level up:
+the parser and the review agent drift, and the regression returns silently.
+Overriding the count without surfacing the disagreement converts a loud
+inconsistency into a silent one.
+
 ## 8. OS portability rules
 
 | Concern | Rule |
@@ -815,6 +834,8 @@ endpoint. Each test states the requirement it pins.
 | 30 | Delta review with a prior blocker still present | tick | it counts as a current blocker; decision is `COMMENT` | R30, R31 |
 | 31 | Delta review after a rebase pulled in upstream files | tick | reviewed set excludes files the PR did not touch | R30 |
 | 32 | PR is closed between queueing and pre-flight | tick | skipped, logged, no post | §5.3 |
+| 33 | Delta review whose only blocker is a *resolved* prior finding | tick | reported count is 0; notification reads clean | R32 |
+| 34 | Body carries blocker markers but the decision is approve | tick | reported count is 0 **and** the discrepancy appears on the notification | R32, R27 |
 
 ## 12. Reference implementation map
 
