@@ -246,6 +246,21 @@ finish 7 APPROVE "Found 0 issues: the prior [BLOCKER] no longer reproduces."
 out=$(curl_log)
 has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
 has_no "not styled as blocking" "blocker(s)" "$out"
+# ...but the disagreement itself is news: overriding the count silently would
+# hide a sub-agent that wrote real blockers into the body and APPROVE into the
+# sidecar. The log alone is not enough — the log is what the notifier exists to
+# avoid reading.
+has "mismatch surfaced in the message" "decision APPROVE despite 1 [BLOCKER] tag(s) in the body" "$out"
+has "mismatch logged too" "reporting 0" "$(log_text)"
+cleanup
+
+echo "== a genuinely clean APPROVE carries no mismatch note =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+finish 7 APPROVE "Found 0 issues:"
+out=$(curl_log)
+has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
+has_no "no mismatch note" "despite" "$out"
 cleanup
 
 echo "== a failed GitHub post notifies too =="

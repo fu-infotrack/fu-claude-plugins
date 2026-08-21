@@ -654,15 +654,22 @@ $footer"
 
         # Blocker count comes from the body the sub-agent wrote — it is the one
         # number worth pushing to a phone, and it needs no extra API call.
-        local blockers
+        local blockers count_note=""
         blockers=$(count_blockers "$body_file")
         # The decision wins on disagreement. APPROVE means exactly "zero
         # BLOCKERs" (see the policy gate above), so a tag the count picked up out
         # of prose must not contradict it — a notification saying "1 blocker(s)"
         # over a body saying "No blockers found" is the worst kind of false
         # positive for something meant to be triaged from a toast.
+        #
+        # But the disagreement is itself news, so it rides along as $detail
+        # instead of vanishing: a sub-agent that wrote real blockers into the body
+        # and APPROVE into the sidecar must not produce a serene "no blockers"
+        # toast. Logging it is not enough — the log is what the notifier exists to
+        # avoid reading.
         if [ "$agent_decision" = "APPROVE" ] && [ "$blockers" != 0 ]; then
-            log "PR #$pr: decision APPROVE but body shows $blockers blocker tag(s) — reporting 0"
+            count_note="decision APPROVE despite $blockers [BLOCKER] tag(s) in the body"
+            log "PR #$pr: $count_note — reporting 0"
             blockers=0
         fi
 
@@ -677,7 +684,7 @@ $footer"
             if [ "$blockers" -gt 0 ] 2>/dev/null; then
                 pr_review_notify blockers "$pr" "$blockers" "$decision" ""
             else
-                pr_review_notify clean "$pr" 0 "$decision" ""
+                pr_review_notify clean "$pr" 0 "$decision" "$count_note"
             fi
         else
             log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"

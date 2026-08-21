@@ -95,7 +95,24 @@ Found N issues:
 2. [NIT] Description — `path/to/file.cs:88`
 ```
 
-**DELTA mode only** — read `PRIOR_FILE` (your previous review). For each prior finding, check its status at the current head (read cited lines via `gh api repos/<REPO>/contents/...`) and prepend a "Prior findings:" block listing each as RESOLVED / STILL OPEN / REINTRODUCED. If `PRIOR_FILE` is missing or empty, skip this block.
+**DELTA mode only** — read `PRIOR_FILE` (your previous review). For each prior finding, check its status at the current head (read cited lines via `gh api repos/<REPO>/contents/...`) and prepend a "Prior findings:" block. If `PRIOR_FILE` is missing or empty, skip this block.
+
+Each prior-findings line puts the status **first, before the severity tag**, and
+repeats the finding's **original** tag:
+
+```
+Prior findings:
+1. RESOLVED — [BLOCKER] Description — `path/to/file.cs:42`
+2. STILL OPEN — [NIT] Description — `path/to/file.cs:88`
+3. REINTRODUCED — [BLOCKER] Description — `path/to/file.cs:12`
+```
+
+Status is exactly one of `RESOLVED`, `STILL OPEN`, `REINTRODUCED`. **That order is
+a wire format, not cosmetics.** The orchestrator counts current blockers off these
+lines and recognises a fixed one only by `RESOLVED` sitting *before* the
+`[BLOCKER]` tag on the same line. Put the status anywhere else — a trailing
+`(RESOLVED)`, a separate `Status:` line — and a blocker you just confirmed fixed
+gets notified as live, which is the exact false alarm this shape prevents.
 
 ## Step 3 — Decide
 
