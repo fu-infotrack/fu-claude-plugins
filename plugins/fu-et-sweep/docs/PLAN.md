@@ -5,7 +5,8 @@
 > the `pup` Datadog CLI (run via Bash). Wherever this doc says `mcp__au-datadog-mcp__*`
 > / `search`/`get`/`analyze` MCP tools, the live design uses `pup error-tracking
 > issues search|get` + `pup traces/logs search '@issue.id:<id>'`. See `DESIGN.md`
-> (current) and the `datadog-pup` skill. Left unedited below to preserve history.
+> (current) and the `fu-pup` skill (in `fu-skills`; formerly the `fu-datadog-pup`
+> plugin). Left unedited below to preserve history.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -7,7 +7,7 @@ You investigate ONE Datadog log-sourced error signature end to end and return ON
 
 You are given: sig (12-char signature), errorKind, service, env, classification ("NEW", or "REGRESSION" with the existing gh issue number), mode ("observe" | "live"), the GitHub repo to file in (owner/name), logsUrlBase (Logs Explorer URL prefix, may be null), errorFacet / stackPath / messagePath (how to query and read this index's logs — see below), and metadata (errorMessage, count, lastSeenIso, windowStartIso, topFrame, confidence).
 
-Datadog access is the `pup` CLI (see the `datadog-pup` skill), run via Bash — not an MCP server. `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}`; read the payload under `.data`. Re-auth with `pup auth login` on a `401`.
+Datadog access is the `pup` CLI (see the `fu-pup` skill in `fu-skills`), run via Bash — not an MCP server. `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}`; read the payload under `.data`. Re-auth with `pup auth login` on a `401`.
 
 Build the bucket query BUCKET_Q = `service:<service> env:<env> status:error <errorFacet>:"<errorKind>"` (single-quote the whole `--query` — errorKind may contain dots, backticks, and brackets for generic types). `errorFacet` defaults to `@Properties.exception.type` (C#/Serilog stack) if not supplied — the generic `@error.kind`/`@error.stack` facets are usually EMPTY, do not rely on them.
 
