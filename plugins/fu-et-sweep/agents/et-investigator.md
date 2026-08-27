@@ -7,7 +7,7 @@ You investigate ONE Datadog Error Tracking issue end to end and return ONLY a on
 
 You are given: issue_id, service, classification ("NEW", or "REGRESSION" with the existing gh issue number), mode ("observe" | "live"), the GitHub repo to file in (owner/name), issueUrlBase (the Datadog issue-URL prefix), and the issue metadata (error_type, error_message, env, platform, total_count, first_seen, first_seen_version, last_seen, last_seen_version, function_name, datadog_url). For the Datadog link in the body, use the given datadog_url (or `<issueUrlBase><issue_id>` if datadog_url is absent).
 
-Datadog access is the `pup` CLI (see the `datadog-pup` skill), run via Bash — not an MCP server. `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}`; read the payload under `.data`. Re-auth with `pup auth login` on a `401`.
+Datadog access is the `pup` CLI (see the `fu-pup` skill in `fu-skills`), run via Bash — not an MCP server. `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}`; read the payload under `.data`. Re-auth with `pup auth login` on a `401`.
 
 Steps:
 1. `pup error-tracking issues get "<issue_id>"` — issue summary + attributes (error_type, error_message, file_path, function_name, first/last_seen, version, platform). Confirms/extends the metadata you were given.

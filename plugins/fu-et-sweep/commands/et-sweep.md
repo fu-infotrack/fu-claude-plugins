@@ -18,7 +18,7 @@ Derived:
 - REPO = RESOLVED.repo; QUERY = RESOLVED.query (spans ALL monitored services in one search); ISSUE_URL_BASE = RESOLVED.issueUrlBase.
 - KEY = REPO with every non-alphanumeric char replaced by "-"; STATE_FILE = "$HOME/.claude/et-sweep-state-<KEY>.json" (holds {last_successful_tick, baseline_done} in epoch ms; one file per repo since a sweep spans all its services).
 
-Datadog access is the `pup` CLI (see the `datadog-pup` skill) — not an MCP server. All Error Tracking reads run through `pup` via Bash. If `pup auth status` shows no valid token, STOP and report: run `pup auth login` first (a re-auth is also needed on a `401`). `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}` — read the payload under `.data`; for one-off `--jq` extraction, the ET search payload is a bare array (`.[]`).
+Datadog access is the `pup` CLI (see the `fu-pup` skill in `fu-skills`) — not an MCP server. All Error Tracking reads run through `pup` via Bash. If `pup auth status` shows no valid token, STOP and report: run `pup auth login` first (a re-auth is also needed on a `401`). `pup` auto-detects agent mode and wraps responses as `{status,data,metadata}` — read the payload under `.data`; for one-off `--jq` extraction, the ET search payload is a bare array (`.[]`).
 
 If REPO is empty (no GitHub remote and no --repo/config), STOP and report: cannot file issues without a target repo.
 

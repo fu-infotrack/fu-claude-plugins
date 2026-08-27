@@ -8,7 +8,7 @@ Generic: the service, env, and target repo are arguments.
 
 - The `pup` Datadog CLI on PATH and authenticated (`pup auth login`; re-auth on a
   `401`). All Error Tracking reads go through `pup` — no MCP server. See the
-  `datadog-pup` skill for the CLI.
+  `fu-pup` skill (in the `fu-skills` plugin) for the CLI.
 - `gh` CLI authenticated for the target repo.
 - Node (uses the built-in `node:test` runner; no npm install).
 - Run it in a live Claude Code session (so `pup`/`gh` auth is available).

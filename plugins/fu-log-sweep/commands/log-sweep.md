@@ -19,7 +19,7 @@ Derived:
 - ERRORFACET = RESOLVED.errorFacet (Datadog facet the exception TYPE is indexed under; default `@Properties.exception.type` for the C#/Serilog stack — the generic `@error.kind`/`@error.stack` facets are usually EMPTY). STACKPATH = RESOLVED.stackPath (dotted path to the full stack on a log event; default `attributes.attributes.Exception`). MSGPATH = RESOLVED.messagePath (default `attributes.message`). All three overridable via config for other log shapes.
 - KEY = REPO with every non-alphanumeric char replaced by "-"; STATE_FILE = "$HOME/.claude/log-sweep-state-<KEY>.json" (holds {last_successful_tick, baseline_done} in epoch ms; one file per repo).
 
-Datadog access is the `pup` CLI (see the `datadog-pup` skill) — not an MCP server. All log reads run through `pup` via Bash. If `pup auth status` shows no valid token, STOP and report: run `pup auth login` first (re-auth also needed on a `401`). `pup` wraps responses as `{status,data,metadata}` — read the payload under `.data`.
+Datadog access is the `pup` CLI (see the `fu-pup` skill in `fu-skills`) — not an MCP server. All log reads run through `pup` via Bash. If `pup auth status` shows no valid token, STOP and report: run `pup auth login` first (re-auth also needed on a `401`). `pup` wraps responses as `{status,data,metadata}` — read the payload under `.data`.
 
 If REPO is empty (no GitHub remote and no --repo/config), STOP and report: cannot file issues without a target repo.
 
