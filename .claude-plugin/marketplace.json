@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "fu-claude-plugins",
-  "description": "Personal Claude Code tooling: error-tracking sweep, PR review, orders-API inspection, pg/mssql-stage DB access, k8dash cluster inspection, and ce-compound.",
+  "description": "Personal Claude Code tooling: error-tracking sweep, PR review, the fu-skills scenario-skill bundle (pg/mssql/k8/pup/order/wsl/ce), dev guards, and a status line.",
   "owner": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
   "plugins": [
     { "name": "fu-et-sweep", "source": "./plugins/fu-et-sweep", "category": "productivity",
@@ -10,23 +10,11 @@
       "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature." },
     { "name": "fu-review-prs", "source": "./plugins/fu-review-prs", "category": "productivity",
       "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean PRs." },
-    { "name": "fu-inspecting-orders-api", "source": "./plugins/fu-inspecting-orders-api", "category": "productivity",
-      "description": "Inspect an Orders API (orders, payloads, hierarchy) from config-resolved host + token." },
-    { "name": "fu-pg-stage", "source": "./plugins/fu-pg-stage", "category": "productivity",
-      "description": "Connect to a Postgres DB whose credentials come from HashiCorp Vault's database secrets engine." },
-    { "name": "fu-mssql-stage", "source": "./plugins/fu-mssql-stage", "category": "productivity",
-      "description": "Connect to a SQL Server DB with Windows (integrated) authentication — native on Windows, or via the Windows-host sqlcmd.exe under WSL." },
-    { "name": "fu-k8dash", "source": "./plugins/fu-k8dash", "category": "productivity",
-      "description": "Read-only Kubernetes inspection across clusters (stage/prod, pick with -c) via the k8dash dashboard's API proxy (GET-only, RBAC-bounded; user's OIDC bearer token)." },
-    { "name": "fu-datadog-pup", "source": "./plugins/fu-datadog-pup", "category": "productivity",
-      "description": "Query Datadog from the terminal with the `pup` CLI — search logs/traces, triage Error Tracking, and run auth/meta ops (OAuth login, site/org selection)." },
-    { "name": "fu-ce-compound", "source": "./plugins/fu-ce-compound", "category": "productivity",
-      "description": "Document a recently solved problem to compound your team's knowledge (fork of EveryInc ce-compound)." },
+    { "name": "fu-skills", "source": "./plugins/fu-skills", "category": "productivity",
+      "description": "All fu- scenario skills in one plugin: fu-pg (Postgres via Vault), fu-mssql (SQL Server, Windows auth), fu-k8 (k8dash proxy inspection), fu-pup (Datadog pup CLI), fu-order (Orders API), fu-wsl (WSL provisioning), fu-ce (compound docs), plus /ask-fu as the catalogue/router. fu-pg and fu-pup auto-trigger; the rest are hidden from context and invoked explicitly." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
       "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, a session-start notice in protected checkouts, a session-id stamp for PR bodies, and dotnet format pre-commit." },
     { "name": "fu-statusline", "source": "./plugins/fu-statusline", "category": "productivity",
-      "description": "A bash + jq Claude Code status line renderer — drop-in replacement for `npx ccstatusline` at 49x less time and 9x less memory per render; install/uninstall commands patch settings.json." },
-    { "name": "fu-wsl-setup", "source": "./plugins/fu-wsl-setup", "category": "productivity",
-      "description": "Provision a WSL work environment for Claude Code from Windows PowerShell 7+ — WSL version check, pick/create a Debian instance, then drive the full tool install sequence (non-interactive work automated, privileged/interactive steps handed to the user)." }
+      "description": "A bash + jq Claude Code status line renderer — drop-in replacement for `npx ccstatusline` at 49x less time and 9x less memory per render; install/uninstall commands patch settings.json." }
   ]
 }
