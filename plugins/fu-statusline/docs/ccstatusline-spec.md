@@ -38,7 +38,8 @@ Claude Code writes one JSON object to the command's stdin. A real capture, redac
   "model": { "id": "claude-sonnet-5", "display_name": "Sonnet 5" },
   "workspace": { "current_dir": "...", "project_dir": "...", "repo": {} },
   "version": "2.1.220",
-  "cost": { "total_cost_usd": 80.09, "total_duration_ms": 168042148, "total_lines_added": 22 },
+  "cost": { "total_cost_usd": 80.09, "total_duration_ms": 168042148,
+            "total_api_duration_ms": 3612044, "total_lines_added": 22 },
   "context_window": {
     "total_input_tokens": 76078, "total_output_tokens": 123,
     "context_window_size": 1000000,
@@ -84,6 +85,9 @@ either:
   [The usage line](#the-usage-line).
 - Since v0.7.0 line 3 **shortens the working directory** instead of printing `cwd` verbatim, under
   the constraint that the text still `cd`s. See **Working directory** under
+  [Formatting rules](#formatting-rules).
+- Since v0.10.0 line 1 carries an **output-throughput widget** beside the context bar, which
+  ccstatusline has no equivalent of. See **Output throughput** under
   [Formatting rules](#formatting-rules).
 - Since v0.8.0 that directory and the git widgets are **one line** too, in that order, and the
   branch is **dropped when the checkout already implies it** — a worktree at
@@ -163,6 +167,61 @@ Then `cached = Σ(cache_read + cache_creation)`, `in = Σ input_tokens`, `out = 
 > === null` is strict — an *absent* field is `undefined` and does **not** qualify, so jq needs
 > `has("stop_reason")` to tell the two apart. Sidechain (subagent) entries **are** counted;
 > there is no `isSidechain` filter on the sums.
+
+**Output throughput** (an addition, not in ccstatusline) — the cumulative **output** tokens from
+the sums above, divided by `cost.total_api_duration_ms`, rounded to a whole number and rendered
+`<n>ᵗ`. It sits immediately right of the context bar: both are readings of what the session has
+spent, one as a level and one as a rate.
+
+Four choices in it are load-bearing.
+
+**The denominator is API time, not wall clock.** `cost.total_duration_ms` is also in the payload
+and is the obvious-looking field, but it measures the session, not the work: the capture above
+carries 168042148 ms of it — 46.7 hours, nearly all of it a terminal sitting idle between turns.
+Divided by that, the widget reports how long the window has been open. `total_api_duration_ms` is
+time actually spent in API calls, which is the only denominator that makes the number a speed.
+
+**The numerator is output tokens alone.** Input and cached tokens are read rather than generated,
+and at a wholly different rate — folding them in turns a plausible 40 into a four-figure number
+that measures nothing. This is the one place the three-way split dropped in v0.6.0 is still
+needed, and it is why `out` is summed separately rather than only into the total.
+
+**Nothing is printed rather than `0 t/s`.** Two states qualify. Below 1 s of accumulated API
+time the denominator is small enough that a single partial call swings the result by hundreds. And
+**a rate that rounds to zero is not printed either** — that is a claim the session generated
+nothing, which is either false or not yet true. The second guard is on the *rounded result*, not
+on the inputs, and that distinction is the whole point: 157 output tokens over the 3612044 ms of
+API time in the capture above passes every "has output, has duration" check and still renders
+`0ᵗ`. In both states the widget is empty and is dropped along with its separator, so line 1 is
+byte-identical to the pre-v0.10.0 line — which is also what a Claude Code too old to send
+`total_api_duration_ms` gets.
+
+**The unit is one raised letter, and the per-second is implied.** `ᵗ` (U+1D57) is the countdown
+idiom of line 3 applied to a second kind of value — a raised modifier letter after digits means
+"this number is in these units" — from the same family as `ᵈ ʰ ᵐ` and likewise East-Asian-width
+Neutral, so it adds no font dependency the timers do not already carry. It also carries **no inner
+space**, for the reason the countdowns dropped theirs: a space is what this line puts between
+widgets, so `39 t/s` can read as two fields. The ambiguity worth naming is a token *count* rather
+than a rate, and formatting settles it — every count on these lines goes through `formatTokens`
+and carries a `k` or `M`, so a bare two- or three-digit number is only ever this widget. Emoji
+were rejected on measurement: ⚡ and 🚀 are East-Asian-width **Wide**, so `⚡39` is four columns
+against this three, and both spend hue the palette reserves for state.
+
+Cost is nothing measurable: two more jq expressions in a program that already runs, no extra fork
+and no extra read. Best of five alternating runs of 20 warm renders each: **12.65 ms → 12.50 ms**,
+i.e. inside the noise.
+
+It is `detail` grey in every state, like the reset timers and for the same reason: the palette
+spends hue on a value crossing a threshold, and a throughput has none to cross.
+
+> **Known asymmetry, and it only ever reads low.** Sub-agent transcripts are separate files under
+> `<project>/<session>/subagents/`, so a sub-agent's output tokens never reach the numerator —
+> the note above about sidechain entries being counted describes ccstatusline's filter, but on
+> this machine there are no such entries in a parent transcript to count. The sub-agent's API
+> time, being the same process, almost certainly *does* reach the denominator. So a fan-out heavy
+> session under-reports its throughput. The transcript half of that is measured (2026-08-28, no
+> `isSidechain` entry in any parent transcript under `~/.claude/projects`); the denominator half
+> is inferred from the process boundary, not instrumented.
 
 **Git** — `rev-parse --is-inside-work-tree`; branch from `branch --show-current` (worktree
 branches really are named `worktree-<name>`, with no transformation); changes from `diff
@@ -255,8 +314,9 @@ widgets, so a multi-part countdown read as several fields. v0.5.2 raised the uni
 flush, and baseline letters at digit size blur into the number. Separating by glyph rather than by
 colour keeps the whole timer at one grey: the palette spends hue on state only, and a countdown
 ticking down is not a state change. The cost is a font dependency — these are the standard Unicode
-modifier letters, but a terminal font lacking them renders tofu, and a terminal that treats East
-Asian Ambiguous as wide renders `ʰ` double-width.
+modifier letters, but a terminal font lacking them renders tofu. They are **not** an East Asian
+width risk, though earlier revisions of this document said they were: `ᵈ` `ʰ` `ᵐ` are all width
+**Neutral** in Unicode 15.1. The Ambiguous glyphs actually on these lines are `·` and `▓`.
 
 v0.6.0 stopped dropping zero-valued units and zero-padded the trailing ones, which is what makes
 the width constant. ccstatusline's rule collapses `3ʰ28ᵐ` to `3ʰ` on the hour and `0ᵈ16ʰ36ᵐ` to
@@ -297,8 +357,11 @@ other greys hold. It has to be findable enough to group its neighbours and quiet
 read as one of them — which is why it is a middot and not a box-drawing rule. The padding already
 does the grouping; a `│` drew a wall where the boundary only wanted a pause.
 
-`·` is East Asian Ambiguous, the same caveat as `ʰ`: a terminal configured to render that class
-wide gives it two columns. It costs a column, not correctness.
+`·` (U+00B7) **is** East Asian Ambiguous, so a terminal configured to render that class wide gives
+it two columns. It costs a column, not correctness. It is one of only two Ambiguous glyphs on these
+lines; the other is the context bar's filled cell `▓` (U+2593), whose empty counterpart `░` (U+2591)
+is Neutral — so on such a terminal the bar widens as it fills. Neither is worth a glyph change, but
+neither is the `ʰ` that earlier revisions blamed: every modifier letter here is Neutral.
 
 **The cached / input / output breakdown is dropped.** It was three of the five most volatile fields
 on the old line 4, its sum is the total that is still printed, and line 1 already carries the

@@ -114,6 +114,8 @@ JSONL
 #   line 2     directory then the git widgets, one merged line since v0.8.0. The
 #              fixture directory is not a repo, so `⎇ no git` says so once — the
 #              second widget repeating it as `(no git)` is gone with the merge
+#   rate       absent: the payload carries no cost.total_api_duration_ms, and a
+#              throughput with no denominator is not printed as zero
 #   tokens     3973 -> fix1(3.973) = "4.0k" (the cached/in/out split is not shown)
 #   five_hour  2160s   -> 36m, printed to the full width -> "0ʰ36ᵐ"
 #   seven_day  232560s -> 64h36m -> "2ᵈ16ʰ36ᵐ"
@@ -656,6 +658,76 @@ else bad "8.2% is not space-padded to five columns ($line)"; fi
 line=$(usage_line 100 0 100 0); line=${line//$NB/ }
 if [[ $line == "100.0% 0ʰ00ᵐ 100.0% "* ]]; then ok
 else bad "100.0% is not the one unpadded, widening state ($line)"; fi
+cleanup
+
+echo "== output throughput: session average beside the context bar =="
+# The rate is cumulative OUTPUT tokens over cost.total_api_duration_ms, printed
+# as `39ᵗ` -- raised modifier letter, per-second implied, no inner space. The
+# fixture transcript counts 157 of them (100 + 50 + the provisional trailing 7).
+new_sandbox
+transcript >"$SANDBOX/t.jsonl"
+tps_payload() { # tps_payload <api_ms>   -- "" omits the field entirely
+  jq -nc --arg tp "$SANDBOX/t.jsonl" --arg ms "$1" '{
+    session_id: ("tps" + $ms), transcript_path: $tp, cwd: "",
+    model: { display_name: "Opus 5" },
+    cost: ({ total_cost_usd: 80.09, total_duration_ms: 168042148 }
+           + (if $ms == "" then {} else { total_api_duration_ms: ($ms | tonumber) } end)),
+    context_window: { total_input_tokens: 147000, context_window_size: 1000000,
+                      used_percentage: 15 } }'
+}
+tps_line1() { tps_payload "$1" | render | sed -n 1p; }
+tps_field() { # the rate text alone, empty when the widget is dropped
+  local s
+  s=$(tps_line1 "$1" | sed 's/\x1b\[[0-9;]*m//g'); s=${s//$NB/ }
+  [[ $s =~ ([0-9]+ᵗ) ]] && printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# 157 tokens over 4 s of API time -> 39.25 -> 39, sitting between the context
+# bar and the session name in the at-rest grey. Ungraded on purpose: a
+# throughput crosses no threshold, and hue on these lines means one did.
+#
+# This case also pins the denominator. The same payload carries
+# total_duration_ms: 168042148 -- 46.7 hours of session wall clock, nearly all
+# of it a terminal sitting idle -- which would render "0ᵗ" instead.
+eq "renders beside the context bar, ungraded" \
+  "$(ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_DETAIL '39ᵗ') $(c $C_BODY log-sweep)")" \
+  "$(tps_line1 4000)"
+
+# jq round goes half away from zero: 157000 / 2000 = 78.5 -> 79.
+eq "a half rounds up" "79ᵗ" "$(tps_field 2000)"
+
+# Under a second of API time one partial call moves the answer by hundreds, so
+# nothing is printed rather than a number wrong by an order of magnitude.
+eq "under the 1 s floor the widget is absent" "" "$(tps_field 999)"
+eq "exactly 1 s is inside the floor" "157ᵗ" "$(tps_field 1000)"
+
+# A rate that rounds to zero is not printed either, and this is the case an
+# input-side guard misses: 157 tokens over the captured 3612044 ms of API time
+# is 0.04ᵗ, which passes every "has output, has duration" check and still
+# renders the false claim "0ᵗ".
+eq "a rate rounding to zero is absent, not 0ᵗ" "" "$(tps_field 3612044)"
+
+# A Claude Code old enough not to send the field at all: the widget drops out
+# along with its separator, leaving exactly the pre-v0.10.0 line.
+eq "no total_api_duration_ms means no widget" "" "$(tps_field "")"
+eq "and line 1 is then unchanged from before" \
+  "$(ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_OK '▓░░░░░░░░░ 147k/1.0M') $(c $C_BODY log-sweep)")" \
+  "$(tps_line1 "")"
+cleanup
+
+# A session that has generated nothing yet has no average worth printing, even
+# with a minute of API time behind it.
+new_sandbox
+: >"$SANDBOX/empty.jsonl"
+noout=$(jq -nc --arg tp "$SANDBOX/empty.jsonl" '{
+  session_id: "tps0", transcript_path: $tp, cwd: "",
+  model: { display_name: "Opus 5" },
+  cost: { total_cost_usd: 0, total_api_duration_ms: 60000 },
+  context_window: { total_input_tokens: 0, context_window_size: 1000000,
+                    used_percentage: 0 } }')
+eq "zero output tokens means no widget" \
+  "$(ln_ "$(c $C_PRIMARY 'Opus 5') $(c $C_OK '░░░░░░░░░░ 0/1.0M')")" \
+  "$(printf '%s' "$noout" | render | sed -n 1p)"
 cleanup
 
 echo "== empty stdin exits quietly =="

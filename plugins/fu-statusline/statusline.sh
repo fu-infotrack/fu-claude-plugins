@@ -14,7 +14,7 @@
 #   * Git output is cached per directory for GIT_TTL seconds.
 #
 # Layout started from ~/.config/ccstatusline/settings.json and has diverged:
-#   1. model | thinking effort | context bar (slider) | session name
+#   1. model | thinking effort | context bar (slider) | output rate | session name
 #   2. working directory | git branch | ahead/behind the default branch | changes
 #   3. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
 #
@@ -435,8 +435,12 @@ jq -rn \
     # glyph instead, which keeps the whole timer at one colour — the palette
     # spends hue on state only, and a countdown is not a state change. Cost is a
     # font dependency: these are the standard modifier letters, but a terminal
-    # font without them renders tofu, and terminals set to treat East Asian
-    # Ambiguous as wide will render ʰ double-width.
+    # font without them renders tofu. Width is NOT a risk here, though this
+    # comment used to say it was: ᵈ ʰ ᵐ (and the ᵗ on line 1) are all East Asian
+    # width Neutral in Unicode 15.1. The two Ambiguous glyphs on these lines are
+    # the fence · below and the context bar fill ▓, whose empty counterpart ░ is
+    # Neutral -- so a terminal rendering that class wide widens the bar as it
+    # fills.
     #
     # Constant width: every unit is always printed and the trailing ones are
     # zero-padded to two digits, so a timer is the same width in every state it
@@ -526,6 +530,61 @@ jq -rn \
     | (if $ctx_size > 0 then ($ctx_used / $ctx_size * 100) else 0 end) as $ctx_ratio
     | ($cached + $tin + $tout) as $tok_total
 
+    # Session-average output throughput, printed beside the context bar because
+    # both read the same thing -- what this session has spent -- one as a level
+    # and one as a rate.
+    #
+    # Numerator is the cumulative OUTPUT tokens already parsed for line 3. Input
+    # and cached tokens are read rather than generated, and at a wholly
+    # different rate, so folding them in turns a 40 into a four-figure number
+    # that measures nothing.
+    #
+    # Denominator is cost.total_api_duration_ms, NOT total_duration_ms. The
+    # latter is session wall clock: the capture in docs/ccstatusline-spec.md
+    # carries 168042148 ms of it -- 46.7 hours, nearly all of it a terminal
+    # sitting idle. Divided by that, the widget would report how long the window
+    # has been open, not how fast anything ran.
+    #
+    # Two ways to have no answer, and both print nothing rather than a zero.
+    # Under a second of API time the denominator is small enough that a single
+    # partial call swings the result by hundreds. And a rate that rounds to 0 is
+    # a claim the session generated nothing, which is either false or not yet
+    # true -- a fresh session, or a long idle one whose first reply has not
+    # landed. In both states w() drops the widget along with its separator, so
+    # line 1 is byte-identical to the pre-v0.10.0 line. Guarding on the rounded
+    # RESULT rather than on the inputs is what catches the second case: 157
+    # tokens over an hour of API time passes any input check and still prints
+    # "0ᵗ".
+    #
+    # Rendered `39ᵗ` -- the raised modifier letter (U+1D57) is the whole unit,
+    # and the per-second is implied. Three things make that read rather than
+    # puzzle. It is the countdown idiom already on line 3 (`2ᵈ16ʰ36ᵐ`), where a
+    # raised letter after digits means "this number is in these units", and ᵗ
+    # comes from the same modifier-letter family as ᵈ ʰ ᵐ -- all East Asian
+    # width Neutral -- so a font that renders the timers renders this. It also
+    # carries no inner space, which the countdowns dropped for a reason worth
+    # repeating: a space is what this line puts BETWEEN widgets, so a unit
+    # separated by one reads as a second field.
+    #
+    # The one real ambiguity is the other number ᵗ could mean -- a token count
+    # rather than a rate. What separates them is formatting, not the glyph:
+    # every token COUNT on these lines goes through ftok and therefore carries a
+    # k or M suffix (`147k/1.0M`, `4.0k`). A bare two- or three-digit number is
+    # only ever this widget.
+    #
+    # Grey, not graded. The palette spends hue on state, and a throughput has no
+    # threshold to cross -- it is a fact about the session, not news about it.
+    #
+    # Known asymmetry, and it only ever reads LOW: sub-agent transcripts are
+    # separate files under <project>/<session>/subagents/, so their output
+    # tokens never enter the numerator, while their API time -- same process --
+    # almost certainly does enter the denominator. A fan-out heavy session
+    # therefore under-reports. The transcript half of that is measured; the
+    # denominator half is inferred from the process boundary, not instrumented.
+    | (($p.cost.total_api_duration_ms // 0)) as $api_ms
+    | (if $api_ms >= 1000 then (($tout * 1000 / $api_ms) | round) else 0 end) as $tps_n
+    | (if $tps_n >= 1 then "\($tps_n)ᵗ" else "" end) as $tps
+
     | (($rl.five_hour.used_percentage // 0)) as $pct5
     | (($rl.seven_day.used_percentage // 0)) as $pct7
     # A clean tree is not news, so the diffstat only takes a colour once it moves.
@@ -535,6 +594,7 @@ jq -rn \
         ([ w($model; c_primary),
            w($p.effort.level // ""; c_detail),
            w("\(slider($ctx_ratio)) \(ftok($ctx_used; 0))/\(ftok($ctx_size; 0))"; sev_ctx($ctx_pct; $ctx_used)),
+           w($tps; c_detail),
            w($title; c_body) ] | line),
 
         # ccstatusline puts the git widgets on one line and the directory on the

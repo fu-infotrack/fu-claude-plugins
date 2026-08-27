@@ -4,13 +4,14 @@ A Claude Code status line renderer in bash + jq. Replaces `npx -y ccstatusline@l
 of its formatting rules, at **12.3 ms / 11 MB** per render instead of **605 ms / 103 MB**
 (49× / 9.4×).
 
-It matched ccstatusline byte for byte through v0.1.1. Seven deliberate divergences since, all
+It matched ccstatusline byte for byte through v0.1.1. Eight deliberate divergences since, all
 below: v0.2.0 replaced the **palette**, v0.4.0 added a **divergence widget** ccstatusline has no
 equivalent of, v0.5.0 **dropped the context percentage** — the bar and the token count already say
 it — v0.5.1/v0.5.2 recut the **reset timers** as `2ᵈ16ʰ36ᵐ`, v0.6.0 **merged the last two lines**
 into one that mostly holds its width, v0.7.0 **shortened the working directory** while keeping it
-copy-pasteable, and v0.8.0 **merged the directory and the git widgets** — five ccstatusline lines
-are now three. Everything else about the render contract is unchanged and still tested against it.
+copy-pasteable, v0.8.0 **merged the directory and the git widgets** — five ccstatusline lines are
+now three — and v0.10.0 added an **output-throughput widget** beside the context bar. Everything
+else about the render contract is unchanged and still tested against it.
 
 The original re-resolved a 3.3 MB React/Ink bundle from the registry and re-read the entire
 session transcript twice, every ten seconds, per session. With nine sessions open that was a
@@ -32,7 +33,7 @@ contract it reproduces, and the two mechanisms that keep it cheap.
 | `~/.claude/settings.json` → `statusLine.command` | `~/.claude/statusline/statusline.sh` |
 | `~/.claude/statusline/previous-statusline.json` | the `statusLine` this displaced, for uninstall |
 | `~/.claude/statusline/settings.json.bak` | pre-change snapshot of `settings.json` |
-| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok2`, `git3_<escaped-dir>` |
+| `~/.cache/cc-statusline/` | render cache: `<session_id>.tok2`, `git4_<escaped-dir>` |
 
 Installing is idempotent, keeps a `padding` / `refreshInterval` you have tuned, and refuses —
 changing nothing — if `settings.json` is malformed or a foreign file already sits at the install
@@ -63,7 +64,7 @@ So the palette is now three tiers of grey for structure, with hue reserved for s
 |---|---|---|---|
 | primary | 253 | 11.73:1 | model, total tokens |
 | body | 248 | 6.90:1 | session name, git branch, working dir, cost |
-| detail | 245 | 4.75:1 | effort, reset timers, anything at rest |
+| detail | 245 | 4.75:1 | effort, throughput, reset timers, anything at rest |
 | rule | 240 | 2.60:1 | the usage-line fence, and nothing else |
 | ok | 108 | 6.65:1 | under 60%, and under 256k tokens |
 | warn | 179 | 7.96:1 | 60–85% or 256k–512k tokens, and a worktree with changes |
@@ -94,6 +95,64 @@ amber bar on a large window as a prompt to look at the printed token count, not 
 Tuned for a dark ground. No single set of 256-colour codes reads well on both: on a light
 terminal the old `188` measured 1.33:1, and these greys would need to invert.
 
+## Output throughput
+
+Since v0.10.0 line 1 carries a session-average output rate beside the context bar — the two
+readings of what a session has spent, one as a level and one as a rate:
+
+```
+Opus 5 xhigh ▓░░░░░░░░░ 147k/1.0M 39ᵗ log-sweep
+```
+
+It is cumulative **output** tokens over `cost.total_api_duration_ms`. Both halves of that are
+choices worth stating:
+
+- **API time, not wall clock.** `cost.total_duration_ms` sits right beside it in the payload and
+  is the wrong field — a real capture carries 46.7 hours of it, nearly all of it a terminal idle
+  between turns. Dividing by that reports how long the window has been open, not how fast
+  anything ran.
+- **Output tokens only.** Input and cached tokens are read rather than generated, at a wholly
+  different rate; including them turns a plausible 40 into a four-figure number that means
+  nothing.
+
+Under 1 s of accumulated API time, or when the rate **rounds to zero**, nothing is printed — not
+`0ᵗ`. A denominator that small swings the answer by hundreds on one partial call, and a zero rate
+claims the session generated nothing, which is either false or not yet true. The second guard is
+on the rounded result rather than on the inputs, which is what catches a long-idle session: 157
+output tokens over an hour of API time passes any "has output, has duration" check and still
+prints `0ᵗ`. The widget drops out along with its separator, so those states render exactly the
+pre-v0.10.0 line, as does a Claude Code too old to send the field.
+
+It costs nothing measurable — two more jq expressions in a program that already runs, no extra
+fork, no extra read. Best of five alternating runs of 20 warm renders: **12.65 ms → 12.50 ms**.
+
+### Why the unit is one raised letter
+
+`39ᵗ` spends three columns, and the per-second is implied. It reads because it is the countdown
+idiom from line 3 (`2ᵈ16ʰ36ᵐ`) applied to a second kind of value: a raised modifier letter after
+digits means "this number is in these units". `ᵗ` (U+1D57) is from the same family as `ᵈ ʰ ᵐ` and
+is likewise East-Asian-width Neutral, so a font that renders the timers renders this — no new
+dependency. And like the timers it carries **no inner space**, which matters for the same reason:
+a space is the character this line puts *between* widgets, so `39 t/s` can read as two fields.
+
+The one real ambiguity is the other thing a `ᵗ` could mean — a token *count* rather than a rate.
+Formatting separates them, not the glyph: every token count on these lines goes through
+`formatTokens` and so carries a `k` or `M` (`147k/1.0M`, `4.0k`). A bare two- or three-digit
+number is only ever this widget.
+
+Emoji were considered and rejected on measurement, not taste: ⚡ and 🚀 are East-Asian-width
+**Wide**, so `⚡39` is four columns against this three, and both put hue on a line where hue is
+reserved for a value crossing a threshold.
+
+It stays grey in every state, like the reset timers: hue on these lines means a value crossed a
+threshold, and a throughput has none to cross.
+
+**It only ever reads low, and here is why.** Sub-agent transcripts are separate files under
+`~/.claude/projects/<project>/<session>/subagents/`, so their output tokens never enter the
+numerator, while their API time — same process — almost certainly enters the denominator. A
+session that fans out to sub-agents therefore under-reports. The transcript half of that is
+measured; the denominator half is inferred from the process boundary, not instrumented.
+
 ## The usage line
 
 ccstatusline puts cost and a four-way token breakdown on one line and the rate limits on the next.
@@ -110,8 +169,10 @@ widening field has nothing to its right to push. Net effect: the line stops refl
 cursor every ten seconds.
 
 The fence is a middot rather than a box-drawing rule: the padding already groups the left half, so
-the boundary wants a pause, not a wall. Like `ʰ` it is East Asian Ambiguous, so a terminal set to
-render that class wide gives it two columns.
+the boundary wants a pause, not a wall. `·` (U+00B7) is East Asian Ambiguous, so a terminal set to
+render that class wide gives it two columns — a column, not correctness. It is one of only two
+Ambiguous glyphs on these lines; the other is `▓` (U+2593), whose empty counterpart `░` is Neutral,
+so on such a terminal the context bar widens as it fills.
 
 **The countdowns** print `2ᵈ16ʰ36ᵐ` where ccstatusline prints `2d 16hr 36m`. The spaces went first,
 since the line already separates its widgets with a space and a countdown using spaces internally
@@ -120,7 +181,8 @@ baseline letters at digit size blur into the number — so the units moved above
 U+1D48, `ʰ` U+02B0, `ᵐ` U+1D50). Separating them by glyph rather than by colour keeps the timer at
 one grey, which the palette above wants: hue means a value crossed a threshold, and a countdown
 ticking down has not crossed anything. The cost is a font dependency — a font without the modifier
-letters renders tofu, and a terminal treating East Asian Ambiguous as wide renders `ʰ` double-width.
+letters renders tofu. They are not a width risk: `ᵈ`, `ʰ` and `ᵐ` are all East-Asian-width
+**Neutral** in Unicode 15.1, contrary to what earlier revisions of this file claimed.
 
 **Constant width** comes from printing every unit and zero-padding the trailing ones, rather than
 dropping zero-valued ones as ccstatusline does. That rule collapses `3ʰ28ᵐ` to `3ʰ` on the hour and
