@@ -13,7 +13,7 @@ The caller gives you the absolute path to a brief and the directory to run in.
 Do not write the brief and do not edit any file yourself.
 
 `$P` below is this plugin's root (`${CLAUDE_PLUGIN_ROOT}` as given to you by the
-caller, or the `fu-copilot` directory inside the plugin cache).
+caller, or the `fu-copilot/<version>` directory inside the plugin cache).
 
 ```
 "$P/scripts/dispatch.sh" --brief <brief> --cwd <dir> --log <log>

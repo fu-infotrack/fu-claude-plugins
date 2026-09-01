@@ -1,5 +1,5 @@
 ---
-name: fu-copilot
+name: copilot
 description: Use when delegating a coding task to GitHub Copilot CLI — dispatch a detached run, wait on it, and verify what it actually did from git rather than from its summary. Triggers — "hand this to copilot", "get copilot to implement", "second opinion from copilot", "copilot run failed", "did copilot actually change anything".
 disable-model-invocation: true
 ---
