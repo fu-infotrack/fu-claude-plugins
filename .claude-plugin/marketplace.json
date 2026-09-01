@@ -12,6 +12,8 @@
       "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean PRs." },
     { "name": "fu-skills", "source": "./plugins/fu-skills", "category": "productivity",
       "description": "All fu- scenario skills in one plugin: fu-pg (Postgres via Vault), fu-mssql (SQL Server, Windows auth), fu-k8 (k8dash proxy inspection), fu-pup (Datadog pup CLI), fu-order (Orders API), fu-wsl (WSL provisioning), fu-ce (compound docs), plus /ask-fu as the catalogue/router. fu-pg and fu-pup auto-trigger; the rest are hidden from context and invoked explicitly." },
+    { "name": "fu-copilot", "source": "./plugins/fu-copilot", "category": "productivity",
+      "description": "Delegate a coding task to GitHub Copilot CLI: dispatch a detached run, wait on the PID, and verify what it actually did from git rather than from its summary." },
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
       "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, a session-start notice in protected checkouts, a session-id stamp for PR bodies, and dotnet format pre-commit." },
     { "name": "fu-statusline", "source": "./plugins/fu-statusline", "category": "productivity",
