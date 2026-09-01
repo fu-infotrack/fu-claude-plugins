@@ -2,8 +2,8 @@
 
 Delegate a coding task to GitHub Copilot CLI, then verify what it actually did.
 
-`/fu-copilot` (hidden; invoke explicitly) documents the procedure. `@copilot` runs
-one long task and returns a receipt. Two scripts do the work:
+`/fu-copilot:copilot` (hidden; invoke explicitly) documents the procedure.
+`@fu-copilot:copilot` runs one long task and returns a receipt. Two scripts do the work:
 
 | Script | Job |
 |---|---|
