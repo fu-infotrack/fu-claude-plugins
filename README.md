@@ -17,6 +17,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | fu-log-sweep | command + agents + scripts | Datadog error-level **Logs** → de-duped GitHub issues with root-cause writeups; dedups on a computed error signature (no Error Tracking required) |
 | review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo). Comment-only by default; `--auto-approve` to approve clean PRs |
 | fu-skills | skills + agents + scripts | All scenario skills in one plugin (see table below). `fu-pg` and `fu-pup` auto-trigger; the rest are `disable-model-invocation: true` — zero context until invoked as `/fu-*`. `/ask-fu` is the catalogue/router |
+| fu-copilot | skill + agent + scripts | Delegate a task to GitHub Copilot CLI and verify what it actually did. Detached dispatch (runs take 10-113 min), `kill -0` wait, then git-based checks — because a self-report is not a completion signal |
 | dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, a session-start notice when opened in a protected checkout, a session-id stamp for PR bodies, dotnet format pre-commit |
 | statusline | commands + scripts | Bash + jq status line renderer — drop-in for `npx ccstatusline` at 49x less time / 9x less memory per render; `/statusline-install` patches `settings.json` (statusLine is not a plugin capability) |
 

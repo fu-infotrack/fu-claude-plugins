@@ -1,0 +1,15 @@
+{
+  "name": "fu-copilot",
+  "version": "0.1.0",
+  "description": "Delegate a coding task to GitHub Copilot CLI: dispatch a detached run, wait on the PID, and verify what it actually did from git rather than from its summary.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "copilot",
+    "delegation",
+    "verification"
+  ],
+  "skills": "./skills/"
+}
