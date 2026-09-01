@@ -90,6 +90,12 @@ case "$out" in *"--allow-all-tools"*) ok "--allow-all-tools always passed";; *) 
 case "$out" in *"--no-color"*) ok "--no-color always passed";; *) bad "--no-color always passed" "$out";; esac
 case "$out" in *"-s "*|*"--silent"*) bad "-s/--silent NOT passed" "$out";; *) ok "-s/--silent not passed (it hides the resume handle)";; esac
 case "$out" in *"bytes of brief"*) ok "--dry-run elides the brief body";; *) bad "--dry-run elides the brief body" "$out";; esac
+# --dry-run exists to show the command that will run, so it must not misreport it.
+# The elision branch used to re-print `-p`, yielding `-p -p <N bytes of brief>`.
+# Count whole `-p` words. A ' -p ' grep cannot see the second one in "-p -p"
+# (matches do not overlap), which made an earlier version of this check vacuous.
+np=$(printf '%s\n' "$out" | sed -n 's/^DRY_RUN: //p' | awk '{for(i=1;i<=NF;i++) if($i=="-p") n++} END{print n+0}')
+check "--dry-run prints -p exactly once" "$np" "1"
 case "$out" in *"--model"*) bad "no --model unless asked" "$out";; *) ok "no --model unless asked";; esac
 staged_dry=$(printf '%s\n' "$out" | sed -n 's/^BRIEF: //p')
 case "$staged_dry" in /tmp/fu-copilot-*) ok "brief staged into /tmp";; *) bad "brief staged into /tmp" "$staged_dry";; esac

@@ -100,7 +100,9 @@ set -- "$@" -p "$brief_text"
 if [ "$dry_run" = 1 ]; then
   printf 'DRY_RUN: copilot'
   for a in "$@"; do
-    if [ "$a" = "$brief_text" ]; then printf ' -p <%d bytes of brief>' "${#brief_text}"
+    # The brief follows its own `-p`, already printed by the previous iteration --
+    # so elide only the body here, or the line shows `-p -p <...>`.
+    if [ "$a" = "$brief_text" ]; then printf ' <%d bytes of brief>' "${#brief_text}"
     else printf ' %q' "$a"; fi
   done
   printf '\nBRIEF: %s\nLOG: %s\n' "$staged" "$log"
