@@ -52,8 +52,12 @@ investigate rather than waiting on it.
 Optional: `--model`, `--context long_context`, `--dry-run`, and `--session-id
 <uuid>`. Pass the *same* `--session-id` again to continue that Copilot session
 instead of restarting: Copilot keeps its own context, so a follow-up costs a
-short prompt rather than a re-sent brief. Untested here — verify the follow-up
-saw the earlier turn before relying on it.
+short prompt rather than a re-sent brief.
+
+Generate the id with `cat /proc/sys/kernel/random/uuid` — **`uuidgen` is not
+installed here.** An empty value is rejected rather than ignored, so
+`--session-id "$SID"` with `SID` unset fails loudly instead of silently
+starting a fresh session.
 
 ## 3. Wait
 

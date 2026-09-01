@@ -24,8 +24,11 @@ BASELINE_HEAD to `verify.sh check --baseline`.
 USAGE
 }
 
-brief= cwd= log= model= session_id= context= dry_run=0
+brief= cwd= log= model= session_id= context= dry_run=0 PASSED_FLAGS=
 while [ $# -gt 0 ]; do
+  case "$1" in
+    --brief|--cwd|--log|--model|--session-id|--context) PASSED_FLAGS="$PASSED_FLAGS $1" ;;
+  esac
   case "$1" in
     --brief) brief=${2:-}; shift 2 ;;
     --cwd) cwd=${2:-}; shift 2 ;;
@@ -40,6 +43,18 @@ while [ $# -gt 0 ]; do
 done
 
 die() { echo "dispatch.sh: $*" >&2; exit 1; }
+
+# An explicitly-passed flag with an empty value is a caller bug, not a default.
+# `--session-id "$SID"` with SID unset (uuidgen is absent on some hosts) would
+# otherwise silently drop the continuation -- the exact class of silent failure
+# this script exists to prevent.
+for pair in "brief:$brief" "cwd:$cwd" "log:$log" "model:$model" \
+            "session-id:$session_id" "context:$context"; do
+  name=${pair%%:*}
+  case " $PASSED_FLAGS " in
+    *" --$name "*) [ -n "${pair#*:}" ] || die "--$name was passed with an empty value" ;;
+  esac
+done
 
 [ -n "$brief" ] || die "--brief is required"
 [ -n "$cwd" ]   || die "--cwd is required"

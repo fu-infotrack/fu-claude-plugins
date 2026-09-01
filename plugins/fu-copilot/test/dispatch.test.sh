@@ -50,6 +50,21 @@ case "$out" in *"is empty"*) ok "empty brief says so";; *) bad "empty brief says
 
 out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --bogus 2>&1); check "unknown flag exits 2" "$?" "2"
 
+# An explicitly-passed flag with an empty value must fail loudly. `--session-id
+# "$SID"` with SID unset (uuidgen is absent on some hosts) silently dropped the
+# continuation before this check existed.
+EMPTY=
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --session-id "$EMPTY" --dry-run 2>&1)
+check "empty --session-id exits 1" "$?" "1"
+case "$out" in *"--session-id was passed with an empty value"*) ok "empty --session-id is named";; *) bad "empty --session-id is named" "$out";; esac
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --model "$EMPTY" --dry-run 2>&1)
+check "empty --model exits 1" "$?" "1"
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --log "$EMPTY" --dry-run 2>&1)
+check "empty --log exits 1" "$?" "1"
+# Omitting the flag entirely stays a valid default, not an error.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
+check "omitted optional flags still default" "$?" "0"
+
 # --- the measured constraint: no brief under ~/.claude ----------------------
 JOBS_BRIEF="$HOME/.claude/jobs/abc/tmp/brief.md"
 cp "$BRIEF" "$JOBS_BRIEF"
