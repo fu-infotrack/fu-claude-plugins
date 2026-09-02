@@ -144,6 +144,29 @@ check "unreadable log fails" "$rc" "1"
 out=$("$VERIFY" check --cwd "$R" 2>&1)
 has "no log is a SKIP" "$out" "LOG_PERMISSION:  SKIP"
 
+# --- usage reporting -------------------------------------------------------
+# Reported, never graded: the AI-credit cap is a SOFT cap, so a capped run stops
+# between model calls with its work half-done and every git check still passing.
+# Whether that happened is for the caller to read, not for this script to decide.
+U="$SANDBOX/run.usage.json"
+printf '{"ai_credits_used": 100, "model": "gpt-5.6-luna"}\n' > "$U"
+out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$U" 2>&1); rc=$?
+check "usage file does not affect the verdict" "$rc" "0"
+has "usage line printed" "$out" "USAGE:"
+has "credits used surfaced" "$out" "ai_credits_used"
+
+out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$SANDBOX/never-written.json" 2>&1); rc=$?
+check "missing usage file does not fail the run" "$rc" "0"
+has "missing usage file says so" "$out" "not written"
+
+# Copilot may write something jq cannot parse; report it rather than swallow it.
+printf 'not json at all\n' > "$SANDBOX/bad.json"
+out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$SANDBOX/bad.json" 2>&1)
+has "unparseable usage file still reported" "$out" "not json at all"
+
+out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" 2>&1)
+hasnt "no --usage prints no usage line" "$out" "USAGE:"
+
 # --- verdict wording -------------------------------------------------------
 out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" 2>&1)
 has "passing verdict is plain" "$out" "VERDICT: all applicable checks passed"

@@ -43,21 +43,36 @@ part that gets reworded.
 ```
 
 Prints `PID`, `BRIEF` (the staged /tmp copy — worth naming in the brief as a
-re-readable copy), `LOG`, `BASELINE_HEAD`, `BRIEF_REACHED_PROCESS`. Keep
-`PID` and `BASELINE_HEAD`.
+re-readable copy), `LOG`, `USAGE_FILE`, `BASELINE_HEAD`,
+`BRIEF_REACHED_PROCESS`. Keep `PID`, `BASELINE_HEAD` and `USAGE_FILE`.
 
 A non-zero exit means the brief did **not** reach the process — kill the PID and
 investigate rather than waiting on it.
 
-Optional: `--model`, `--context long_context`, `--dry-run`, and `--session-id
-<uuid>`. Pass the *same* `--session-id` again to continue that Copilot session
-instead of restarting: Copilot keeps its own context, so a follow-up costs a
-short prompt rather than a re-sent brief.
+Optional: `--model`, `--context long_context`, `--dry-run`, `--max-ai-credits
+<n|off>`, and `--session-id <uuid>`. Pass the *same* `--session-id` again to
+continue that Copilot session instead of restarting: Copilot keeps its own
+context, so a follow-up costs a short prompt rather than a re-sent brief.
 
 Generate the id with `cat /proc/sys/kernel/random/uuid` — **`uuidgen` is not
 installed here.** An empty value is rejected rather than ignored, so
 `--session-id "$SID"` with `SID` unset fails loudly instead of silently
 starting a fresh session.
+
+### The credit cap
+
+A **100 AI-credit** session cap is passed by default. Nobody is watching the
+credit footer of a detached run, and a runaway agentic loop is exactly the kind
+of thing this plugin dispatches. Raise it for a big task, or `--max-ai-credits
+off` to remove it. Copilot's documented minimum is 30 (`copilot help limits`);
+`dispatch.sh` rejects less, since Copilot would otherwise die instantly for no
+visible reason.
+
+The cap is a **soft** cap by Copilot's own account: usage is known only after a
+response returns, so a response can exceed the limit and the *next* model call
+is what gets blocked. Consequence worth internalising — **a capped-out run stops
+between model calls with its work half-done and every git check still passing.**
+Read `USAGE:` against the cap before believing `CHECKS: pass`.
 
 ## 3. Wait
 
@@ -74,7 +89,8 @@ pattern — parallel runs across worktrees match each other's patterns.
 ```bash
 "$S/verify.sh" check --cwd /path/to/worktree \
   --baseline "$BASELINE_HEAD" --range "$BASELINE_HEAD..HEAD" \
-  --lossless-from <pre-state-sha> --log /tmp/copilot-run.log
+  --lossless-from <pre-state-sha> --log /tmp/copilot-run.log \
+  --usage /tmp/copilot-run.usage.json
 ```
 
 Exits non-zero if any check FAILed. Checks: `HEAD_MOVED` (did anything happen at
@@ -82,6 +98,11 @@ all — the headline), `EMPTY_COMMITS`, `LOSSLESS` (and it says so when the chec
 *vacuous* because HEAD never moved), `WORKTREE_CLEAN`, `LOG_PERMISSION` (a denial
 is BLOCKING — Copilot proceeds on a guess). Skipped checks print `SKIP`, never
 `PASS`.
+
+`--usage` (the `USAGE_FILE` dispatch printed) adds a `USAGE:` line with what the
+run spent, straight from Copilot's `--usage-output-file` JSON. It is **reported,
+never graded** — credits used sitting at the cap means the run was cut short, and
+no git check can tell you that.
 
 Then read the log for detail — bounded, e.g. `tail -c 4000 "$log"` — not the whole
 file, and not in place of the checks.
