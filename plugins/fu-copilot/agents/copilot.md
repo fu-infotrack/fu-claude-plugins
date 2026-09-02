@@ -19,7 +19,7 @@ caller, or the `fu-copilot/<version>` directory inside the plugin cache).
 "$P/scripts/dispatch.sh" --brief <brief> --cwd <dir> --log <log>
 ```
 
-Keep `PID` and `BASELINE_HEAD` from its output. A non-zero exit means the brief
+Keep `PID`, `BASELINE_HEAD` and `USAGE_FILE` from its output. A non-zero exit means the brief
 never reached the process: kill the PID, report that, and stop — do not wait on it.
 
 Then wait. Runs take 10–113 minutes, and the Bash tool caps `timeout` at 600000 ms,
@@ -34,8 +34,13 @@ having force-pushed nothing:
 
 ```
 "$P/scripts/verify.sh" check --cwd <dir> --baseline <BASELINE_HEAD> \
-  --range <BASELINE_HEAD>..HEAD --log <log>
+  --range <BASELINE_HEAD>..HEAD --log <log> --usage <USAGE_FILE>
 ```
+
+`dispatch.sh` caps the run at 100 AI credits by default. That cap is **soft**, so
+a capped-out run stops between model calls with its work half-done and every git
+check still passing. Compare the `USAGE:` line against the cap: if credits used
+sit at it, say so in `WHAT` — a truncated run is not a finished one.
 
 ## Report a receipt, not the transcript
 
@@ -48,6 +53,7 @@ CHECKS: pass|fail
 FAILED: <check names, or ->
 HEAD: <sha>          BASELINE: <sha>
 LOG: <path>          BYTES: <size>
+CREDITS: <credits used from the USAGE: line, or ->
 RESUME: <copilot --resume=... if the log printed one, else ->
 WHAT: <one sentence, under 200 characters, on what changed>
 ```

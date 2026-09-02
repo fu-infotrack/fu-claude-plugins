@@ -109,6 +109,47 @@ read as success. Asserted by a test.
   value rather than ignoring it -- found the hard way, when `--session-id "$SID"`
   with `SID` unset silently started a fresh session instead of continuing one.
 
+## The AI-credit cap -- and the failure mode it introduces
+
+`dispatch.sh` passes `--max-ai-credits 100` by default. The reasoning is the same
+one that makes this plugin exist: a detached run has nobody watching its credit
+footer, and the thing being detached is an agentic loop with `--allow-all-tools`.
+An unattended default of "no ceiling" is the wrong default. `--max-ai-credits
+<n>` raises or lowers it; `off` removes it. Copilot's documented minimum is 30
+(`copilot help limits`), and a smaller value is rejected here rather than by
+Copilot, where it would surface as a run that died instantly for no stated reason.
+
+**This is the first constraint in the plugin taken from documentation rather than
+from a measured run.** The flag exists in CLI 1.0.82 and the minimum is
+documented; what has *not* been observed is a real run hitting the ceiling. Read
+the rest of this section accordingly.
+
+The cap is documented as **soft**: usage is known only after a model response
+returns, so a response can exceed or exhaust the limit before the CLI observes
+it, and the *next* model call is what gets blocked. Hidden work such as
+compaction counts toward it. Subagents share the parent's limit.
+
+That soft edge introduces a new silent failure, and it is worth naming plainly
+because it is the exact shape this plugin was built to catch: **a capped-out run
+stops between model calls with its work half-done, and every git check still
+passes.** `HEAD_MOVED` sees commits, `EMPTY_COMMITS` finds none, `WORKTREE_CLEAN`
+is clean -- and the task is half-finished. No git read can distinguish that from
+success, so it is not graded.
+
+What is done instead: `dispatch.sh` passes `--usage-output-file` (always, cap or
+no cap) to a path beside the log, and `verify.sh check --usage <file>` prints its
+contents as a `USAGE:` line. Reported, never graded -- credits used sitting at
+the cap means the run was cut short, and that judgement belongs to the caller.
+The agent receipt carries it as `CREDITS:` for the same reason.
+
+Not attempted: grepping the log for an exhaustion message. The documented status
+line is `Session limits: 0.5/1 AI credits used.`, which appears on *healthy* runs
+at 50/75/90%, so the obvious `session limit` pattern would FAIL passing runs; the
+wording Copilot actually prints when the limit is reached has not been observed.
+A guessed pattern in `verify.sh` would be a check that lies, which is worse than
+a number the caller reads. The JSON's field names are likewise unparsed -- it is
+printed verbatim rather than interpreted.
+
 ## Deliberately out of scope for v1
 
 The self-driving review loop (manager agent running `/code-review`, feeding
@@ -133,6 +174,11 @@ cache:
 | `/tmp` brief readable by Copilot | yes -- marker returned verbatim |
 | `~/.claude/jobs` read | denied, with the exact expected error text |
 | `--session-id` continuation | yes -- second dispatch recalled the first turn |
+
+The AI-credit cap (added 2026-09-02, v0.2.0) is **not** in that table: the flag
+and its minimum come from `copilot help limits` on CLI 1.0.82, and no run has
+been observed hitting the ceiling. The `--usage-output-file` JSON has never been
+seen either, which is why nothing parses it.
 
 Still **not** exercised: the long-run path (10–113 min). Everything here completed
 in 10–20 s, so the `--poll`/timeout behaviour under a genuinely long run is

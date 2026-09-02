@@ -22,6 +22,9 @@ check  Report on what the run did. Options:
   --lossless-from <sha>  Pre-run state; asserts `git diff <sha>..HEAD` is empty.
   --range <range>        Commit range to scan for empty commits, e.g. main..HEAD.
   --log <path>           Copilot's output log; scanned for known failure strings.
+  --usage <path>         Copilot's --usage-output-file JSON; printed verbatim.
+                         Read it against the cap dispatch.sh passed: a run whose
+                         credits used sit AT the cap was cut short, not finished.
 
 check exits 0 if every applicable check passed, 1 if any FAILed.
 USAGE
@@ -63,7 +66,7 @@ case "$cmd" in
   *) die "unknown subcommand: $cmd" ;;
 esac
 
-cwd= baseline= lossless_from= range= log=
+cwd= baseline= lossless_from= range= log= usage_json=
 while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) cwd=${2:-}; shift 2 ;;
@@ -71,6 +74,7 @@ while [ $# -gt 0 ]; do
     --lossless-from) lossless_from=${2:-}; shift 2 ;;
     --range) range=${2:-}; shift 2 ;;
     --log) log=${2:-}; shift 2 ;;
+    --usage) usage_json=${2:-}; shift 2 ;;
     *) die "check: unknown argument: $1" ;;
   esac
 done
@@ -160,6 +164,21 @@ if [ -n "$log" ]; then
   fi
 else
   skip LOG_PERMISSION "no --log given"
+fi
+
+# Reported, never graded. The AI-credit cap is a SOFT cap -- Copilot observes usage
+# only after a response returns, so a capped run stops between model calls with its
+# work half-done and every git check still passing. That is not something this
+# script can decide for you; it is something you must read. Credits used sitting at
+# the cap means the run was cut short.
+if [ -n "$usage_json" ]; then
+  if [ ! -r "$usage_json" ]; then
+    printf '%-16s %s\n' 'USAGE:' "not written (Copilot may have died before it could): $usage_json"
+  elif command -v jq >/dev/null 2>&1 && jq -e . "$usage_json" >/dev/null 2>&1; then
+    printf '%-16s %s\n' 'USAGE:' "$(jq -c . "$usage_json")"
+  else
+    printf '%-16s %s\n' 'USAGE:' "$(head -c 400 "$usage_json" | tr '\n' ' ')"
+  fi
 fi
 
 printf '\nVERDICT: %s\n' "$([ "$failed" = 0 ] && echo 'all applicable checks passed' || echo 'one or more checks FAILED -- read the log before believing any summary')"

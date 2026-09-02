@@ -61,6 +61,11 @@ out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --model "$EMPTY" --dry-
 check "empty --model exits 1" "$?" "1"
 out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --log "$EMPTY" --dry-run 2>&1)
 check "empty --log exits 1" "$?" "1"
+# The cap has a DEFAULT, so an empty explicit value must not silently fall back to
+# it -- that would be the --session-id failure again, one flag over.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --max-ai-credits "$EMPTY" --dry-run 2>&1)
+check "empty --max-ai-credits exits 1" "$?" "1"
+case "$out" in *"--max-ai-credits was passed with an empty value"*) ok "empty --max-ai-credits is named";; *) bad "empty --max-ai-credits is named" "$out";; esac
 # Omitting the flag entirely stays a valid default, not an error.
 out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
 check "omitted optional flags still default" "$?" "0"
@@ -107,6 +112,40 @@ for want in "--model gpt-5.6-luna" "--session-id dead-beef" "--context long_cont
   case "$out" in *"$want"*) ok "passthrough: $want";; *) bad "passthrough: $want" "$out";; esac
 done
 
+# --- AI-credit cap ----------------------------------------------------------
+# A cap is ON by default: an unattended run is exactly the case where nobody is
+# watching the credit footer.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
+case "$out" in *"--max-ai-credits 100"*) ok "default cap of 100 is passed";; *) bad "default cap of 100 is passed" "$out";; esac
+
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits 250 2>&1)
+case "$out" in *"--max-ai-credits 250"*) ok "explicit cap overrides the default";; *) bad "explicit cap overrides the default" "$out";; esac
+case "$out" in *"--max-ai-credits 100"*) bad "override replaces rather than adds" "$out";; *) ok "override replaces rather than adds";; esac
+
+# `off` must omit the flag entirely, not pass a literal 'off' Copilot would reject.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits off 2>&1)
+check "--max-ai-credits off exits 0" "$?" "0"
+case "$out" in *"--max-ai-credits"*) bad "off omits the flag" "$out";; *) ok "off omits the flag";; esac
+
+# Copilot documents a minimum of 30; below it, Copilot itself dies instantly and
+# the reason is invisible. Reject here, where the message can say which minimum.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits 29 2>&1)
+check "cap below 30 exits 1" "$?" "1"
+case "$out" in *"at least 30"*) ok "sub-minimum cap names the minimum";; *) bad "sub-minimum cap names the minimum" "$out";; esac
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits 30 2>&1)
+check "cap of exactly 30 is accepted" "$?" "0"
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits lots 2>&1)
+check "non-numeric cap exits 1" "$?" "1"
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --max-ai-credits 12.5 2>&1)
+check "fractional cap exits 1" "$?" "1"
+
+# Usage statistics are written by Copilot, so the cap can be read against what the
+# run actually spent instead of guessed at.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run --log "$SANDBOX/u.log" 2>&1)
+case "$out" in *"--usage-output-file"*) ok "--usage-output-file always passed";; *) bad "--usage-output-file always passed" "$out";; esac
+uf=$(printf '%s\n' "$out" | sed -n 's/^USAGE_FILE: //p')
+check "usage file sits beside the log" "$uf" "$SANDBOX/u.usage.json"
+
 # --- real launch (against the stub) -----------------------------------------
 out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --log "$SANDBOX/run.log" 2>&1)
 rc=$?
@@ -118,6 +157,8 @@ reached=$(printf '%s\n' "$out" | sed -n 's/^BRIEF_REACHED_PROCESS: //p')
 check "brief text confirmed in cmdline" "$reached" "yes"
 bl=$(printf '%s\n' "$out" | sed -n 's/^BASELINE_HEAD: //p')
 check "BASELINE_HEAD is the pre-run HEAD" "$bl" "$BASE"
+uf=$(printf '%s\n' "$out" | sed -n 's/^USAGE_FILE: //p')
+check "launch prints USAGE_FILE" "$uf" "$SANDBOX/run.usage.json"
 
 # The brief must reach copilot as prompt TEXT, not as a path.
 sleep 1
@@ -125,6 +166,12 @@ if grep -qF 'DISTINCTIVE-MARKER-LINE-0001' "$SANDBOX/argv.txt" 2>/dev/null; then
   ok "brief inlined into -p, not passed as a path"
 else
   bad "brief inlined into -p, not passed as a path" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
+fi
+if grep -qx -- '--max-ai-credits' "$SANDBOX/argv.txt" 2>/dev/null &&
+   grep -qx -- '100' "$SANDBOX/argv.txt" 2>/dev/null; then
+  ok "cap reaches the launched process argv"
+else
+  bad "cap reaches the launched process argv" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
 fi
 kill "$PID" 2>/dev/null
 
