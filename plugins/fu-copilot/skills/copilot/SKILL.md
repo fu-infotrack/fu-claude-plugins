@@ -55,8 +55,9 @@ file as its second action. Your own file is never modified.
 ```
 
 Prints `PID`, `BRIEF` (the staged /tmp copy — worth naming in the brief as a
-re-readable copy), `LOG`, `USAGE_FILE`, `BASELINE_HEAD`,
-`BRIEF_REACHED_PROCESS`. Keep `PID`, `BASELINE_HEAD` and `USAGE_FILE`.
+re-readable copy), `LOG`, `USAGE_FILE`, `SESSION_ID`, `USAGE_BASELINE`,
+`BASELINE_HEAD`, `BRIEF_REACHED_PROCESS`. Keep `PID`, `BASELINE_HEAD`,
+`USAGE_FILE` and `SESSION_ID`.
 
 A non-zero exit means the brief did **not** reach the process — kill the PID and
 investigate rather than waiting on it.
@@ -71,6 +72,11 @@ installed here.** An empty value is rejected rather than ignored, so
 `--session-id "$SID"` with `SID` unset fails loudly instead of silently
 starting a fresh session.
 
+Thread `SESSION_ID` into `verify.sh check --session-id` at the end of every run.
+Copilot's usage JSON is **cumulative for the session**, not per dispatch, so
+that is what lets the *next* resumed run report its own cost instead of the
+whole session's. See the credit cap below.
+
 ### The credit cap
 
 A **100 AI-credit** session cap is passed by default. Nobody is watching the
@@ -84,7 +90,26 @@ The cap is a **soft** cap by Copilot's own account: usage is known only after a
 response returns, so a response can exceed the limit and the *next* model call
 is what gets blocked. Consequence worth internalising — **a capped-out run stops
 between model calls with its work half-done and every git check still passing.**
-Read `USAGE:` against the cap before believing `CHECKS: pass`.
+Read `USAGE_SESSION:` against the cap before believing `CHECKS: pass`.
+
+**The cap is a session cap, and so is the usage file.** Measured 2026-09-07
+across two dispatches sharing one `--session-id`: both usage files carried the
+same `sessionStartTime` and byte-identical `agentMetrics` blocks for the first
+run's sub-agents, and the second file's `totalNanoAiu` was the first's plus only
+that run's own. So there are two different numbers and they answer different
+questions:
+
+| Line | Means | Use it for |
+|---|---|---|
+| `USAGE_SESSION:` | the whole Copilot session so far | comparing against `--max-ai-credits` |
+| `USAGE_RUN:` | this dispatch alone (baseline subtracted) | "what did this run cost" |
+
+`USAGE_RUN:` appears only when `dispatch.sh` had a stored baseline, i.e. on the
+second and later dispatch of a session that `verify.sh --session-id` recorded.
+
+`USAGE_CHANGES:` is cumulative too and is **not graded** — a resumed read-only
+run still reports the prior run's modified files. It is printed as context, not
+evidence; `HEAD_MOVED` and `EMPTY_COMMITS` are the authority on what changed.
 
 ## 3. Wait
 
@@ -102,7 +127,7 @@ pattern — parallel runs across worktrees match each other's patterns.
 "$S/verify.sh" check --cwd /path/to/worktree \
   --baseline "$BASELINE_HEAD" --range "$BASELINE_HEAD..HEAD" \
   --lossless-from <pre-state-sha> --log /tmp/copilot-run.log \
-  --usage /tmp/copilot-run.usage.json
+  --usage /tmp/copilot-run.usage.json --session-id "$SESSION_ID"
 ```
 
 Exits non-zero if any check FAILed. Checks: `HEAD_MOVED` (did anything happen at
@@ -111,10 +136,15 @@ all — the headline), `EMPTY_COMMITS`, `LOSSLESS` (and it says so when the chec
 is BLOCKING — Copilot proceeds on a guess). Skipped checks print `SKIP`, never
 `PASS`.
 
-`--usage` (the `USAGE_FILE` dispatch printed) adds a `USAGE:` line with what the
-run spent, straight from Copilot's `--usage-output-file` JSON. It is **reported,
-never graded** — credits used sitting at the cap means the run was cut short, and
-no git check can tell you that.
+`--usage` (the `USAGE_FILE` dispatch printed) adds `USAGE_SESSION:` and, on a
+resumed run, `USAGE_RUN:` — see the table above for which answers what. Both are
+**reported, never graded**: a session sitting at the cap was cut short, and no
+git check can tell you that.
+
+`--session-id` (the `SESSION_ID` dispatch printed) records this run's totals so
+the next dispatch of the same session can report its own cost. Omitting it costs
+nothing today but leaves the *next* resumed run over-reporting by everything
+spent so far.
 
 Then read the log for detail — bounded, e.g. `tail -c 4000 "$log"` — not the whole
 file, and not in place of the checks.

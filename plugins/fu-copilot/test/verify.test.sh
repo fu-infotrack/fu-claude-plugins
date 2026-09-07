@@ -148,12 +148,61 @@ has "no log is a SKIP" "$out" "LOG_PERMISSION:  SKIP"
 # Reported, never graded: the AI-credit cap is a SOFT cap, so a capped run stops
 # between model calls with its work half-done and every git check still passing.
 # Whether that happened is for the caller to read, not for this script to decide.
+# The numbers below are the REAL ones from two dispatches that shared a
+# --session-id (2026-09-07). They are the evidence that the file is cumulative:
+# same sessionStartTime, and the second total is the first plus 1339604000.
+# Pinned here so a refactor that silently reverts to printing the raw file fails.
 U="$SANDBOX/run.usage.json"
-printf '{"ai_credits_used": 100, "model": "gpt-5.6-luna"}\n' > "$U"
+cat > "$U" <<'JSON'
+{"totalPremiumRequestCost":2,"totalUserRequests":1,"totalNanoAiu":37988554000,
+ "totalApiDurationMs":631819,"sessionStartTime":"2026-09-07T01:03:51.361Z",
+ "codeChanges":{"linesAdded":251,"linesRemoved":202,"filesModifiedCount":5}}
+JSON
 out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$U" 2>&1); rc=$?
 check "usage file does not affect the verdict" "$rc" "0"
-has "usage line printed" "$out" "USAGE:"
-has "credits used surfaced" "$out" "ai_credits_used"
+has "session total printed"        "$out" "USAGE_SESSION:"
+has "nano aiu surfaced"            "$out" '"nano_aiu":37988554000'
+has "aiu rendered readably"        "$out" '"aiu":37.99'
+has "no baseline is said plainly"  "$out" "no baseline staged"
+hasnt "no run delta without a baseline" "$out" "USAGE_RUN:"
+
+# codeChanges is cumulative too: this run was read-only, yet the file names five
+# modified files. It must never read as this run's work.
+has "code changes reported"        "$out" "251 added / 202 removed / 5 file(s)"
+has "code changes marked session"  "$out" "SESSION-cumulative and NOT graded"
+
+# With the baseline dispatch.sh stages, the delta is the run's own cost.
+cat > "${U%.json}.baseline.json" <<'JSON'
+{"totalPremiumRequestCost":1,"totalUserRequests":1,"totalNanoAiu":36648950000,
+ "totalApiDurationMs":603270,"sessionStartTime":"2026-09-07T01:03:51.361Z"}
+JSON
+out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$U" 2>&1); rc=$?
+check "baseline does not affect the verdict" "$rc" "0"
+has "run delta printed"     "$out" "USAGE_RUN:"
+has "delta is the real one" "$out" '"nano_aiu":1339604000'
+# Derived after subtracting, not by subtracting two rounded aius (1.3400000000000034).
+has "delta aiu is exact"    "$out" '"aiu":1.34'
+has "premium request delta" "$out" '"premium_requests":1'
+has "session total kept"    "$out" '"nano_aiu":37988554000'
+has "scope names the split" "$out" "USAGE_RUN is this dispatch"
+
+# The store roll-forward is what gives the NEXT resumed dispatch a baseline.
+STORE="$SANDBOX/state"
+out=$(FU_COPILOT_STATE="$STORE" "$VERIFY" check --cwd "$R" --baseline "$PRE" \
+        --usage "$U" --session-id 11111111-2222-3333-4444-555555555555 2>&1)
+if [ -r "$STORE/sessions/11111111-2222-3333-4444-555555555555.usage.json" ]; then
+  ok "session totals recorded for the next dispatch"
+else
+  bad "session totals recorded for the next dispatch" "$out"
+fi
+check "recorded baseline is the run's own file" \
+  "$(jq -r .totalNanoAiu "$STORE/sessions/11111111-2222-3333-4444-555555555555.usage.json" 2>/dev/null)" \
+  "37988554000"
+# No --session-id must not write a store entry.
+out=$(FU_COPILOT_STATE="$SANDBOX/state2" "$VERIFY" check --cwd "$R" --usage "$U" 2>&1)
+if [ -d "$SANDBOX/state2" ]; then bad "no session id writes no store" "$out"
+else ok "no session id writes no store"; fi
+rm -f "${U%.json}.baseline.json"
 
 out=$("$VERIFY" check --cwd "$R" --baseline "$PRE" --usage "$SANDBOX/never-written.json" 2>&1); rc=$?
 check "missing usage file does not fail the run" "$rc" "0"

@@ -22,9 +22,16 @@ check  Report on what the run did. Options:
   --lossless-from <sha>  Pre-run state; asserts `git diff <sha>..HEAD` is empty.
   --range <range>        Commit range to scan for empty commits, e.g. main..HEAD.
   --log <path>           Copilot's output log; scanned for known failure strings.
-  --usage <path>         Copilot's --usage-output-file JSON; printed verbatim.
-                         Read it against the cap dispatch.sh passed: a run whose
-                         credits used sit AT the cap was cut short, not finished.
+  --usage <path>         Copilot's --usage-output-file JSON. Reported, never
+                         graded. The file is CUMULATIVE for the Copilot session,
+                         so this prints USAGE_SESSION (whole session) and, when
+                         dispatch.sh staged a baseline, USAGE_RUN (this dispatch).
+                         The cap is a SESSION cap: compare USAGE_SESSION to it --
+                         a session sitting AT the cap was cut short, not finished.
+  --session-id <uuid>    SESSION_ID from dispatch.sh. Records this run's totals as
+                         the baseline for the next dispatch that resumes the same
+                         session. Without it, resumed runs over-report by the
+                         whole prior run.
 
 check exits 0 if every applicable check passed, 1 if any FAILed.
 USAGE
@@ -66,7 +73,7 @@ case "$cmd" in
   *) die "unknown subcommand: $cmd" ;;
 esac
 
-cwd= baseline= lossless_from= range= log= usage_json=
+cwd= baseline= lossless_from= range= log= usage_json= session_id=
 while [ $# -gt 0 ]; do
   case "$1" in
     --cwd) cwd=${2:-}; shift 2 ;;
@@ -75,6 +82,7 @@ while [ $# -gt 0 ]; do
     --range) range=${2:-}; shift 2 ;;
     --log) log=${2:-}; shift 2 ;;
     --usage) usage_json=${2:-}; shift 2 ;;
+    --session-id) session_id=${2:-}; shift 2 ;;
     *) die "check: unknown argument: $1" ;;
   esac
 done
@@ -171,13 +179,52 @@ fi
 # work half-done and every git check still passing. That is not something this
 # script can decide for you; it is something you must read. Credits used sitting at
 # the cap means the run was cut short.
+#
+# The file is CUMULATIVE FOR THE COPILOT SESSION, not per dispatch (measured
+# 2026-09-07; see dispatch.sh). Two numbers matter and they are not the same one:
+# the cap Copilot enforces is a SESSION cap, so USAGE_SESSION is what to compare
+# against it -- while "what did this dispatch cost" is USAGE_RUN, the delta over
+# the baseline dispatch.sh staged. Printing only the raw file conflates them and
+# over-reports every resumed run by the whole prior run.
 if [ -n "$usage_json" ]; then
   if [ ! -r "$usage_json" ]; then
     printf '%-16s %s\n' 'USAGE:' "not written (Copilot may have died before it could): $usage_json"
-  elif command -v jq >/dev/null 2>&1 && jq -e . "$usage_json" >/dev/null 2>&1; then
-    printf '%-16s %s\n' 'USAGE:' "$(jq -c . "$usage_json")"
-  else
+  elif ! command -v jq >/dev/null 2>&1 || ! jq -e . "$usage_json" >/dev/null 2>&1; then
     printf '%-16s %s\n' 'USAGE:' "$(head -c 400 "$usage_json" | tr '\n' ' ')"
+    printf '%-16s %s\n' 'USAGE_SCOPE:' "unparsed (no jq, or not valid JSON) -- these totals are SESSION-cumulative, not this run"
+  else
+    base="${usage_json%.json}.baseline.json"
+    # Only monotonic session counters are subtracted. codeChanges is deliberately
+    # NOT delta'd: filesModified is a SET, so a file touched by two runs appears
+    # once and no subtraction recovers per-run truth. A guessed number is a check
+    # that lies, so it is reported as what it is and git stays the authority.
+    # aiu is derived AFTER subtracting, never by subtracting two rounded aius --
+    # that leaves 1.3400000000000034 where the answer is 1.34.
+    raw='{nano_aiu:(.totalNanoAiu//0), premium_requests:(.totalPremiumRequestCost//0), user_requests:(.totalUserRequests//0), api_ms:(.totalApiDurationMs//0)}'
+    aiu='. as $x | {aiu:(($x.nano_aiu/1e9)*100|round/100)} + $x'
+    printf '%-16s %s\n' 'USAGE_SESSION:' "$(jq -c "$raw | $aiu" "$usage_json")"
+    if [ -r "$base" ] && jq -e . "$base" >/dev/null 2>&1; then
+      printf '%-16s %s\n' 'USAGE_RUN:' \
+        "$(jq -c -s "(.[0]|$raw) as \$n | (.[1]|$raw) as \$p |
+             (\$n | to_entries | map(.value -= (\$p[.key]//0)) | from_entries) | $aiu" \
+           "$usage_json" "$base")"
+      printf '%-16s %s\n' 'USAGE_SCOPE:' "resumed session -- USAGE_RUN is this dispatch, USAGE_SESSION is the whole session (compare THAT to --max-ai-credits)"
+    else
+      printf '%-16s %s\n' 'USAGE_SCOPE:' "no baseline staged -- USAGE_SESSION is this dispatch only if the session was fresh; a resumed run without a baseline over-reports by the prior run"
+    fi
+    cc=$(jq -r '.codeChanges // empty | "\(.linesAdded // 0) added / \(.linesRemoved // 0) removed / \(.filesModifiedCount // 0) file(s)"' "$usage_json")
+    [ -n "$cc" ] && printf '%-16s %s\n' 'USAGE_CHANGES:' "$cc -- SESSION-cumulative and NOT graded; a resumed read-only run still reports the prior run's files. Use HEAD_MOVED/EMPTY_COMMITS above, not this."
+  fi
+
+  # Roll the store forward so the NEXT dispatch of this session has a baseline.
+  # Done here rather than in dispatch.sh because only a finished run has totals.
+  if [ -n "$session_id" ] && [ -r "$usage_json" ]; then
+    store="${FU_COPILOT_STATE:-$HOME/.claude/fu-tools/cache/fu-copilot}/sessions"
+    if mkdir -p "$store" 2>/dev/null && cat "$usage_json" > "$store/$session_id.usage.json" 2>/dev/null; then
+      chmod 600 "$store/$session_id.usage.json" 2>/dev/null || true
+    else
+      printf '%-16s %s\n' 'USAGE_STORE:' "could not record baseline for session $session_id -- the next resumed run will over-report"
+    fi
   fi
 fi
 
