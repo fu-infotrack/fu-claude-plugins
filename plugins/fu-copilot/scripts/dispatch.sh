@@ -16,14 +16,20 @@ Usage: dispatch.sh --brief <file> --cwd <dir> [options]
   --model <name>       --model passthrough. Default: unset (Copilot's default).
   --session-id <uuid>  --session-id passthrough. Pass the SAME id again to
                        continue that Copilot session instead of starting fresh.
+                       Doing so also enables per-run usage figures: Copilot's
+                       usage JSON is cumulative for the session, so this script
+                       stages the session's prior totals as a baseline for
+                       verify.sh to subtract. Without it, run 2 of a session
+                       reports run 1's credits as its own.
   --context <tier>     --context passthrough: default | long_context.
   --max-ai-credits <n> Session AI-credit cap. Default 100. `off` disables the cap.
                        Copilot's documented minimum is 30 (`copilot help limits`).
                        Final usage is written beside the log as <log>.usage.json.
   --dry-run            Print the resolved command and exit without launching.
 
-Prints one KEY: VALUE per line. Feed PID to `verify.sh wait` and
-BASELINE_HEAD to `verify.sh check --baseline`.
+Prints one KEY: VALUE per line. Feed PID to `verify.sh wait`,
+BASELINE_HEAD to `verify.sh check --baseline`, and SESSION_ID to
+`verify.sh check --session-id` so the next resumed run gets a baseline.
 USAGE
 }
 
@@ -104,6 +110,35 @@ chmod 644 "$staged"
 # in prose -- the same reason every check in verify.sh reads git or the log.
 usage_file="${log%.log}.usage.json"
 
+# MEASURED (2026-09-07, two dispatches sharing one --session-id): that file is
+# CUMULATIVE FOR THE COPILOT SESSION, not per dispatch. Both runs wrote the same
+# sessionStartTime and byte-identical agentMetrics blocks for the FIRST run's
+# sub-agents; the second file's totalNanoAiu (37988554000) was the first's
+# (36648950000) plus only that run's own 1339604000. Its codeChanges still named
+# five modified files, and 251/202 added/removed lines, for a run that was
+# read-only. So reading the file as "what this run did" over-reports by the whole
+# prior run -- and --session-id reuse is the single biggest saving this plugin
+# recommends, which puts the misreport exactly where it is most likely to be
+# believed. Snapshot the session's totals as they stand BEFORE this run so
+# verify.sh can subtract; the store is keyed by session id and lives outside /tmp
+# because a session outlives any one run's staging.
+usage_baseline=
+usage_baseline_note="none (no --session-id; totals are this run alone)"
+session_store="${FU_COPILOT_STATE:-$HOME/.claude/fu-tools/cache/fu-copilot}/sessions"
+if [ -n "$session_id" ]; then
+  prior="$session_store/$session_id.usage.json"
+  if [ -r "$prior" ]; then
+    if cat "$prior" > "${usage_file%.json}.baseline.json" 2>/dev/null; then
+      usage_baseline="${usage_file%.json}.baseline.json"
+      usage_baseline_note="$usage_baseline"
+    else
+      usage_baseline_note="none (session $session_id has a stored baseline, but it could not be copied)"
+    fi
+  else
+    usage_baseline_note="none (first dispatch of session $session_id)"
+  fi
+fi
+
 log_dir=$(dirname "$log")
 mkdir -p "$log_dir" 2>/dev/null || true
 [ -d "$log_dir" ] || die "log directory does not exist and could not be created: $log_dir"
@@ -146,7 +181,8 @@ if [ "$dry_run" = 1 ]; then
     if [ "$a" = "$brief_text" ]; then printf ' <%d bytes of brief>' "${#brief_text}"
     else printf ' %q' "$a"; fi
   done
-  printf '\nBRIEF: %s\nLOG: %s\nUSAGE_FILE: %s\n' "$staged" "$log" "$usage_file"
+  printf '\nBRIEF: %s\nLOG: %s\nUSAGE_FILE: %s\nSESSION_ID: %s\nUSAGE_BASELINE: %s\n' \
+    "$staged" "$log" "$usage_file" "${session_id:--}" "$usage_baseline_note"
   exit 0
 fi
 
@@ -186,6 +222,8 @@ PID: $pid
 BRIEF: $staged
 LOG: $log
 USAGE_FILE: $usage_file
+SESSION_ID: ${session_id:--}
+USAGE_BASELINE: $usage_baseline_note
 CWD: $cwd
 BASELINE_HEAD: $baseline_head
 STARTED: $(date -u +%Y-%m-%dT%H:%M:%SZ)

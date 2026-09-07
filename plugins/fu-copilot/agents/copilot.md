@@ -53,12 +53,18 @@ CHECKS: pass|fail
 FAILED: <check names, or ->
 HEAD: <sha>          BASELINE: <sha>
 LOG: <path>          BYTES: <size>
-CREDITS: <credits used from the USAGE: line, or ->
+CREDITS: <aiu from USAGE_RUN: if present, else USAGE_SESSION:, else ->
+SCOPE:   <"this run" if it came from USAGE_RUN:, else "whole session">
 RESUME: <copilot --resume=... if the log printed one, else ->
 WHAT: <one sentence, under 200 characters, on what changed>
 ```
 
-Every field except `WHAT` is copied from `verify.sh` output. `WHAT` is your own
+Every field except `WHAT` and `SCOPE` is copied from `verify.sh` output; `SCOPE`
+just names which usage line `CREDITS` came from. Copilot's usage JSON is
+cumulative for the session, so `USAGE_SESSION:` on a resumed run includes every
+earlier dispatch — say so rather than passing it off as this run's cost. Never
+report `USAGE_CHANGES:` as what the run changed; it is cumulative too, and
+`HEAD`/`CHECKS` above are the authority. `WHAT` is your own
 paraphrase and the caller knows it — the log is the source of truth, which is why
 the caller gets its path instead of its contents. Never paste the log into the
 receipt however short it looks; keeping the caller's context bounded is the entire

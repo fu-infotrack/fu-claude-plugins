@@ -112,6 +112,36 @@ for want in "--model gpt-5.6-luna" "--session-id dead-beef" "--context long_cont
   case "$out" in *"$want"*) ok "passthrough: $want";; *) bad "passthrough: $want" "$out";; esac
 done
 
+# --- usage baseline for resumed sessions ------------------------------------
+# Copilot's usage JSON is cumulative for the SESSION, so a resumed dispatch must
+# carry the session's prior totals for verify.sh to subtract. Without this, run 2
+# reports run 1's credits as its own -- and a read-only run reports the prior
+# run's modified files.
+SID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+ST="$SANDBOX/copilot-state"
+
+out=$(FU_COPILOT_STATE="$ST" "$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
+has_line() { case "$2" in *"$3"*) ok "$1";; *) bad "$1" "$2";; esac; }
+has_line "no --session-id says totals are this run alone" "$out" "USAGE_BASELINE: none (no --session-id"
+has_line "SESSION_ID printed as - when unset" "$out" "SESSION_ID: -"
+
+out=$(FU_COPILOT_STATE="$ST" "$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --session-id "$SID" --dry-run 2>&1)
+has_line "first dispatch of a session has no baseline" "$out" "USAGE_BASELINE: none (first dispatch of session $SID)"
+has_line "SESSION_ID is echoed for verify.sh" "$out" "SESSION_ID: $SID"
+
+# Once a run has been recorded, the next dispatch of that session stages it.
+mkdir -p "$ST/sessions"
+printf '{"totalNanoAiu":36648950000,"totalPremiumRequestCost":1}\n' > "$ST/sessions/$SID.usage.json"
+out=$(FU_COPILOT_STATE="$ST" "$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --session-id "$SID" --dry-run 2>&1)
+uf=$(printf '%s\n' "$out" | sed -n 's/^USAGE_FILE: //p')
+bl=$(printf '%s\n' "$out" | sed -n 's/^USAGE_BASELINE: //p')
+check "baseline sits beside the usage file" "$bl" "${uf%.json}.baseline.json"
+if [ -r "$bl" ] && [ "$(jq -r .totalNanoAiu "$bl" 2>/dev/null)" = 36648950000 ]; then
+  ok "staged baseline carries the session's prior totals"
+else
+  bad "staged baseline carries the session's prior totals" "$bl"
+fi
+
 # --- the staged copy announces its own path ---------------------------------
 # MEASURED as a two-run A/B: a brief that only said "a copy is staged" sent Copilot
 # to a repo-scoped `glob **/*brief*` that found nothing; a brief naming the absolute

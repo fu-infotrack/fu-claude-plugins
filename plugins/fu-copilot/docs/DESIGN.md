@@ -176,18 +176,64 @@ is clean -- and the task is half-finished. No git read can distinguish that from
 success, so it is not graded.
 
 What is done instead: `dispatch.sh` passes `--usage-output-file` (always, cap or
-no cap) to a path beside the log, and `verify.sh check --usage <file>` prints its
-contents as a `USAGE:` line. Reported, never graded -- credits used sitting at
-the cap means the run was cut short, and that judgement belongs to the caller.
-The agent receipt carries it as `CREDITS:` for the same reason.
+no cap) to a path beside the log, and `verify.sh check --usage <file>` reports
+it. Reported, never graded -- a session sitting at the cap was cut short, and
+that judgement belongs to the caller. The agent receipt carries it as `CREDITS:`
+for the same reason.
+
+### The usage file is per SESSION, not per dispatch
+
+MEASURED 2026-09-07, two dispatches sharing one `--session-id`. Both files
+carried the same `sessionStartTime`, and the two sub-agent blocks from the first
+run appeared byte-identical in the second file -- same `totalNanoAiu`, same
+`totalApiDurationMs`. The totals reconcile exactly:
+
+```
+30926116000 (sub-agents, carried over) + 5722834000 = 36648950000  <- run 1
+30926116000 (same, unchanged)          + 7062438000 = 37988554000  <- run 2
+```
+
+So run 2 cost 1339604000 nAIU (1.34 AIU) while its file said 37.99. Printing that
+file as "what this run cost" over-reports every resumed run by the whole prior
+run -- and `--session-id` reuse is the single biggest saving this plugin
+recommends, which puts the misreport exactly where it is most likely to be
+believed.
+
+Worse, `codeChanges` is cumulative on the same terms. Run 2 was **read-only**,
+and its file still reported `linesAdded 251`, `linesRemoved 202` and five
+modified paths -- all of them run 1's. That is a self-report-shaped field in a
+file this plugin already parses, i.e. precisely the failure the plugin exists to
+prevent, sitting in the plugin's own output.
+
+The fix keeps both numbers rather than picking one, because they answer different
+questions and the cap makes both live: the cap Copilot enforces is a **session**
+cap, so `USAGE_SESSION:` is what to compare against it, while `USAGE_RUN:` is the
+delta that answers "what did this dispatch cost". `dispatch.sh` stages the
+session's prior totals as `<usage>.baseline.json` (from a store keyed by session
+id under `$FU_COPILOT_STATE`, default `~/.claude/fu-tools/cache/fu-copilot`), and
+`verify.sh check --session-id` rolls the store forward once a run has finished --
+only a finished run has totals, which is why the write lives there and not in
+`dispatch.sh`.
+
+Only monotonic counters are subtracted (`totalNanoAiu`, `totalPremiumRequestCost`,
+`totalUserRequests`, `totalApiDurationMs`). `codeChanges` is deliberately **not**
+delta'd: `filesModified` is a set, so a file touched by both runs appears once and
+no subtraction recovers per-run truth. It is labelled `SESSION-cumulative and NOT
+graded` and left to `HEAD_MOVED`/`EMPTY_COMMITS` -- inventing a per-run number
+there would be the same "check that lies" the log-grep below is rejected for.
+
+One arithmetic detail worth keeping: the human-readable `aiu` is derived *after*
+subtracting, never by subtracting two rounded values -- the latter yields
+`1.3400000000000034` where the answer is `1.34`.
 
 Not attempted: grepping the log for an exhaustion message. The documented status
 line is `Session limits: 0.5/1 AI credits used.`, which appears on *healthy* runs
 at 50/75/90%, so the obvious `session limit` pattern would FAIL passing runs; the
 wording Copilot actually prints when the limit is reached has not been observed.
 A guessed pattern in `verify.sh` would be a check that lies, which is worse than
-a number the caller reads. The JSON's field names are likewise unparsed -- it is
-printed verbatim rather than interpreted.
+a number the caller reads. The JSON *is* now parsed by field name (see above),
+but only to separate the session total from the per-run delta and to render nAIU
+readably -- never to decide whether the run succeeded. Nothing in it is graded.
 
 ## Deliberately out of scope for v1
 
