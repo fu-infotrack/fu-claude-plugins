@@ -43,6 +43,45 @@ it and then **confirms it arrived** by grepping the launched process's
 is absent. The session did this with `pgrep -af copilot | head -c 400`; reading
 `/proc` directly avoids `pgrep`'s truncation and matches the right process.
 
+**Both sides of that comparison must be normalised the same way.** Fixed 2026-09-02
+after a peer session reported it with a repro: the marker was newline-stripped
+while `tr '\0' ' '` leaves real newlines in the cmdline, so any brief whose first
+32 characters crossed a line break reported `BRIEF_REACHED_PROCESS: no` with the
+full text sitting in the process's argv. A 10-character `/implement` first line
+was enough. It cost a killed run that had already read the files its brief named —
+the worst kind of gate failure, one that punishes a healthy run. A test pins it,
+and was itself checked by reverting the fix.
+
+### Naming the staged copy
+
+The brief text arrives via `-p` regardless, so the staged `/tmp` copy matters only
+for **re-reading** during a long run — and a brief cannot name its own staged
+location, because this script picks the mktemp name. So `dispatch.sh` appends a
+footer to the copy naming its absolute path.
+
+Measured 2026-09-02 as an accidental A/B by a peer session, same model and task,
+two consecutive dispatches: a brief saying only "a re-readable copy is staged by
+the dispatcher" sent Copilot to a repo-scoped `glob **/*brief*`, "No matches
+found", never found it; a brief naming the path explicitly had it read the file
+with `sed -n '1,240p' <path>` as its **second** action, with no glob anywhere in
+the log. It read through a shell rather than a file-read tool, so the footer needs
+no tool-permission consideration.
+
+The "it is outside the repo, so a repo-scoped glob will not find it" clause is
+part of the stimulus that was measured, not decoration — the observed failure is
+specifically reaching for a repo-scoped glob first, so dropping the clause would
+ship a weaker stimulus than the one with evidence behind it. **n=1 each way:
+directional, not proven.**
+
+This is also why the brief does *not* move into the target worktree. A
+worktree-local `tmp/` would be untracked, and `verify.sh`'s `WORKTREE_CLEAN` counts
+untracked paths, so it would need an ignore rule the plugin cannot guarantee in
+every target repo — a plugin guarantee resting on untracked per-machine state.
+(For the record, the mechanism that *does* work is a `tmp/.gitignore` containing
+exactly `*`: measured clean in a linked worktree, and it also makes the brief
+unstageable. Adding a `!.gitignore` negation breaks it — the directory reappears
+as untracked. Nothing needs it for the brief.)
+
 Copilot is exec'd **directly** rather than through a launcher script, so the PID
 is Copilot's own and its cmdline is the thing being checked. The session's later
 prompts had to say "do NOT write launcher scripts" for this reason.

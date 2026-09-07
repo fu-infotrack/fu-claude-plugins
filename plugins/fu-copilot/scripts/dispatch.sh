@@ -110,8 +110,25 @@ mkdir -p "$log_dir" 2>/dev/null || true
 
 # MEASURED: pointing Copilot at a brief PATH is not reliable on its own. The proven
 # shape reads the brief into the prompt so the instructions are present regardless
-# of what Copilot can read. The staged /tmp path is still worth naming in the brief
-# as a re-readable copy (see SKILL.md).
+# of what Copilot can read.
+#
+# The staged copy is then announced by absolute path, because the caller cannot do
+# it: this script chooses the mktemp name, so no brief can name its own staged
+# location. Measured 2026-09-02 as a two-run A/B, same model and task: a brief
+# saying only "a copy is staged by the dispatcher" sent Copilot to a repo-scoped
+# `glob **/*brief*` that found nothing, while a brief naming the path had it run
+# `sed -n '1,240p' <path>` as its second action, no glob anywhere. The "outside the
+# repo" clause is part of the stimulus that was measured, not decoration -- the
+# observed failure is specifically reaching for a repo-scoped glob first. It read
+# via a shell, so this needs no tool permission. n=1 each way: directional.
+cat >> "$staged" <<FOOTER
+
+---
+
+This brief is also on disk at $staged
+Re-read that file rather than working from memory. It is outside the repo, so a repo-scoped glob will not find it; read the path.
+FOOTER
+
 brief_text=$(cat "$staged")
 
 set -- --allow-all-tools --no-color --usage-output-file "$usage_file"
@@ -144,12 +161,21 @@ setsid copilot "$@" > "$log" 2>&1 < /dev/null &
 pid=$!
 
 # Confirm the brief actually reached the process rather than trusting that it did.
+#
+# MEASURED (2026-09-02, reported by a run that was killed for nothing): the marker
+# and the haystack must be normalised the SAME way. Stripping newlines from only
+# the marker made any brief whose first 32 characters cross a line break report
+# reached=no while the full text was sitting in the process's cmdline -- a `/implement`
+# first line was enough to trigger it. `tr '\0' ' '` on /proc/<pid>/cmdline leaves
+# real newlines in place, so both sides drop them here.
 marker=$(printf '%s' "$brief_text" | tr -d '\n' | cut -c1-32)
 reached=unknown
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   if ! kill -0 "$pid" 2>/dev/null; then reached=process-exited-early; break; fi
   if [ -r "/proc/$pid/cmdline" ]; then
-    if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$marker"; then reached=yes; break; fi
+    if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | tr -d '\n' | grep -qF -- "$marker"; then
+      reached=yes; break
+    fi
     reached=no
   fi
   sleep 1
