@@ -56,12 +56,12 @@ sees — don't reach for it there.)
 ## Auth & meta ops
 
 ```bash
-pup auth status            # authed? which site, scopes, seconds to token expiry
+pup auth status            # READ-ONLY: authed? site, scopes, expires_at, has_refresh
 pup auth login             # OAuth2 in the browser (opens a callback on :8000/8080/8888/9000)
 pup auth login --ro        # request read-only scopes only (a.k.a. --read-only)
 pup auth login --site ap2.datadoghq.com   # pick the Datadog site (AU = ap2.datadoghq.com)
 pup auth list              # all stored org sessions
-pup auth refresh           # refresh the access token without a full re-login
+pup auth refresh           # non-interactive: new ~60m token from the keychain refresh token
 pup auth logout
 pup auth test              # verify connection + credentials
 ```
@@ -70,9 +70,23 @@ pup auth test              # verify connection + credentials
   `DD_SITE`. US1 is `datadoghq.com` (default), EU `datadoghq.eu`, etc.
 - **Multi-org**: `--org <name>` selects a named session; first set it up with
   `pup auth login --org <name>` (optionally `--org-uuid <uuid>` to pre-route SSO).
-- **401** from any command → token expired/invalid → `pup auth refresh` (or
-  `pup auth login`). **403** → authenticated but the scope/permission is missing;
-  re-login with the needed scopes (`--scopes a,b,c`) — refreshing won't help.
+- **`auth status` is read-only — it does NOT refresh anything.** Measured on pup
+  1.4.0: two back-to-back calls returned an identical `expires_at` and left
+  `~/.config/pup/sessions.json` untouched. It only reports stored state
+  (`authenticated`, `expires_at`, `has_refresh`, `scopes`), so a status check alone
+  never buys you more token life.
+- **`pup auth refresh` is the non-interactive one, and it works** — it mints a fresh
+  ~60m access token from the stored refresh token (kept in the OS keychain), no
+  browser and no callback port. So while `has_refresh` is `true`, a re-`login` is
+  genuinely avoidable.
+- **Auth ladder — before a long or unattended run** (a sweep, a `/loop` tick), and on
+  any `401`: `pup auth status --no-agent | jq '{authenticated, expires_at, has_refresh}'`
+  → if unauthenticated or expiring inside the run and `has_refresh` is true, run
+  `pup auth refresh` → only fall back to the interactive `pup auth login` if refresh
+  fails or `has_refresh` is false. Don't open with `login`; it needs a browser the
+  run may not have.
+- **403** → authenticated but the scope/permission is missing; re-login with the
+  needed scopes (`--scopes a,b,c`) — refreshing won't help.
 
 ## Logs
 
@@ -169,7 +183,8 @@ Every issue has a **source track** — it was captured from a `trace`, a `log`, 
   not the envelope — root at `.[]` (logs/traces) or `.data[]` (error-tracking).
 - **`error-tracking issues search` needs exactly one of `--track` / `--persona`** —
   not zero, not both.
-- **APM = nanoseconds.** **401 → re-auth, 403 → missing scope** (see Auth).
+- **APM = nanoseconds.** **401 → `pup auth refresh` (non-interactive) before `login`;
+  403 → missing scope** (see Auth). `auth status` reports state; it never refreshes.
 - Deep/rare flags: `pup <domain> <cmd> --help` or `pup agent schema --compact`.
 
 ## Install / update
