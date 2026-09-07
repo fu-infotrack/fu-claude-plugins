@@ -112,6 +112,27 @@ for want in "--model gpt-5.6-luna" "--session-id dead-beef" "--context long_cont
   case "$out" in *"$want"*) ok "passthrough: $want";; *) bad "passthrough: $want" "$out";; esac
 done
 
+# --- the staged copy announces its own path ---------------------------------
+# MEASURED as a two-run A/B: a brief that only said "a copy is staged" sent Copilot
+# to a repo-scoped `glob **/*brief*` that found nothing; a brief naming the absolute
+# path had it `sed` the file as its second action. The caller cannot write this
+# itself -- dispatch.sh picks the mktemp name.
+out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
+staged_f=$(printf '%s\n' "$out" | sed -n 's/^BRIEF: //p')
+if grep -qF -- "$staged_f" "$staged_f"; then ok "staged brief names its own path"; else bad "staged brief names its own path" "$(cat "$staged_f")"; fi
+case "$(cat "$staged_f")" in
+  *"repo-scoped glob will not find it"*) ok "footer keeps the measured glob clause";;
+  *) bad "footer keeps the measured glob clause" "$(cat "$staged_f")";;
+esac
+# The caller's own file is a contract -- the footer goes on the COPY, never on it.
+case "$(cat "$BRIEF")" in
+  *"also on disk at"*) bad "caller's brief left untouched" "$(cat "$BRIEF")";;
+  *) ok "caller's brief left untouched";;
+esac
+# The footer is appended, so the caller's text still leads -- the marker check and
+# Copilot both read the instructions first.
+head -1 "$staged_f" | grep -qF 'DISTINCTIVE-MARKER-LINE-0001' && ok "brief still leads the staged copy" || bad "brief still leads the staged copy" "$(head -1 "$staged_f")"
+
 # --- AI-credit cap ----------------------------------------------------------
 # A cap is ON by default: an unattended run is exactly the case where nobody is
 # watching the credit footer.
@@ -167,6 +188,31 @@ if grep -qF 'DISTINCTIVE-MARKER-LINE-0001' "$SANDBOX/argv.txt" 2>/dev/null; then
 else
   bad "brief inlined into -p, not passed as a path" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
 fi
+# The prompt Copilot receives must carry the path too, not just the file on disk.
+if grep -qF 'also on disk at /tmp/fu-copilot-' "$SANDBOX/argv.txt" 2>/dev/null; then
+  ok "the staged path reaches the prompt"
+else
+  bad "the staged path reaches the prompt" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
+fi
+# MEASURED: the marker and the /proc haystack must be normalised the same way. A
+# brief whose first 32 chars cross a line break used to report reached=no while the
+# text was demonstrably in the cmdline -- a 10-char `/implement` first line did it,
+# and a real run was killed for nothing as a result.
+SHORT1="$SANDBOX/short-first-line.md"
+printf '/implement\nMARKER-SPANS-THE-NEWLINE and keeps going well past 32 chars\n' > "$SHORT1"
+out=$("$DISPATCH" --brief "$SHORT1" --cwd "$SANDBOX/repo" --log "$SANDBOX/short.log" 2>&1)
+rc=$?
+check "short first line still exits 0" "$rc" "0"
+reached=$(printf '%s\n' "$out" | sed -n 's/^BRIEF_REACHED_PROCESS: //p')
+check "marker tolerates a newline inside the first 32 chars" "$reached" "yes"
+kill "$(printf '%s\n' "$out" | sed -n 's/^PID: //p')" 2>/dev/null
+
+# No negative case is constructible here, and that is worth stating rather than
+# faking: dispatch always puts the brief in copilot's own argv, so the haystack
+# contains it by construction. reached=no means the launch mangled the text --
+# which is exactly what the newline bug was. The `process-exited-early` branch is
+# covered by the missing-copilot case further down.
+
 if grep -qx -- '--max-ai-credits' "$SANDBOX/argv.txt" 2>/dev/null &&
    grep -qx -- '100' "$SANDBOX/argv.txt" 2>/dev/null; then
   ok "cap reaches the launched process argv"

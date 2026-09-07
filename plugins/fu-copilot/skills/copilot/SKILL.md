@@ -21,6 +21,11 @@ fails *silently*: a run that could not read its brief inferred there was nothing
 to do and did a no-op force-push while reporting success. `dispatch.sh` refuses
 such a path rather than letting that recur.
 
+> **If you are a background job**, your harness instructions tell you to put
+> temporary files in `$CLAUDE_JOB_DIR/tmp` — which is `~/.claude/jobs/<id>/tmp`,
+> exactly the location `dispatch.sh` refuses. The two rules collide; `/tmp` wins
+> for the brief. Logs there are fine (the shell writes those, not Copilot).
+
 ```bash
 brief=/tmp/copilot-brief-$$.md
 cat > "$brief" <<'EOF'
@@ -35,6 +40,13 @@ EOF
 Write the brief yourself and pass it through unchanged. It is a contract, not a
 draft — if a sub-agent retypes it, the precise part (the output contract) is the
 part that gets reworded.
+
+You do not need to tell Copilot where its brief lives: `dispatch.sh` appends a
+footer to the *staged copy* naming the absolute path, which the caller cannot do
+because this script chooses the mktemp name. Measured as a two-run A/B — a brief
+saying only "a copy is staged by the dispatcher" sent Copilot to a repo-scoped
+`glob **/*brief*` that found nothing; a brief naming the path had it read the
+file as its second action. Your own file is never modified.
 
 ## 2. Dispatch
 
