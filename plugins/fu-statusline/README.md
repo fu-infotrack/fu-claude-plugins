@@ -21,7 +21,7 @@ contract it reproduces, and the two mechanisms that keep it cheap.
 ## Install
 
 ```
-/statusline-install
+/statusline-config install
 ```
 
 `statusLine` is not a plugin capability, and `${CLAUDE_PLUGIN_ROOT}` does not expand inside
@@ -40,15 +40,17 @@ changing nothing — if `settings.json` is malformed or a foreign file already s
 path (`--force` overrides only the latter).
 
 ```
-/statusline-uninstall               # restore the previous statusLine, remove the renderer
-/statusline-uninstall --keep-script # leave the renderer on disk
-/statusline-uninstall --purge       # also drop the cache and install directory
+/statusline-config                            # status: what is installed, where statusLine points
+/statusline-config uninstall                  # restore the previous statusLine, remove the renderer
+/statusline-config uninstall --keep-script    # leave the renderer on disk
+/statusline-config uninstall --purge          # also drop the cache and install directory
 ```
 
 A `statusLine` pointing at something else is never touched.
 
-Both commands are thin wrappers over `scripts/install.sh` and `scripts/uninstall.sh`, which are
-runnable directly from a checkout.
+`/statusline-config` is a thin wrapper over `scripts/config.sh`, which dispatches to
+`scripts/install.sh` and `scripts/uninstall.sh`. All three are runnable directly from a
+checkout; `status` is the default and changes nothing.
 
 ## The palette
 

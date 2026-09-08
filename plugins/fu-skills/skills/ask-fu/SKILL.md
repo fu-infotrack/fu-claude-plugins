@@ -28,4 +28,4 @@ rather than guessing.
 
 Related but separate (not routed from here): `/review-prs` (PR-review loop),
 `/et-sweep` and `/log-sweep` (Datadog → GitHub issue sweeps),
-`/statusline-install` (status line renderer).
+`/statusline-config` (status line renderer).
