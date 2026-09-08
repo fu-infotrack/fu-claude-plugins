@@ -17,6 +17,6 @@
     { "name": "fu-dev-guards", "source": "./plugins/fu-dev-guards", "category": "productivity",
       "description": "Dev safety guards: worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking, a session-start notice in protected checkouts, a session-id stamp for PR bodies, and dotnet format pre-commit." },
     { "name": "fu-statusline", "source": "./plugins/fu-statusline", "category": "productivity",
-      "description": "A bash + jq Claude Code status line renderer — drop-in replacement for `npx ccstatusline` at 49x less time and 9x less memory per render; install/uninstall commands patch settings.json." }
+      "description": "A bash + jq Claude Code status line renderer — drop-in replacement for `npx ccstatusline` at 49x less time and 9x less memory per render; `/statusline-config` patches settings.json." }
   ]
 }

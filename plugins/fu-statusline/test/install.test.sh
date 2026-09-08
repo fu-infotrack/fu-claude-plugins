@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for scripts/install.sh and scripts/uninstall.sh — the settings.json
-# patching contract. No framework — run:
+# Tests for scripts/install.sh, scripts/uninstall.sh and the scripts/config.sh
+# dispatcher — the settings.json patching contract. No framework — run:
 #   bash plugins/fu-statusline/test/install.test.sh
 #
 # Every case runs against a throwaway HOME, so nothing here touches the real
@@ -11,6 +11,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 INSTALL="$ROOT/scripts/install.sh"
 UNINSTALL="$ROOT/scripts/uninstall.sh"
+CONFIG="$ROOT/scripts/config.sh"
 
 pass=0 fail=0
 ok()  { pass=$((pass + 1)); }
@@ -210,6 +211,80 @@ bash "$INSTALL" >/dev/null 2>&1
 mkdir -p "$HOME/.cache/cc-statusline" && touch "$HOME/.cache/cc-statusline/abc.tok"
 bash "$UNINSTALL" --purge >/dev/null 2>&1
 if [ -e "$HOME/.cache/cc-statusline" ]; then bad "--purge left the cache directory"; else ok; fi
+cleanup
+
+echo "== config: dispatches install and uninstall to the same scripts =="
+new_home
+rm -f "$(SETTINGS)"
+out=$(bash "$CONFIG" install 2>&1); rc=$?
+eq "config install exit 0" "0" "$rc"
+eq "config install patched settings" "~/.claude/statusline/statusline.sh" "$(sl '.statusLine.command')"
+if [ -x "$(TARGET)" ]; then ok; else bad "config install did not install the renderer"; fi
+out=$(bash "$CONFIG" uninstall 2>&1); rc=$?
+eq "config uninstall exit 0" "0" "$rc"
+is_false "config uninstall removed statusLine" "$(jq 'has("statusLine")' "$(SETTINGS)")"
+if [ -e "$(TARGET)" ]; then bad "config uninstall left the renderer"; else ok; fi
+cleanup
+
+echo "== config: install flags are forwarded =="
+new_home
+mkdir -p "$HOME/.claude/statusline"
+echo '#!/bin/sh' >"$(TARGET)"
+bash "$CONFIG" install >/dev/null 2>&1; rc=$?
+eq "refuses over a foreign file" "1" "$rc"
+bash "$CONFIG" install --force >/dev/null 2>&1; rc=$?
+eq "--force forwarded" "0" "$rc"
+if grep -q 'fu-statusline' "$(TARGET)"; then ok; else bad "--force did not overwrite the foreign file"; fi
+cleanup
+
+echo "== config: uninstall flags are forwarded =="
+new_home
+bash "$CONFIG" install >/dev/null 2>&1
+mkdir -p "$HOME/.cache/cc-statusline" && touch "$HOME/.cache/cc-statusline/abc.tok"
+bash "$CONFIG" uninstall --keep-script --purge >/dev/null 2>&1
+if [ -e "$HOME/.cache/cc-statusline" ]; then bad "--purge not forwarded"; else ok; fi
+cleanup
+
+echo "== config: status is the default and changes nothing =="
+new_home
+printf '{ "model": "opus" }\n' >"$(SETTINGS)"
+before=$(cat "$(SETTINGS)")
+out=$(bash "$CONFIG" 2>&1); rc=$?
+eq "exit 0" "0" "$rc"
+eq "settings untouched" "$before" "$(cat "$(SETTINGS)")"
+if [ -e "$(TARGET)" ]; then bad "status installed the renderer"; else ok; fi
+case "$out" in *"statusLine unset"*) ok ;; *) bad "status did not report an unset statusLine: $out" ;; esac
+case "$out" in *"$(TARGET)"*) ok ;; *) bad "status did not name the renderer path: $out" ;; esac
+cleanup
+
+echo "== config: status reports an installed renderer and a displaced value =="
+new_home
+printf '{ "statusLine": { "type": "command", "command": "npx -y ccstatusline@latest" } }\n' >"$(SETTINGS)"
+bash "$CONFIG" install >/dev/null 2>&1
+out=$(bash "$CONFIG" status 2>&1)
+case "$out" in *"matches the plugin copy"*) ok ;; *) bad "status did not confirm a current renderer: $out" ;; esac
+case "$out" in *"(ours)"*) ok ;; *) bad "status did not recognise our statusLine: $out" ;; esac
+case "$out" in *"ccstatusline@latest"*) ok ;; *) bad "status did not report the displaced value: $out" ;; esac
+cleanup
+
+echo "== config: status flags a foreign statusLine and a stale renderer =="
+new_home
+bash "$CONFIG" install >/dev/null 2>&1
+printf '# fu-statusline stale\n' >"$(TARGET)"
+patched=$(jq '.statusLine.command = "/opt/other/sl.sh"' "$(SETTINGS)")
+printf '%s\n' "$patched" >"$(SETTINGS)"
+out=$(bash "$CONFIG" status 2>&1)
+case "$out" in *"differs from the plugin copy"*) ok ;; *) bad "status did not flag a stale renderer: $out" ;; esac
+case "$out" in *"not ours"*) ok ;; *) bad "status did not flag a foreign statusLine: $out" ;; esac
+cleanup
+
+echo "== config: an unknown subcommand exits 2 without touching anything =="
+new_home
+printf '{"model":"opus"}\n' >"$(SETTINGS)"
+out=$(bash "$CONFIG" instal 2>&1); rc=$?
+eq "exit 2" "2" "$rc"
+eq "settings untouched" "opus" "$(sl '.model')"
+case "$out" in *"unknown subcommand"*) ok ;; *) bad "no unknown-subcommand message: $out" ;; esac
 cleanup
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
