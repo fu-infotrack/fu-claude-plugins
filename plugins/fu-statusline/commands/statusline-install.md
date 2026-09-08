@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 description: Install the fu-statusline renderer and point Claude Code's statusLine at it.
 argument-hint: "[--force]"
 ---

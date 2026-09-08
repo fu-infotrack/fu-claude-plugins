@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 description: Remove the fu-statusline renderer and restore whatever statusLine it displaced.
 argument-hint: "[--keep-script] [--purge]"
 ---
