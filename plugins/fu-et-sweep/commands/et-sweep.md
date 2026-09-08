@@ -1,4 +1,5 @@
 ---
+disable-model-invocation: true
 description: One sweep of a project's services' Datadog Error Tracking -> de-duped GitHub issues with drafted root-cause writeups. Run via /loop for a self-paced watch.
 ---
 
