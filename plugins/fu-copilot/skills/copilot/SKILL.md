@@ -63,7 +63,7 @@ A non-zero exit means the brief did **not** reach the process — kill the PID a
 investigate rather than waiting on it.
 
 Optional: `--model`, `--context long_context`, `--dry-run`, `--max-ai-credits
-<n|off>`, and `--session-id <uuid>`. Pass the *same* `--session-id` again to
+<n|off>`, `--allow-subagents`, and `--session-id <uuid>`. Pass the *same* `--session-id` again to
 continue that Copilot session instead of restarting: Copilot keeps its own
 context, so a follow-up costs a short prompt rather than a re-sent brief.
 
@@ -158,6 +158,13 @@ its findings do not land in your context wholesale.
 
 ## Notes
 
+- `--excluded-tools task` is always passed, so Copilot cannot spawn its own
+  sub-agents. A dispatch is one scoped brief; measured on a real run, the main
+  agent spent 2.9 AIU while a single `general-purpose` sub-agent it spawned spent
+  375 — 129x — against the same session cap, and sub-agent credits are
+  indistinguishable in the usage JSON, so `USAGE_RUN:` cannot attribute them.
+  Pass `--allow-subagents` when the brief genuinely wants fan-out — it is opt-in
+  rather than opt-out because nobody watches a detached run's credit footer.
 - `--allow-all-tools` is always passed — without it Copilot prompts for tool
   permission and hangs non-interactively. `--allow-all-paths` and
   `dangerouslyDisableSandbox` are deliberately never passed.
