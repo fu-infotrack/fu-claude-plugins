@@ -93,6 +93,10 @@ out=$("$DISPATCH" --brief "$BRIEF" --cwd "$SANDBOX/repo" --dry-run 2>&1)
 check "--dry-run exits 0" "$?" "0"
 case "$out" in *"--allow-all-tools"*) ok "--allow-all-tools always passed";; *) bad "--allow-all-tools always passed" "$out";; esac
 case "$out" in *"--no-color"*) ok "--no-color always passed";; *) bad "--no-color always passed" "$out";; esac
+# Copilot's sub-agent tool. One sub-agent was measured at 129x the parent's credits
+# inside the same session cap, and its spend is indistinguishable in the usage JSON.
+case "$out" in *"--excluded-tools task"*) ok "--excluded-tools task always passed";; *) bad "--excluded-tools task always passed" "$out";; esac
+case "$out" in *"--deny-tool"*) bad "sub-agents excluded, not merely denied" "$out";; *) ok "sub-agents excluded, not merely denied";; esac
 case "$out" in *"-s "*|*"--silent"*) bad "-s/--silent NOT passed" "$out";; *) ok "-s/--silent not passed (it hides the resume handle)";; esac
 case "$out" in *"bytes of brief"*) ok "--dry-run elides the brief body";; *) bad "--dry-run elides the brief body" "$out";; esac
 # --dry-run exists to show the command that will run, so it must not misreport it.
@@ -248,6 +252,13 @@ if grep -qx -- '--max-ai-credits' "$SANDBOX/argv.txt" 2>/dev/null &&
   ok "cap reaches the launched process argv"
 else
   bad "cap reaches the launched process argv" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
+fi
+
+if grep -qx -- '--excluded-tools' "$SANDBOX/argv.txt" 2>/dev/null &&
+   grep -qx -- 'task' "$SANDBOX/argv.txt" 2>/dev/null; then
+  ok "sub-agent exclusion reaches the launched process argv"
+else
+  bad "sub-agent exclusion reaches the launched process argv" "$(cat "$SANDBOX/argv.txt" 2>/dev/null)"
 fi
 kill "$PID" 2>/dev/null
 

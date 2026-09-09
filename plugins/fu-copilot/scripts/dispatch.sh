@@ -166,7 +166,17 @@ FOOTER
 
 brief_text=$(cat "$staged")
 
-set -- --allow-all-tools --no-color --usage-output-file "$usage_file"
+# Copilot's own sub-agent tool is `task`, and it is switched off unconditionally.
+# MEASURED (2026-09-09, usage JSON of a real dispatch): the main agent burned
+# 2908309000 nanoAiu while ONE `general-purpose` sub-agent it spawned burned
+# 375050720000 -- 129x the parent, inside the same session cap, for work this
+# plugin already scopes to one brief. Fan-out also defeats the receipt: sub-agent
+# credits land in the same cumulative totals, so `USAGE_RUN:` cannot say which
+# agent spent them. `--excluded-tools task` removes the tool from the model's
+# list entirely (Copilot prints `Disabled tools: task` and `functions.task` is
+# gone from what it can see), rather than `--deny-tool`, which leaves the tool
+# offered and only refuses the call.
+set -- --allow-all-tools --no-color --excluded-tools task --usage-output-file "$usage_file"
 [ "$max_ai_credits" != off ] && set -- "$@" --max-ai-credits "$max_ai_credits"
 [ -n "$model" ]      && set -- "$@" --model "$model"
 [ -n "$session_id" ] && set -- "$@" --session-id "$session_id"

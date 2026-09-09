@@ -158,6 +158,12 @@ its findings do not land in your context wholesale.
 
 ## Notes
 
+- `--excluded-tools task` is always passed, so Copilot cannot spawn its own
+  sub-agents. A dispatch is one scoped brief; measured on a real run, the main
+  agent spent 2.9 AIU while a single `general-purpose` sub-agent it spawned spent
+  375 — 129x — against the same session cap, and sub-agent credits are
+  indistinguishable in the usage JSON, so `USAGE_RUN:` cannot attribute them.
+  There is no flag to re-enable it.
 - `--allow-all-tools` is always passed — without it Copilot prompts for tool
   permission and hangs non-interactively. `--allow-all-paths` and
   `dangerouslyDisableSandbox` are deliberately never passed.

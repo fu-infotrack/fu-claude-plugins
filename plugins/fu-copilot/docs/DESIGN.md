@@ -124,6 +124,25 @@ read as success. Asserted by a test.
 - `--allow-all-tools` always: without it Copilot prompts for tool permission and
   **hangs** non-interactively. `--allow-all-paths` and `dangerouslyDisableSandbox`
   are never passed; the session ruled both out explicitly.
+- `--excluded-tools task` always: Copilot may not spawn its own sub-agents. A
+  dispatch is already one scoped brief, and fan-out is expensive in exactly the
+  place this plugin cannot see. Measured 2026-09-09 from a real dispatch's usage
+  JSON: `agentMetrics.main` was 2908309000 nanoAiu, while the one
+  `general-purpose` sub-agent it spawned was 375050720000 -- **129x the parent**,
+  drawn against the same session cap, which is how a run reaches the soft ceiling
+  and stops half-done with every check in `verify.sh` still passing. It also
+  defeats the receipt: sub-agent credits land in the same cumulative totals, so
+  `USAGE_RUN:` cannot say which agent spent them.
+
+  `--excluded-tools` rather than `--deny-tool`, because the former removes the tool
+  from the model's list entirely -- verified live: Copilot prints
+  `Disabled tools: task` and `functions.task` is absent from the tools it
+  enumerates -- while `--deny-tool` leaves it offered and merely refuses the call,
+  spending a turn on a tool that cannot work. The tool name was confirmed by asking
+  a live `copilot -p` to enumerate its own registered tools; the sibling
+  `read_agent`/`list_agents`/`write_agent` tools only read and write agent
+  definitions, so they are left alone. No flag re-enables it -- the point is that
+  the unit of work is small.
 - `--no-color` always — but it is **not** sufficient. Measured against a real run
   (2026-09-01): the response body is clean while the stats footer still emits raw
   ANSI escapes, so the `copilot --resume=<uuid>` handle arrives wrapped in them.
