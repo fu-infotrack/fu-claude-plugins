@@ -25,6 +25,11 @@ Usage: dispatch.sh --brief <file> --cwd <dir> [options]
   --max-ai-credits <n> Session AI-credit cap. Default 100. `off` disables the cap.
                        Copilot's documented minimum is 30 (`copilot help limits`).
                        Final usage is written beside the log as <log>.usage.json.
+  --allow-subagents    Let Copilot spawn its own sub-agents (its `task` tool).
+                       OFF by default: one measured sub-agent cost 129x its
+                       parent against the same credit cap, and its spend is not
+                       separable in the usage JSON. Pass this only when the brief
+                       genuinely wants fan-out.
   --dry-run            Print the resolved command and exit without launching.
 
 Prints one KEY: VALUE per line. Feed PID to `verify.sh wait`,
@@ -33,7 +38,7 @@ BASELINE_HEAD to `verify.sh check --baseline`, and SESSION_ID to
 USAGE
 }
 
-brief= cwd= log= model= session_id= context= dry_run=0 PASSED_FLAGS=
+brief= cwd= log= model= session_id= context= dry_run=0 allow_subagents=0 PASSED_FLAGS=
 # A cap is the default, not opt-in: an unattended run is exactly the case where
 # nobody is watching the footer. See docs/DESIGN.md.
 max_ai_credits=100
@@ -50,6 +55,7 @@ while [ $# -gt 0 ]; do
     --session-id) session_id=${2:-}; shift 2 ;;
     --context) context=${2:-}; shift 2 ;;
     --max-ai-credits) max_ai_credits=${2:-}; shift 2 ;;
+    --allow-subagents) allow_subagents=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "dispatch.sh: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -166,7 +172,7 @@ FOOTER
 
 brief_text=$(cat "$staged")
 
-# Copilot's own sub-agent tool is `task`, and it is switched off unconditionally.
+# Copilot's own sub-agent tool is `task`, and it is off unless --allow-subagents.
 # MEASURED (2026-09-09, usage JSON of a real dispatch): the main agent burned
 # 2908309000 nanoAiu while ONE `general-purpose` sub-agent it spawned burned
 # 375050720000 -- 129x the parent, inside the same session cap, for work this
@@ -176,7 +182,12 @@ brief_text=$(cat "$staged")
 # list entirely (Copilot prints `Disabled tools: task` and `functions.task` is
 # gone from what it can see), rather than `--deny-tool`, which leaves the tool
 # offered and only refuses the call.
-set -- --allow-all-tools --no-color --excluded-tools task --usage-output-file "$usage_file"
+#
+# Opt-in, not opt-out: the default has to be the safe one because nobody is
+# watching a detached run's credit footer, and a brief that genuinely wants
+# fan-out is the caller saying so explicitly.
+set -- --allow-all-tools --no-color --usage-output-file "$usage_file"
+[ "$allow_subagents" = 1 ] || set -- "$@" --excluded-tools task
 [ "$max_ai_credits" != off ] && set -- "$@" --max-ai-credits "$max_ai_credits"
 [ -n "$model" ]      && set -- "$@" --model "$model"
 [ -n "$session_id" ] && set -- "$@" --session-id "$session_id"

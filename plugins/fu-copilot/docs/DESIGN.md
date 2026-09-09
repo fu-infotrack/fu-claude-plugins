@@ -141,8 +141,12 @@ read as success. Asserted by a test.
   spending a turn on a tool that cannot work. The tool name was confirmed by asking
   a live `copilot -p` to enumerate its own registered tools; the sibling
   `read_agent`/`list_agents`/`write_agent` tools only read and write agent
-  definitions, so they are left alone. No flag re-enables it -- the point is that
-  the unit of work is small.
+  definitions, so they are left alone.
+
+  `--allow-subagents` turns it back on for a brief that genuinely wants fan-out.
+  It is opt-**in** rather than opt-out for the same reason the credit cap is on by
+  default: nobody is watching a detached run's footer, so the unattended default
+  has to be the safe one, and a caller who wants fan-out is in a position to say so.
 - `--no-color` always — but it is **not** sufficient. Measured against a real run
   (2026-09-01): the response body is clean while the stats footer still emits raw
   ANSI escapes, so the `copilot --resume=<uuid>` handle arrives wrapped in them.
