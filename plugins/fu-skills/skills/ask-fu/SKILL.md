@@ -27,5 +27,5 @@ If nothing fits, say so — don't force the nearest match. If two could fit
 rather than guessing.
 
 Related but separate (not routed from here): `/review-prs` (PR-review loop),
-`/et-sweep` and `/log-sweep` (Datadog → GitHub issue sweeps),
+`/log-sweep` (Datadog → GitHub issue sweeps),
 `/statusline-config` (status line renderer).

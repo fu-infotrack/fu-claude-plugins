@@ -35,5 +35,5 @@ export lines from a file instead.
 
 No package manager pulls these — they must be on PATH:
 - `jq` — hard dependency of every hook, the config/DB scripts, and the `fu-statusline` renderer (which also shells out to `git`, and to nothing else).
-- `gh` (authenticated for the target repo) — `fu-et-sweep`, `fu-review-prs`.
+- `gh` (authenticated for the target repo) — `fu-log-sweep`, `fu-review-prs`.
 - `vault` (authenticated, `VAULT_ADDR` set) — the `fu-pg` skill; plus `psql` to actually connect.

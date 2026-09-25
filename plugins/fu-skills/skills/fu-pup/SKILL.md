@@ -160,8 +160,8 @@ Every issue has a **source track** — it was captured from a `trace`, a `log`, 
   explicit span error at the catch site — so it stays queryable and correlatable rather
   than depending on trace retention.
 
-> Filing GitHub issues from Error Tracking is a separate, opinionated workflow —
-> use **`/et-sweep`** (the `fu-et-sweep` plugin) for that. Reach for `pup` here when
+> Filing GitHub issues from errors is a separate, opinionated workflow —
+> use **`/log-sweep`** (the `fu-log-sweep` plugin) for that. Reach for `pup` here when
 > you just want to **read/triage** Error Tracking, logs, or traces from the shell.
 
 ## Query & time syntax

@@ -1,9 +1,8 @@
 # fu-log-sweep — design summary + issue templates
 
-Sibling to `fu-et-sweep`. Sweeps a service's Datadog **error-level Logs**
-(`status:error`) into de-duped GitHub issues. Unlike Error Tracking, logs are
-not pre-grouped, so the sweep computes its own stable **signature** per distinct
-error and dedups on it. Full design:
+Sweeps a service's Datadog **error-level Logs** (`status:error`) into de-duped
+GitHub issues. Unlike Error Tracking, logs are not pre-grouped, so the sweep
+computes its own stable **signature** per distinct error and dedups on it. Full design:
 `docs/superpowers/specs/2026-07-23-fu-log-sweep-design.md`.
 
 **Signature (dedup key):** `sha1(errorKind | service | topAppFrame)` truncated to
