@@ -1,10 +1,9 @@
 # fu-log-sweep
 
 One tick of a self-paced sweep: a service's Datadog **error-level Logs**
-(`status:error`) → de-duped GitHub issues with drafted root-cause writeups.
-Sibling to `fu-et-sweep`; the difference is the source (raw Logs, not Error
-Tracking) and therefore the dedup key — a **computed signature**
-(`type | service | top-app-frame` sha1) instead of an ET `issue_id`.
+(`status:error`) → de-duped GitHub issues with drafted root-cause writeups,
+deduping on a **computed signature** (`type | service | top-app-frame` sha1)
+rather than an Error Tracking `issue_id`.
 
 ## Requirements (on PATH, authenticated in a live session)
 

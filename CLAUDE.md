@@ -69,9 +69,9 @@ CLI flags > nearest <ancestor>/.claude/.fu-tools.json > auto-detect (git remote,
 
 **That chain is the union of two implementations, and the shell one is a strict subset — the auto-detect layer exists ONLY in JS.** `mergeConfig()` takes an `autoObj`; `fu-config.sh` has no equivalent and merges exactly two layers, so for every shell consumer (`fu-skills`, `fu-dev-guards`, `fu-review-prs`) an unset key is simply **absent** — nothing is inferred from the git remote or `k8_settings`. Read the chain above as aspirational for those, not as behaviour. Measured 2026-08-13, after the gap was mistaken for a bug in the `fu-pg` skill (then the `fu-pg-stage` plugin): `app_name` is the wrong key for a Vault db-config anyway (it is per-**deployment** — `infotrackcredit-worker`, `asicapi-consumer` — while a db-config is per-**database**; 1 of 74 `app_name` values on this machine matched any of the 107 `database/config` keys). The **repo name** is the closer key — it matched both repos that have a Postgres config, one exactly (`EntityPlatform`) and one only case-insensitively (`InfoTrackCredit` → `infotrackcredit`) — so any future auto-detect should resolve a candidate against `vault list database/config` rather than trust a derived string.
 
-Project file shape is `{ "<tool>": { ... } }`, keyed by tool name (e.g. `et-sweep`, `dev-guards`). **Resolution merges exactly two layers — the *nearest* `.claude/.fu-tools.json` (walk stops at the first hit) over `~/.claude/fu-tools/config.json`, shallow per-tool (project keys win). It does NOT cascade all ancestors.** A nearer project file therefore *shadows* a farther one: a value needed regardless of cwd (or that a nested repo's own `.fu-tools.json` would shadow) belongs in **user config**. Resolution is implemented twice — keep them behaviorally aligned:
+Project file shape is `{ "<tool>": { ... } }`, keyed by tool name (e.g. `log-sweep`, `dev-guards`). **Resolution merges exactly two layers — the *nearest* `.claude/.fu-tools.json` (walk stops at the first hit) over `~/.claude/fu-tools/config.json`, shallow per-tool (project keys win). It does NOT cascade all ancestors.** A nearer project file therefore *shadows* a farther one: a value needed regardless of cwd (or that a nested repo's own `.fu-tools.json` would shadow) belongs in **user config**. Resolution is implemented twice — keep them behaviorally aligned:
 - `scripts/fu-config.sh` (shell, walks ancestors of cwd). `fu-dev-guards`, `fu-review-prs`, and `fu-skills` each ship an identical copy (`fu-skills` holds the single copy all its skills share). Scalars print one raw line; **arrays print one element per line** (consumers read with `while read`/`mapfile`); absent → nothing. A **dotted key is a nested path** (`fu-config.sh k8dash stage.url` → `.k8dash.stage.url`, via jq `getpath`); flat keys (no dot) behave as before, and the two-layer merge is a jq deep-merge so a project file can override one nested leaf.
-- `mergeConfig()` in `sweep-lib.mjs` (JS), used by `fu-et-sweep`.
+- `mergeConfig()` in `log-sweep-lib.mjs` (JS), used by `fu-log-sweep`.
 
 Because the walk-up starts at the process cwd, a hook resolves config relative to **where the guarded command runs** (e.g. `git commit` runs inside the target repo). The `dev-guards` keys (`protected_branches`, `repo_filter`, `protected_dirs`, `protected_dir_exempt`) all live in user config so they apply everywhere. Hook scripts also accept env-var overrides (`PROTECTED_BRANCHES`, `REPO_FILTER`, `PROTECTED_DIRS`, `PROTECTED_DIR_EXEMPT`) that win over resolved config — used by the inline `Bash` tests.
 
@@ -79,7 +79,7 @@ Claude Code's plugin `userConfig` mechanism exists but is intentionally **not** 
 
 ## Code patterns
 
-- **Pure logic split from I/O.** `fu-et-sweep/scripts/sweep-lib.mjs` is dependency-free, side-effect-free, and `node:test`-covered; `sweep.mjs` is the thin CLI wrapper the command shells out to. Date/time and network stay out of the testable core. Preserve this split when extending.
+- **Pure logic split from I/O.** `fu-log-sweep/scripts/log-sweep-lib.mjs` is dependency-free, side-effect-free, and `node:test`-covered; `sweep.mjs` is the thin CLI wrapper the command shells out to. Date/time and network stay out of the testable core. Preserve this split when extending.
 - **Hooks** live in `src/hooks/` as bash, referenced via `${CLAUDE_PLUGIN_ROOT}/src/hooks/...`. To block an action a PreToolUse hook emits a `hookSpecificOutput` JSON object with `permissionDecision: "deny"` and exits non-zero (2). `jq` is a hard dependency.
 
 ## Per-plugin rules live with the plugin
@@ -99,7 +99,6 @@ open it explicitly.
 | fu-review-prs | `plugins/fu-review-prs/CLAUDE.md` | Which steps must stay deterministic bash, the disk-based (compaction-immune) handoff, approve-is-opt-in, the blocker-count rule, house rules |
 | fu-skills | `plugins/fu-skills/CLAUDE.md` | Per-skill designs: `fu-pg` (Vault, LDAP, the `--export` failure contract), `fu-mssql` (Windows auth, named hosts), `fu-k8` (GET-only proxy replay) |
 | fu-dev-guards | `plugins/fu-dev-guards/CLAUDE.md` | The command-matching rule (`cmd_invokes`, "data is not a command"), advisory-vs-enforcement, and the session-stamp marker wire format |
-| fu-et-sweep | `plugins/fu-et-sweep/CLAUDE.md` | Token discipline, and the `pup` ET thin-projection wrinkle that drives the prune→dedup→hydrate order |
 | fu-log-sweep | `plugins/fu-log-sweep/CLAUDE.md` | The self-computed error signature it dedups on — a wire format |
 | fu-statusline | `plugins/fu-statusline/CLAUDE.md` | Why the renderer cannot run from the plugin cache, and the `fu-statusline` marker token you must not remove |
 
@@ -114,7 +113,6 @@ so nothing installs, nothing reaches a real service, and no real external run st
 plugin's `CLAUDE.md` says what its suites actually assert; the whole set is:
 
 ```bash
-node --test plugins/fu-et-sweep/scripts/sweep-lib.test.mjs
 bash plugins/fu-copilot/test/dispatch.test.sh
 bash plugins/fu-copilot/test/verify.test.sh
 bash plugins/fu-dev-guards/test/git-guard.test.sh
@@ -141,13 +139,13 @@ Two harness gotchas cost time when writing the bash suites, both worth not redis
 
 No package manager pulls these — they must be on PATH:
 - `jq` — hard dependency of every hook, the config/DB scripts, and the `fu-statusline` renderer (which also shells out to `git`, and to nothing else).
-- `gh` (authenticated for the target repo) — `fu-et-sweep`, `fu-review-prs`.
+- `gh` (authenticated for the target repo) — `fu-log-sweep`, `fu-review-prs`.
 - `vault` (authenticated, `VAULT_ADDR` set) — the `fu-pg` skill; plus `psql` to actually connect.
 - `sqlcmd` — the `fu-mssql` skill: on Windows the ODBC `sqlcmd` (v17/18) or `go-sqlcmd`; under WSL the **Windows-host `sqlcmd.exe`** on PATH (interop). No `vault`. `jq` only to persist the host.
-- `node` — `fu-et-sweep` and its `node --test` suite.
+- `node` — `fu-log-sweep` and its `node --test` suite.
 - `python3` — the `fu-ce` skill's frontmatter validator.
 - `curl` — the `fu-k8` skill (the only hard dep; `jq` optional, used for formatting); `fu-review-prs` only when a notification channel is configured.
-- `pup` — the `fu-pup` skill (plus the bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-et-sweep`** (its sole Datadog access path since v0.2.0). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
+- `pup` — the `fu-pup` skill (plus the bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-log-sweep`** (its sole Datadog access path). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
 - `copilot` (GitHub Copilot CLI, authenticated) — `fu-copilot` only. Its test suites stub it on PATH, so they need nothing installed.
 - `wsl.exe`, PowerShell 7+, `winget` — the `fu-wsl` skill (Windows-host only; drives a Debian/Ubuntu WSL instance).
 
@@ -156,8 +154,7 @@ No package manager pulls these — they must be on PATH:
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| fu-et-sweep | command + agents + scripts | Datadog Error Tracking → de-duped GitHub issues with root-cause writeups (Datadog via the `pup` CLI) |
-| fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups; sibling to fu-et-sweep, dedups on a self-computed error signature (`type\|service\|top-app-frame` sha1) instead of an ET `issue_id` |
+| fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups, deduping on a self-computed error signature (`type\|service\|top-app-frame` sha1) |
 | fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo). Comment-only by default — `--auto-approve` to approve clean PRs |
 | fu-skills | skills + agents + scripts | **All scenario skills in one plugin.** `/fu-pg` (Postgres via HashiCorp Vault credentials) and `/fu-pup` (Datadog via the `pup` CLI) stay model-invocable — they're daily drivers and auto-trigger. The rest are `disable-model-invocation: true` (zero context until explicitly invoked): `/fu-mssql` (SQL Server via Windows integrated auth — `sqlcmd -E` native, or the Windows-host `sqlcmd.exe` under WSL; named hosts + default), `/fu-k8` (read-only K8s across clusters via the k8dash pass-through proxy, GET-only, user's OIDC token), `/fu-order` (Orders API inspection), `/fu-wsl` (provision a WSL work environment from Windows PowerShell 7+), `/fu-ce` (document solved problems; EveryInc fork, MIT — ships the ce-* review agents). `/ask-fu` (also hidden) is the catalogue/router for when the name escapes you. **fu-tools config keys are unchanged** (`pg-stage`, `mssql-stage`, `k8dash`, `inspecting-orders-api`) — the scripts kept their tool names, so no config migration |
 | fu-copilot | skill + agent + scripts | Delegate a coding task to GitHub Copilot CLI and verify the outcome from git. `dispatch.sh` stages the brief in `/tmp`, inlines it into `-p`, launches detached and confirms it reached the process; `verify.sh` waits on the PID and checks HEAD moved / empty commits / losslessness / log denials |

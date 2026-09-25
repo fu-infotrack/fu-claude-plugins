@@ -13,7 +13,6 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| et-sweep | command + agents + scripts | Datadog Error Tracking -> GitHub issues (via the `pup` CLI) |
 | fu-log-sweep | command + agents + scripts | Datadog error-level **Logs** → de-duped GitHub issues with root-cause writeups; dedups on a computed error signature (no Error Tracking required) |
 | review-prs | command + scripts | PR review orchestrator (self-contained; runtime state in ~/.claude/pr-review, per-repo). Comment-only by default; `--auto-approve` to approve clean PRs |
 | fu-skills | skills + agents + scripts | All scenario skills in one plugin (see table below). `fu-pg` and `fu-pup` auto-trigger; the rest are `disable-model-invocation: true` — zero context until invoked as `/fu-*`. `/ask-fu` is the catalogue/router |
