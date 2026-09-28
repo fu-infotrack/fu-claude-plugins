@@ -14,20 +14,25 @@ You do **NOT** post anything to GitHub yourself — the orchestrator posts the f
 
 ## Step 0 — Review context and PR intent
 
-`STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`, and `DECISION_FILE` are given to you as
+`SCOPE_FILE`, `PRIOR_FILE`, `BODY_FILE`, and `DECISION_FILE` are given to you as
 absolute paths in your task prompt. Use them verbatim — do not construct your own
 (they are namespaced per repo, so a hand-built path will be wrong).
 
-1. Target repo (you run in the review clone, so gh detects it from cwd):
-   `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)`
-   Use `<REPO>` to mean this value in every command below.
-2. Current head commit:
-   `gh pr view <PR> --repo <REPO> --json headRefOid --jq '.headRefOid'`
-3. Read `STATE_FILE` if it exists. Line 1 = last reviewed commit, line 2 = last reviewed tree.
-4. Decide review mode yourself:
-   - No state file → **FULL review** (first time).
-   - Otherwise compare last reviewed commit to head. Unchanged content → **FULL review** (human re-requested). Changed → **DELTA review**, `delta_base` = last reviewed commit.
-5. Read the PR's stated intent so you can judge whether the diff actually delivers it:
+1. Read `SCOPE_FILE` — the orchestrator has already decided what you review. It is a
+   header, a blank line, then one file path per line:
+
+   ```
+   REPO=<owner/name>
+   HEAD=<head commit you review>
+   MODE=FULL | DELTA
+   DELTA_BASE=<last reviewed commit; empty in FULL mode>
+   ```
+
+   Use `<REPO>`, `<head_commit>` and `<delta_base>` to mean these values below. The
+   file list is your **review scope**: every PR file in FULL mode; in DELTA mode, only
+   the PR's files that changed since `DELTA_BASE` (rebased-in main files already
+   excluded). Do not re-derive the mode or the list, and do not widen it.
+2. Read the PR's stated intent so you can judge whether the diff actually delivers it:
    - `gh pr view <PR> --repo <REPO> --json title,body,closingIssuesReferences`
    - For each entry in `closingIssuesReferences` (issues the PR closes via "Closes/Fixes #N"), read it **including its comments**: `gh issue view <N> --repo <REPO> --json title,body,labels,comments`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
    - **Read the issue comments, not just the body.** Product managers / maintainers often post the real detail there — clarifications, revised acceptance criteria, or scope cuts added after the issue was opened. Fold genuine requirement updates into the intent, and where a later clarifying comment conflicts with the original body, **the comment wins**. Ignore bot/status/CI chatter and side discussion; weight the issue author's and maintainers' clarifying comments.
@@ -37,27 +42,14 @@ The orchestrator only spawns you when there is work to do — do not re-check wh
 
 ## Step 1 — Run `/code-review` to gather findings
 
-Invoke the `/code-review` slash command on PR #<PR>, always with an explicit level — `low` or `medium` — never bare `/code-review`: without an explicit level it reuses whatever level was last typed in the invoking context, which for a fresh sub-agent is undefined. Pick the level yourself from the scope you're about to review (the intersected file list in DELTA mode, the full PR file list in FULL mode):
+Invoke the `/code-review` slash command on PR #<PR>, always with an explicit level — `low` or `medium` — never bare `/code-review`: without an explicit level it reuses whatever level was last typed in the invoking context, which for a fresh sub-agent is undefined. Pick the level yourself from the review scope in `SCOPE_FILE`:
 
 - **`low`** — small/simple scope: a handful of files, a small diff, or changes confined to docs/config/tests/formatting.
 - **`medium`** — anything larger or touching actual logic (the default when in doubt).
 
 Never go above `medium` (`high`/`xhigh`/`max` are out of scope for automated PR review — too slow and too noisy for an unattended tick). Capture its findings — do not act on its own posting behaviour (you are not posting).
 
-For a DELTA review, scope `/code-review` to the PR's actual changed files (not the raw old-head→new-head diff, which includes rebased-in main commits):
-
-```bash
-# Files the PR adds relative to its base branch (the true PR scope)
-PR_FILES=$(gh api repos/<REPO>/pulls/<PR>/files --jq ".[].filename")
-
-# Files that changed between the last reviewed commit and the current head
-DELTA_FILES=$(gh api repos/<REPO>/compare/<delta_base>...<head_commit> --jq ".files[].filename")
-
-# Intersection: only files that are both in the PR and new/changed since last review
-comm -12 <(echo "$PR_FILES" | sort) <(echo "$DELTA_FILES" | sort)
-```
-
-Review only the intersected file list. Do NOT re-audit unchanged code for new issues in delta mode, and do NOT review files that the PR did not touch (they may have been pulled in by a rebase).
+Scope `/code-review` to the files listed in `SCOPE_FILE`. In DELTA mode, do NOT re-audit unchanged code for new issues, and do NOT review files outside the list (a rebase may have pulled them in).
 
 ## Step 2 — Classify findings and assemble the body
 

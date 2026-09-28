@@ -50,8 +50,8 @@ mkdir -p "$STATE_DIR"
 # review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
-    printf 'STATE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
-        "$STATE_DIR/last-reviewed-$pr" \
+    printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
+        "$STATE_DIR/scope-$pr.txt" \
         "$STATE_DIR/prior-$pr.txt" \
         "$STATE_DIR/review-body-$pr.md" \
         "$STATE_DIR/decision-$pr.txt"
@@ -449,7 +449,7 @@ pr_review_purge_stale() {
         pr_num=$(basename "$state_file" | sed -E 's/last-reviewed-//')
         echo "$open_prs" | grep -qw "$pr_num" || rm -f "$state_file"
     done < <(find "$STATE_DIR" -maxdepth 1 -name "last-reviewed-*" 2>/dev/null)
-    find "$STATE_DIR" -maxdepth 1 \( -name "codeql-wait-*" -o -name "copilot-wait-*" -o -name "prior-*.txt" -o -name "review-body-*.md" -o -name "pending-*" -o -name "decision-*.txt" \) -delete 2>/dev/null || true
+    find "$STATE_DIR" -maxdepth 1 \( -name "codeql-wait-*" -o -name "copilot-wait-*" -o -name "prior-*.txt" -o -name "review-body-*.md" -o -name "pending-*" -o -name "decision-*.txt" -o -name "scope-*.txt" \) -delete 2>/dev/null || true
 }
 
 # Release the lock held by the background holder process.
@@ -542,13 +542,58 @@ pr_review_init() {
     fi
 }
 
-# Pre-flight check for a single PR. Outputs "SKIP" or a bare "PROCEED" line.
-# On PROCEED it persists the reviewed commit/tree to pending-<pr> on disk, so the
-# orchestrator no longer needs to carry them in context to the post step (Step 2c)
-# — the handoff survives a mid-tick compaction. The sub-agent derives review mode
-# (first/delta) and delta_base itself from the state file; this function only
-# decides whether the sub-agent should run at all, and pre-writes the
-# prior-findings file the sub-agent reads in delta mode.
+# Decide what the sub-agent reviews and write it to scope-<pr>.txt: a key=value
+# header (REPO, HEAD, MODE, DELTA_BASE), a blank line, then one file per line.
+# Keyed on the tree SHA, like the review state: no state or an unchanged tree
+# (a re-request) → FULL, every PR file; a changed tree → DELTA, the PR's files ∩
+# the files changed since the last reviewed commit (not the raw compare, which
+# carries rebased-in main commits). Any uncertain delta — empty, compare failed,
+# compare at its 300-file cap — falls back to FULL: a wider review is only ever
+# a comment. Returns 1 (pre-flight SKIPs) only when the PR's own file list can't
+# be fetched. The list goes to disk, never stdout (orchestrator context).
+write_review_scope() {
+    local pr=$1 commit=$2 tree=$3
+    local pr_files files="" mode=FULL base="" why="first review"
+    rm -f "$STATE_DIR/scope-$pr.txt"
+    pr_files=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename' 2>/dev/null) || return 1
+    pr_files=$(printf '%s\n' "$pr_files" | grep . | LC_ALL=C sort -u)
+    [ -z "$pr_files" ] && return 1
+
+    local state
+    if state=$(read_review_state "$pr"); then
+        local last_commit=${state%%$'\t'*} last_tree=${state##*$'\t'}
+        if [ "$last_tree" = "$tree" ]; then
+            why="tree unchanged"
+        else
+            local delta_files
+            if ! delta_files=$(gh api "repos/$REPO/compare/${last_commit}...${commit}" \
+                    --jq '.files[].filename' 2>/dev/null); then
+                why="compare $last_commit...$commit failed"
+            elif [ "$(printf '%s\n' "$delta_files" | grep -c .)" -ge 300 ]; then
+                why="compare hit its 300-file cap"
+            else
+                files=$(LC_ALL=C comm -12 <(printf '%s\n' "$pr_files") \
+                    <(printf '%s\n' "$delta_files" | grep . | LC_ALL=C sort -u))
+                if [ -n "$files" ]; then
+                    mode=DELTA base=$last_commit why="tree changed"
+                else
+                    why="no PR file changed since $last_commit"
+                fi
+            fi
+        fi
+    fi
+    [ "$mode" = FULL ] && files=$pr_files
+
+    { printf 'REPO=%s\nHEAD=%s\nMODE=%s\nDELTA_BASE=%s\n\n' "$REPO" "$commit" "$mode" "$base"
+      printf '%s\n' "$files"; } > "$STATE_DIR/scope-$pr.txt"
+    log "PR #$pr: $mode review ($why), $(printf '%s\n' "$files" | grep -c .) file(s)"
+}
+
+# Pre-flight check for a single PR. Outputs "SKIP", or "PROCEED" followed by the
+# sub-agent's Task prompt. On PROCEED it has written everything the rest of the
+# PR's run reads from disk — scope-<pr>.txt (what to review, for the sub-agent),
+# prior-<pr>.txt (prior findings), and pending-<pr> (the reviewed commit/tree,
+# for the post step) — so the handoff survives a mid-tick compaction.
 pr_review_preflight() {
     local pr=$1 reason=$2
 
@@ -576,25 +621,10 @@ pr_review_preflight() {
     current_commit=${head_info%%$'\t'*}
     current_tree=${head_info##*$'\t'}
 
-    local state
-    if state=$(read_review_state "$pr"); then
-        local last_tree
-        last_tree=${state##*$'\t'}
-
-        if [ "$last_tree" = "$current_tree" ] && [ "$reason" != "review_re_requested" ]; then
-            log "PR #$pr: tree SHA unchanged, skipping (refreshing commit SHA)"
-            save_review_state "$pr" "$current_commit" "$current_tree"
-            echo "SKIP"; return 0
-        fi
-
-        if [ "$last_tree" != "$current_tree" ]; then
-            log "PR #$pr: delta review (tree changed)"
-        else
-            log "PR #$pr: re-request, tree unchanged — full re-review"
-        fi
-    else
-        log "PR #$pr: first review"
-    fi
+    write_review_scope "$pr" "$current_commit" "$current_tree" || {
+        log "PR #$pr: could not fetch the PR's file list, skipping"
+        echo "SKIP"; return 0
+    }
 
     # Pre-write prior findings for the sub-agent (empty if none). Done here so the
     # sub-agent reads it from disk and never needs gh-pipe permissions of its own.

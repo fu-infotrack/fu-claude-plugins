@@ -30,6 +30,13 @@ new_sandbox() {
   # gh stub. The real gh applies --jq itself, so the stub answers post-jq values.
   #   PR_STATE   — the PR's state (default OPEN); "none" makes the info fetch fail
   #   HEAD_FAIL  — non-empty makes the head-commit lookup fail
+  #   HEAD_TREE  — the head's tree SHA (default cafef00d)
+  #   PR_FILES   — the PR's files, one per line; the stub serves them as TWO
+  #                pages and returns only the first page without --paginate
+  #   FILES_FAIL — non-empty makes the PR file-list fetch fail
+  #   COMPARE_FILES / COMPARE_FAIL — the compare's files, or make it fail;
+  #                the compare's range is recorded in $GH_COMPARE
+  export GH_COMPARE="$SANDBOX/gh-compare.txt"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
@@ -44,7 +51,20 @@ case "$1 $2" in
     fi
     exit 0 ;;
 esac
-if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo "cafef00d"; exit 0; fi
+if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo "${HEAD_TREE:-cafef00d}"; exit 0; fi
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files" ]]; then
+  [ -n "${FILES_FAIL:-}" ] && exit 1
+  files=${PR_FILES-$'src/a.cs\nsrc/b.cs'}
+  if [[ "$*" == *"--paginate"* ]]; then printf '%s\n' "$files"
+  else printf '%s\n' "$files" | head -1; fi
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" == *"/compare/"* ]]; then
+  echo "${2##*/compare/}" > "$GH_COMPARE"
+  [ -n "${COMPARE_FAIL:-}" ] && exit 1
+  printf '%s\n' "${COMPARE_FILES-}"
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then echo "[]"; exit 0; fi
 exit 0
 STUB
@@ -57,7 +77,9 @@ STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
   # Let lib.sh resolve review-task.md beside itself, not from an installed plugin.
-  unset PR_STATE HEAD_FAIL CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
+  unset PR_STATE HEAD_FAIL HEAD_TREE PR_FILES FILES_FAIL COMPARE_FILES COMPARE_FAIL \
+        CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
+  STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
 cleanup() { [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ] && rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -70,15 +92,23 @@ preflight() {
 }
 out() { cat "$SANDBOX/out"; }
 err() { cat "$SANDBOX/err"; }
+scope() { cat "$STATE/scope-7.txt" 2>/dev/null; }
+# A prior review of PR 7 at commit 0ldc0mm1t / tree <tree>. reviewed <tree>
+reviewed() { mkdir -p "$STATE"; printf '0ldc0mm1t\n%s\n' "$1" > "$STATE/last-reviewed-7"; }
+# scope_file <mode> <delta_base> <files...>
+scope_file() {
+  local mode=$1 base=$2; shift 2
+  printf 'REPO=acme/widgets\nHEAD=deadbeef\nMODE=%s\nDELTA_BASE=%s\n\n' "$mode" "$base"
+  printf '%s\n' "$@"
+}
 
 echo "== PROCEED is followed by the ready Task prompt =="
 new_sandbox
-STATE="$HOME/.claude/pr-review/state/acme-widgets"
 preflight 7 review_requested
 expected="PROCEED
 Read $ROOT/review-task.md and follow it exactly. Review PR #7.
 Use these absolute paths verbatim — do not construct your own:
-  STATE_FILE = $STATE/last-reviewed-7
+  SCOPE_FILE = $STATE/scope-7.txt
   PRIOR_FILE = $STATE/prior-7.txt
   BODY_FILE = $STATE/review-body-7.md
   DECISION_FILE = $STATE/decision-7.txt"
@@ -87,7 +117,62 @@ eq "stderr is empty" "" "$(err)"
 eq "pending written for finish" "deadbeef
 cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
 eq "log went to the file instead" "1" \
-  "$(grep -c 'PR #7: first review' "$HOME/.claude/pr-review/review-acme-widgets.log")"
+  "$(grep -c 'PR #7: FULL review (first review), 2 file(s)' "$HOME/.claude/pr-review/review-acme-widgets.log")"
+eq "first review: FULL scope, every PR file" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
+cleanup
+
+echo "== the PR file list is paginated =="
+new_sandbox
+PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs' preflight 7 review_requested
+eq "all pages read" "$(scope_file FULL '' src/a.cs src/b.cs src/c.cs)" "$(scope)"
+cleanup
+
+echo "== tree unchanged (a re-request): FULL, no compare =="
+new_sandbox
+reviewed cafef00d
+preflight 7 review_re_requested
+eq "stdout starts PROCEED" "PROCEED" "$(out | head -1)"
+eq "FULL scope" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
+eq "compare never called" "absent" "$([ -e "$GH_COMPARE" ] && echo present || echo absent)"
+cleanup
+
+echo "== tree changed: DELTA over PR files ∩ changed files =="
+new_sandbox
+reviewed 01dtree
+COMPARE_FILES=$'src/b.cs\nlib/from-main.cs' preflight 7 review_re_requested
+eq "DELTA scope, rebased-in file excluded" "$(scope_file DELTA 0ldc0mm1t src/b.cs)" "$(scope)"
+eq "compare from last reviewed commit to head" "0ldc0mm1t...deadbeef" "$(cat "$GH_COMPARE")"
+cleanup
+
+echo "== tree changed but no PR file did: FULL =="
+new_sandbox
+reviewed 01dtree
+COMPARE_FILES='lib/from-main.cs' preflight 7 review_re_requested
+eq "falls back to FULL" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
+cleanup
+
+echo "== compare fails: FULL =="
+new_sandbox
+reviewed 01dtree
+COMPARE_FAIL=1 preflight 7 review_re_requested
+eq "stdout starts PROCEED" "PROCEED" "$(out | head -1)"
+eq "falls back to FULL" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
+cleanup
+
+echo "== compare at its 300-file cap: FULL =="
+new_sandbox
+reviewed 01dtree
+COMPARE_FILES=$(printf 'src/a.cs\n'; seq -f 'gen/f%g.cs' 299) preflight 7 review_re_requested
+eq "falls back to FULL" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
+cleanup
+
+echo "== the PR file list can't be fetched: SKIP, nothing pending =="
+new_sandbox
+FILES_FAIL=1 preflight 7 review_requested
+eq "stdout is SKIP" "SKIP" "$(out)"
+eq "stderr is empty" "" "$(err)"
+eq "no pending file" "absent" "$([ -e "$STATE/pending-7" ] && echo present || echo absent)"
+eq "no scope file" "" "$(scope)"
 cleanup
 
 echo "== a closed PR is a bare SKIP =="
