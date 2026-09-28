@@ -36,7 +36,7 @@ STATE_DIR="$BASE_DIR/state/$REPO_SLUG"
 # signal (it can satisfy branch protection and unblock a merge), so it has to be
 # asked for. Enable it for a tick with `/review-prs --auto-approve`, or by setting
 # PR_REVIEW_AUTO_APPROVE=1. The mode is recorded on DISK for the tick so the post
-# step reads it back the same way it reads the decision — a mid-tick compaction
+# step reads it back the same way it reads the findings — a mid-tick compaction
 # can never flip a COMMENT tick into an approving one.
 AUTO_APPROVE_FILE="$STATE_DIR/auto-approve"
 LOG_FILE="$BASE_DIR/review-$REPO_SLUG.log"
@@ -48,25 +48,28 @@ mkdir -p "$STATE_DIR"
 
 # ── Per-PR state store ─────────────────────────────────────────────────────────
 # pr_path is the ONE place that knows the per-PR file names under STATE_DIR:
-#   reviewed  last-reviewed-<pr>   record of the last posted review (durable)
-#   pending   pending-<pr>         record of the head pre-flight dispatched — the
-#                                  PROCEED token pr_review_finish requires
-#   scope     scope-<pr>.txt       what the sub-agent reviews (write_review_scope)
-#   prior     prior-<pr>.txt       our previous review body, for DELTA mode
-#   body      review-body-<pr>.md  the sub-agent's review body
-#   decision  decision-<pr>.txt    the sub-agent's APPROVE|COMMENT
-# Every kind but `reviewed` lives for one dispatch (TRANSIENT_KINDS).
-TRANSIENT_KINDS="pending scope prior body decision"
+#   reviewed  last-reviewed-<pr>        record of the last posted review (durable)
+#   carried   last-findings-<pr>.json   the findings still live after that review,
+#                                       for the next DELTA (durable)
+#   pending   pending-<pr>              record of the head pre-flight dispatched —
+#                                       the PROCEED token pr_review_finish requires
+#   scope     scope-<pr>.txt            what the sub-agent reviews (write_review_scope)
+#   prior     prior-<pr>.json           the carried findings, for DELTA mode
+#   findings  findings-<pr>.json        the sub-agent's findings
+# `reviewed` and `carried` outlive a dispatch (DURABLE_KINDS, removed by purge
+# once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
+DURABLE_KINDS="reviewed carried"
+TRANSIENT_KINDS="pending scope prior findings"
 
 pr_path() {
     local kind=$1 pr=$2
     case $kind in
-        reviewed) printf '%s/last-reviewed-%s\n'  "$STATE_DIR" "$pr" ;;
-        pending)  printf '%s/pending-%s\n'        "$STATE_DIR" "$pr" ;;
-        scope)    printf '%s/scope-%s.txt\n'      "$STATE_DIR" "$pr" ;;
-        prior)    printf '%s/prior-%s.txt\n'      "$STATE_DIR" "$pr" ;;
-        body)     printf '%s/review-body-%s.md\n' "$STATE_DIR" "$pr" ;;
-        decision) printf '%s/decision-%s.txt\n'   "$STATE_DIR" "$pr" ;;
+        reviewed) printf '%s/last-reviewed-%s\n'      "$STATE_DIR" "$pr" ;;
+        carried)  printf '%s/last-findings-%s.json\n' "$STATE_DIR" "$pr" ;;
+        pending)  printf '%s/pending-%s\n'            "$STATE_DIR" "$pr" ;;
+        scope)    printf '%s/scope-%s.txt\n'          "$STATE_DIR" "$pr" ;;
+        prior)    printf '%s/prior-%s.json\n'         "$STATE_DIR" "$pr" ;;
+        findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
         *) return 1 ;;
     esac
 }
@@ -122,9 +125,8 @@ pr_clear() {
 # review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
-    printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
-        "$(pr_path scope "$pr")" "$(pr_path prior "$pr")" \
-        "$(pr_path body "$pr")" "$(pr_path decision "$pr")"
+    printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nFINDINGS_FILE=%s\n' \
+        "$(pr_path scope "$pr")" "$(pr_path prior "$pr")" "$(pr_path findings "$pr")"
 }
 
 rotate_log() {
@@ -181,38 +183,99 @@ get_pr_head_info() {
     printf '%s\t%s\n' "$head_sha" "$tree_sha"
 }
 
-# Resolve the sub-agent's decision from DISK, never from the orchestrator's
-# context: the decision-<pr>.txt sidecar first (clean single token), else the
-# "<!-- DECISION: X -->" header the sub-agent also writes as the body's first
-# line, else COMMENT (conservative — never auto-approve on ambiguity).
-read_decision() {
-    local pr=$1 body_file=$2 d=""
-    local sidecar
-    sidecar=$(pr_path decision "$pr")
-    if [ -s "$sidecar" ]; then
-        d=$(tr -d ' \t\r\n' < "$sidecar" | tr '[:lower:]' '[:upper:]')
+# ── Findings ───────────────────────────────────────────────────────────────────
+# The sub-agent's whole deliverable is findings-<pr>.json:
+#   {"findings": [{"severity": "BLOCKER"|"NIT", "text": "…", "where": "path:line"}],
+#    "prior":    [{"status": "RESOLVED"|"STILL OPEN"|"REINTRODUCED",
+#                  "severity": …, "text": …, "where": …}]}
+# `where` is optional; `prior` is present only in DELTA mode. Everything derived
+# from it is bash: the posted body, the verdict, and the blocker count. So the
+# count can no longer disagree with the body it links to, which it did when both
+# were parsed back out of sub-agent prose (EntityPlatform #2172: a RESOLVED prior
+# blocker notified as "1 blocker(s)" over a body saying "No blockers found").
+#
+# A current blocker is a BLOCKER in `findings`, or a prior BLOCKER that is not
+# RESOLVED. The verdict is APPROVE exactly when there are none.
+FINDINGS_JQ='
+def item_errors:
+    if type != "object" then ["not an object"] else
+      (if .severity == "BLOCKER" or .severity == "NIT" then []
+       else ["severity must be BLOCKER or NIT"] end)
+    + (if (.text | type) == "string" and (.text | test("\\S")) then []
+       else ["text must be a non-empty string"] end)
+    + (if (.where // "" | type) == "string" then [] else ["where must be a string"] end)
+    end;
+def status_errors:
+    if type == "object" and (.status | IN("RESOLVED", "STILL OPEN", "REINTRODUCED")) then []
+    else ["status must be RESOLVED, STILL OPEN or REINTRODUCED"] end;
+def errors:
+    if type != "object" then ["not a JSON object"] else
+      (if (.findings | type) != "array" then ["findings must be an array"]
+       else [.findings | to_entries[] | .key as $i
+             | .value | item_errors[] | "findings[\($i)]: \(.)"] end)
+    + (if (.prior // [] | type) != "array" then ["prior must be an array"]
+       else [.prior // [] | to_entries[] | .key as $i
+             | .value | (item_errors + status_errors)[] | "prior[\($i)]: \(.)"] end)
+    end;
+def flat: gsub("[\\r\\n]+"; " ") | sub("^\\s+"; "") | sub("\\s+$"; "");
+def clean: {severity, text: (.text | flat)}
+         + ((.where // "" | flat) as $w | if $w != "" then {where: $w} else {} end);
+def normalize:
+    {findings: [.findings[] | clean],
+     prior: [.prior // [] | .[] | {status} + clean]};
+def live_prior: [.prior[] | select(.status != "RESOLVED")];
+def blockers: [(.findings + live_prior)[] | select(.severity == "BLOCKER")] | length;
+def carried: {findings: (.findings + [live_prior[] | del(.status)])};
+def line: "[\(.severity)] \(.text)" + (if .where then " — `\(.where)`" else "" end);
+def numbered: to_entries | map("\(.key + 1). \(.value)") | join("\n");
+def body($pr):
+    "### Code review — PR #\($pr)\n"
+    + (if (.prior | length) > 0
+       then "Prior findings:\n" + ([.prior[] | "\(.status) — \(line)"] | numbered) + "\n\n"
+       else "" end)
+    + "Found \(.findings | length) issues:"
+    + (if (.findings | length) > 0 then "\n" + ([.findings[] | line] | numbered) else "" end);
+'
+
+# Validate and normalize a findings file. Prints the normalized JSON, or returns
+# 1 printing why it was rejected. Strict: one bad item rejects the whole file,
+# since a review with a finding silently dropped is worse than one retried next
+# tick. findings_load <file>
+findings_load() {
+    local f=$1 err
+    [ -s "$f" ] || { printf 'no findings file'; return 1; }
+    if ! err=$(jq -rs "$FINDINGS_JQ"'
+            if length != 1 then "expected one JSON object" else .[0] | errors[] end' \
+            "$f" 2>&1); then
+        printf 'not valid JSON: %s' "$err"; return 1
     fi
-    if [ "$d" != "APPROVE" ] && [ "$d" != "COMMENT" ] && [ -f "$body_file" ]; then
-        d=$(sed -n '1{/<!-- *DECISION:/p};q' "$body_file" \
-            | sed -E 's/.*DECISION:[[:space:]]*([A-Za-z]+).*/\1/' | tr '[:lower:]' '[:upper:]')
-    fi
-    case "$d" in APPROVE|COMMENT) printf '%s' "$d" ;; *) printf 'COMMENT' ;; esac
+    [ -z "$err" ] || { printf '%s' "$err" | paste -sd ';' - | sed 's/;/; /g'; return 1; }
+    jq -c "$FINDINGS_JQ"'normalize' "$f"
 }
 
-# How many CURRENT blockers a review body reports. Counting raw "[BLOCKER]"
-# occurrences is wrong in DELTA mode: review-task.md's "Prior findings:" block
-# re-prints each prior finding's ORIGINAL severity tag alongside its new status,
-# so a fixed blocker still carries the literal tag. Measured on EntityPlatform
-# #2172 — a lone RESOLVED prior blocker was notified as "1 blocker(s)" while the
-# body it linked to said "No blockers found".
-#
-# So drop a line only when RESOLVED appears BEFORE the tag, i.e. in the status
-# position the prior-findings block puts it in. STILL OPEN and REINTRODUCED lines
-# still count (Step 3 treats them as current blockers), and the word "resolved"
-# inside a live finding's own description is prose, not a status.
-count_blockers() { # count_blockers <body-file>
-    [ -f "$1" ] || { printf '0'; return 0; }
-    grep '\[BLOCKER\]' "$1" 2>/dev/null | grep -cv 'RESOLVED.*\[BLOCKER\]' || true
+# Queries over normalized findings (findings_load's output) on stdin.
+findings_blockers() { jq -r "$FINDINGS_JQ"'blockers'; }
+findings_body()     { jq -r --arg pr "$1" "$FINDINGS_JQ"'body($pr)'; }   # findings_body <pr>
+# What the next DELTA review re-checks: this review's findings plus the prior
+# ones still open or reintroduced. A RESOLVED finding is done with.
+findings_carried()  { jq -c "$FINDINGS_JQ"'carried'; }
+
+# Write prior-<pr>.json for the sub-agent: {"findings": [...]}, from the findings
+# carried by our last posted review. A review posted before findings were carried
+# (≤ v0.6.0) has none, so its text from GitHub rides along as `legacy_body`.
+write_prior_findings() {
+    local pr=$1 carried legacy
+    carried=$(pr_path carried "$pr")
+    if jq -e '.findings | type == "array"' "$carried" >/dev/null 2>&1; then
+        jq '{findings}' "$carried"
+    else
+        legacy=$(fetch_prior_findings "$pr")
+        if grep -q '[^[:space:]]' <<< "$legacy"; then
+            jq -n --arg b "$legacy" '{findings: [], legacy_body: $b}'
+        else
+            jq -n '{findings: []}'
+        fi
+    fi > "$(pr_path prior "$pr")"
 }
 
 # Record this tick's auto-approve mode from the command's arguments. Called by
@@ -478,17 +541,22 @@ pr_review_purge_stale() {
     local open_prs name prefix suffix f pr kind
     open_prs=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' 2>/dev/null || true)
     # File names come from pr_path with a `*` PR, so this knows no names itself.
-    name=$(basename "$(pr_path reviewed '*')")
-    prefix=${name%%\**} suffix=${name#*\*}
-    for f in "$STATE_DIR"/$name; do
-        [ -e "$f" ] || continue
-        pr=${f##*/}; pr=${pr#"$prefix"}; pr=${pr%"$suffix"}
-        grep -qx -- "$pr" <<< "$open_prs" || rm -f "$f"
+    for kind in $DURABLE_KINDS; do
+        name=$(basename "$(pr_path "$kind" '*')")
+        prefix=${name%%\**} suffix=${name#*\*}
+        for f in "$STATE_DIR"/$name; do
+            [ -e "$f" ] || continue
+            pr=${f##*/}; pr=${pr#"$prefix"}; pr=${pr%"$suffix"}
+            grep -qx -- "$pr" <<< "$open_prs" || rm -f "$f"
+        done
     done
     for kind in $TRANSIENT_KINDS; do
         name=$(basename "$(pr_path "$kind" '*')")
         for f in "$STATE_DIR"/$name; do rm -f "$f"; done
     done
+    # Transients of kinds retired in v0.7.0 (body, decision, prose prior), which
+    # pr_path no longer names — left behind by a tick that ran before the upgrade.
+    rm -f "$STATE_DIR"/review-body-*.md "$STATE_DIR"/decision-*.txt "$STATE_DIR"/prior-*.txt
 }
 
 # Release the lock held by the background holder process.
@@ -632,7 +700,7 @@ write_review_scope() {
 # Pre-flight check for a single PR. Outputs "SKIP", or "PROCEED" followed by the
 # sub-agent's Task prompt. On PROCEED it has written everything the rest of the
 # PR's run reads from disk — scope-<pr>.txt (what to review, for the sub-agent),
-# prior-<pr>.txt (prior findings), and pending-<pr> (the reviewed commit/tree,
+# prior-<pr>.json (prior findings), and pending-<pr> (the reviewed commit/tree,
 # for the post step) — so the handoff survives a mid-tick compaction.
 pr_review_preflight() {
     local pr=$1 reason=$2
@@ -666,15 +734,15 @@ pr_review_preflight() {
         echo "SKIP"; return 0
     }
 
-    # Pre-write prior findings for the sub-agent (empty if none). Done here so the
-    # sub-agent reads it from disk and never needs gh-pipe permissions of its own.
-    fetch_prior_findings "$pr" > "$(pr_path prior "$pr")" 2>/dev/null || true
+    # Pre-write prior findings for the sub-agent. Done here so the sub-agent reads
+    # it from disk and never needs gh-pipe permissions of its own.
+    write_prior_findings "$pr" 2>/dev/null || true
 
-    # Clear this PR's transient outputs so the sub-agent's run starts clean — a
-    # stale body/decision from a prior tick that never reached the post step must
-    # not be read by pr_review_finish. Then persist the reviewed commit/tree: the
+    # Clear this PR's findings so the sub-agent's run starts clean — stale
+    # findings from a prior tick that never reached the post step must not be
+    # read by pr_review_finish. Then persist the reviewed commit/tree: the
     # pending record is the PROCEED token pr_review_finish requires.
-    rm -f "$(pr_path body "$pr")" "$(pr_path decision "$pr")"
+    rm -f "$(pr_path findings "$pr")"
     record_write pending "$pr" "$current_commit" "$current_tree" || {
         # No token, no dispatch: finish would drop the finished review as a no-op.
         log "PR #$pr: could not write the pending record, skipping"
@@ -702,13 +770,11 @@ dispatch_prompt() {
 # Post the sub-agent's review to GitHub, then save state. Takes ONLY the PR number
 # — everything else is recovered from disk, so a context compaction landing between
 # pre-flight and here loses nothing: commit/tree from pending-<pr> (pre-flight),
-# decision from the decision-<pr>.txt sidecar / body header (sub-agent), body from
-# review-body-<pr>.md (sub-agent). State is saved ONLY on a successful post, so a
-# failed/empty review retries next tick.
+# findings from findings-<pr>.json (sub-agent), from which the body, verdict and
+# blocker count are derived here. State is saved ONLY on a successful post, so a
+# failed post or a missing/invalid findings file retries next tick.
 pr_review_finish() {
     local pr=$1
-    local body_file
-    body_file=$(pr_path body "$pr")
 
     # pending-<pr> is the PROCEED token: without it no review was dispatched for
     # this head (the orchestrator ran finish after a SKIP, or out of order), so
@@ -722,26 +788,24 @@ pr_review_finish() {
     fi
     IFS=$'\t' read -r commit tree _at <<< "$pend"
 
-    if [ ! -s "$body_file" ]; then
-        log "PR #$pr: no review body produced — NOT posting, NOT saving state (will retry next tick)"
+    local findings why
+    if ! findings=$(findings_load "$(pr_path findings "$pr")"); then
+        why=$findings
+        log "PR #$pr: no usable findings ($why) — NOT posting, NOT saving state (will retry next tick)"
         pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
     else
-        local decision agent_decision review_body downgraded=0
-        decision=$(read_decision "$pr" "$body_file")
-        # Keep the sub-agent's own verdict: the downgrade below overwrites
-        # $decision, but "did the sub-agent find zero blockers" is what the
-        # blocker count is cross-checked against.
-        agent_decision=$decision
-        # Policy gate: the sub-agent's APPROVE only means "zero BLOCKERs". Turning
-        # that into a posted GitHub approval needs the opt-in flag (see
+        local decision=COMMENT blockers review_body downgraded=0
+        blockers=$(findings_blockers <<< "$findings")
+        [ "$blockers" = 0 ] && decision=APPROVE
+        # Policy gate: zero BLOCKERs only makes the verdict APPROVE. Turning that
+        # into a posted GitHub approval needs the opt-in flag (see
         # AUTO_APPROVE_FILE); without it the same findings post as a COMMENT.
         if [ "$decision" = "APPROVE" ] && ! auto_approve_enabled; then
             log "PR #$pr: no blockers found, but auto-approve is off — posting COMMENT"
             decision="COMMENT"
             downgraded=1
         fi
-        # Drop a leading "<!-- DECISION: X -->" header line so the posted body is clean.
-        review_body=$(sed '1{/^<!-- *DECISION:/d}' "$body_file")
+        review_body=$(findings_body "$pr" <<< "$findings")
 
         local footer="*Automated review by Claude Code via /code-review*"
         if [ "$downgraded" = 1 ]; then
@@ -756,27 +820,6 @@ $review_body
 ---
 $footer"
 
-        # Blocker count comes from the body the sub-agent wrote — it is the one
-        # number worth pushing to a phone, and it needs no extra API call.
-        local blockers count_note=""
-        blockers=$(count_blockers "$body_file")
-        # The decision wins on disagreement. APPROVE means exactly "zero
-        # BLOCKERs" (see the policy gate above), so a tag the count picked up out
-        # of prose must not contradict it — a notification saying "1 blocker(s)"
-        # over a body saying "No blockers found" is the worst kind of false
-        # positive for something meant to be triaged from a toast.
-        #
-        # But the disagreement is itself news, so it rides along as $detail
-        # instead of vanishing: a sub-agent that wrote real blockers into the body
-        # and APPROVE into the sidecar must not produce a serene "no blockers"
-        # toast. Logging it is not enough — the log is what the notifier exists to
-        # avoid reading.
-        if [ "$agent_decision" = "APPROVE" ] && [ "$blockers" != 0 ]; then
-            count_note="decision APPROVE despite $blockers [BLOCKER] tag(s) in the body"
-            log "PR #$pr: $count_note — reporting 0"
-            blockers=0
-        fi
-
         local submitted_at
         if submitted_at=$(gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" --jq '.submitted_at // empty' 2>/dev/null); then
@@ -786,10 +829,19 @@ $footer"
             # GitHub's review_requested timestamps like for like.
             [ -n "$submitted_at" ] || submitted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             record_write reviewed "$pr" "$commit" "$tree" "$submitted_at"
+            # Carry the live findings to the next DELTA. On a failed write, drop
+            # the file rather than leave an older review's findings standing:
+            # pre-flight then falls back to this review's text on GitHub.
+            local carried
+            carried=$(pr_path carried "$pr")
+            findings_carried <<< "$findings" 2>/dev/null > "$carried" || {
+                rm -f "$carried" 2>/dev/null
+                log "PR #$pr: could not save the carried findings — the next DELTA reads the posted text"
+            }
             if [ "$blockers" -gt 0 ] 2>/dev/null; then
                 pr_review_notify blockers "$pr" "$blockers" "$decision" ""
             else
-                pr_review_notify clean "$pr" 0 "$decision" "$count_note"
+                pr_review_notify clean "$pr" 0 "$decision" ""
             fi
         else
             log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"

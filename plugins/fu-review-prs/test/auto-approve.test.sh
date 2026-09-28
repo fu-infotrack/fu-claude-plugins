@@ -76,20 +76,20 @@ cleanup() { [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ] && rm -rf "$SANDBOX"; }
 trap cleanup EXIT
 
 # Source lib.sh in a fresh shell per case (it computes its paths at source time),
-# seed one PR's sub-agent output on disk, then run the requested commands.
-# run <pr> <decision> <shell-snippet>
+# seed one PR's sub-agent findings on disk, then run the requested commands. The
+# verdict is derived from the findings: APPROVE seeds none, COMMENT one BLOCKER.
+# run <pr> <APPROVE|COMMENT> <shell-snippet>
 run() {
-  local pr=$1 decision=$2 snippet=$3
+  local pr=$1 findings='{"findings":[]}' snippet=$3
+  [ "$2" = COMMENT ] && findings='{"findings":[{"severity":"BLOCKER","text":"Boom"}]}'
   bash -c '
     set -uo pipefail
     source "$1"
-    pr=$2; decision=$3
-    printf "<!-- DECISION: %s -->\n### Code review — PR #%s\nFound 0 issues:\n" "$decision" "$pr" \
-      > "$(pr_path body "$pr")"
-    printf "%s\n" "$decision" > "$(pr_path decision "$pr")"
+    pr=$2
+    printf "%s\n" "$3" > "$(pr_path findings "$pr")"
     record_write pending "$pr" deadbeef cafef00d
     eval "$4"
-  ' _ "$LIB" "$pr" "$decision" "$snippet" 2>/dev/null
+  ' _ "$LIB" "$pr" "$findings" "$snippet" 2>/dev/null
 }
 
 # Drive pr_review_init end-to-end (real flock holder, stubbed gh/git) and report
@@ -113,7 +113,7 @@ run_init() {
 posted_event() { sed -n '/^event=/{s/^event=//p;}' "$GH_POST" 2>/dev/null; }
 posted_body()  { cat "$GH_POST" 2>/dev/null; }
 
-echo "== default (no flag): an APPROVE decision posts as COMMENT =="
+echo "== default (no flag): a zero-blocker review posts as COMMENT =="
 new_sandbox
 run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7'
 eq "posted event" "COMMENT" "$(posted_event)"
@@ -121,7 +121,7 @@ has "body explains the downgrade" "auto-approve is off" "$(posted_body)"
 has "findings still posted" "Found 0 issues" "$(posted_body)"
 cleanup
 
-echo "== --auto-approve: an APPROVE decision posts as APPROVE =="
+echo "== --auto-approve: a zero-blocker review posts as APPROVE =="
 new_sandbox
 run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7'
 eq "posted event" "APPROVE" "$(posted_event)"
@@ -140,7 +140,7 @@ PR_REVIEW_AUTO_APPROVE=1 run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7'
 eq "posted event" "APPROVE" "$(posted_event)"
 cleanup
 
-echo "== a COMMENT decision is never upgraded, even with the flag =="
+echo "== a review with a blocker is never upgraded, even with the flag =="
 new_sandbox
 run 7 COMMENT 'pr_review_set_mode --auto-approve; pr_review_finish 7'
 eq "posted event" "COMMENT" "$(posted_event)"

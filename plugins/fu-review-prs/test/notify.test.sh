@@ -73,22 +73,20 @@ write_config() {
   jq -n --argjson rp "$1" '{"review-prs": $rp}' > "$HOME/.claude/fu-tools/config.json"
 }
 
-# Run pr_review_finish for one PR with a seeded sub-agent body.
-# finish <pr> <decision> <body-extra>
+# Run pr_review_finish for one PR with seeded sub-agent findings (none by default).
+# finish <pr> [findings-json]
 finish() {
-  local pr=$1 decision=$2 extra=${3:-}
+  local pr=$1 findings=${2:-'{"findings":[]}'}
   # cd into the sandbox: fu-config.sh walks up from cwd for a project config, and
   # this repo has one — running from the repo would not be hermetic.
   ( cd "$SANDBOX" && bash -c '
       set -uo pipefail
       source "$1"
-      pr=$2; decision=$3; extra=$4
-      { printf "<!-- DECISION: %s -->\n### Code review — PR #%s\n" "$decision" "$pr"
-        [ -n "$extra" ] && printf "%s\n" "$extra"; } > "$(pr_path body "$pr")"
-      printf "%s\n" "$decision" > "$(pr_path decision "$pr")"
+      pr=$2
+      printf "%s\n" "$3" > "$(pr_path findings "$pr")"
       record_write pending "$pr" deadbeef cafef00d
       pr_review_finish "$pr"
-    ' _ "$LIB" "$pr" "$decision" "$extra" 2>/dev/null )
+    ' _ "$LIB" "$pr" "$findings" 2>/dev/null )
 }
 
 curl_log()  { cat "$CURL_LOG" 2>/dev/null; }
@@ -96,21 +94,21 @@ log_text()  { cat "$HOME/.claude/pr-review/review-acme-widgets.log" 2>/dev/null;
 
 echo "== no config: nothing is notified (silent default) =="
 new_sandbox
-finish 7 COMMENT
+finish 7
 eq "curl never invoked" "" "$(curl_log)"
 cleanup
 
 echo "== notify configured but no channels: still silent =="
 new_sandbox
 write_config "{\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT
+finish 7
 eq "curl never invoked" "" "$(curl_log)"
 cleanup
 
 echo "== teams: a posted review notifies, with PR, repo, title, decision and link =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT
+finish 7
 out=$(curl_log)
 has "webhook called" "$HOOK" "$out"
 has "headline: repo, PR, state" "✅ widgets PR #7 — no blockers" "$out"
@@ -144,7 +142,7 @@ cleanup
 echo "== a PR title containing markup is escaped in the HTML field =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-PR_TITLE='Fix <script>alert(1)</script> & "quotes"' finish 7 COMMENT
+PR_TITLE='Fix <script>alert(1)</script> & "quotes"' finish 7
 html=$(jq -r '.text' "$CURL_PAYLOAD" 2>/dev/null)
 has "escaped tags" "&lt;script&gt;" "$html"
 has "escaped ampersand" "&amp;" "$html"
@@ -158,7 +156,7 @@ cleanup
 echo "== a review with blockers is styled as such =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT "1. [BLOCKER] Boom — a.cs:1"
+finish 7 '{"findings":[{"severity":"BLOCKER","text":"Boom","where":"a.cs:1"}]}'
 out=$(curl_log)
 has "blocker headline" "🚧 widgets PR #7 — 1 blocker(s)" "$out"
 has "card colour" "Attention" "$out"
@@ -167,121 +165,37 @@ cleanup
 echo "== the webhook URL never reaches the log =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT
+finish 7
 has_no "no sig in log" "SUPERSECRETSIG" "$(log_text)"
 cleanup
 
 echo "== blocker count is carried in the message =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT "1. [BLOCKER] Boom — a.cs:1
-2. [BLOCKER] Bang — b.cs:2
-3. [NIT] Meh — c.cs:3"
+finish 7 '{"findings":[{"severity":"BLOCKER","text":"Boom"},
+  {"severity":"BLOCKER","text":"Bang"},{"severity":"NIT","text":"Meh"}]}'
 has "blocker count" "2 blocker(s)" "$(curl_log)"
-cleanup
-
-# --- delta-mode prior findings ------------------------------------------------
-# The "Prior findings:" block re-prints each prior finding's ORIGINAL severity
-# tag, so a fixed blocker still carries the literal "[BLOCKER]". Counting raw
-# occurrences reported a fixed blocker as a live one — measured on
-# EntityPlatform #2172, where a lone RESOLVED prior blocker was notified as
-# "1 blocker(s)" while the body it linked to said "No blockers found".
-
-echo "== a RESOLVED prior blocker is not a current blocker =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 APPROVE "Prior findings:
-1. RESOLVED — [BLOCKER] Correctness: unconditional write — a.cs:266
-
-Found 0 issues:"
-out=$(curl_log)
-has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
-has_no "not styled as blocking" "blocker(s)" "$out"
-has "card colour is Good" "Good" "$out"
-cleanup
-
-echo "== a STILL OPEN prior blocker does count =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT "Prior findings:
-1. STILL OPEN — [BLOCKER] Correctness: unconditional write — a.cs:266"
-has "counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
-cleanup
-
-echo "== a REINTRODUCED prior blocker does count =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT "Prior findings:
-1. REINTRODUCED — [BLOCKER] Correctness: unconditional write — a.cs:266"
-has "counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
-cleanup
-
-echo "== a RESOLVED prior blocker does not inflate a real count =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT "Prior findings:
-1. RESOLVED — [BLOCKER] Correctness: unconditional write — a.cs:266
-2. STILL OPEN — [BLOCKER] Scope: never touches the linked issue — b.cs:2
-
-Found 1 new issues:
-1. [BLOCKER] Boom — c.cs:3"
-has "resolved one excluded, other two counted" "🚧 widgets PR #7 — 2 blocker(s)" "$(curl_log)"
-cleanup
-
-echo "== 'resolved' inside a live blocker's own text still counts =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-# Only a RESOLVED status *preceding* the tag is a fixed finding. The word
-# appearing in the description is prose, not a status.
-finish 7 COMMENT "1. [BLOCKER] Race is not resolved by the retry — a.cs:1"
-has "still counted" "🚧 widgets PR #7 — 1 blocker(s)" "$(curl_log)"
-cleanup
-
-echo "== the sub-agent's APPROVE outranks any [BLOCKER] text in the body =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-# APPROVE means exactly "zero BLOCKERs" — the decision sidecar is authoritative,
-# so a stray tag in prose must not contradict it in the notification.
-finish 7 APPROVE "Found 0 issues: the prior [BLOCKER] no longer reproduces."
-out=$(curl_log)
-has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
-has_no "not styled as blocking" "blocker(s)" "$out"
-# ...but the disagreement itself is news: overriding the count silently would
-# hide a sub-agent that wrote real blockers into the body and APPROVE into the
-# sidecar. The log alone is not enough — the log is what the notifier exists to
-# avoid reading.
-has "mismatch surfaced in the message" "decision APPROVE despite 1 [BLOCKER] tag(s) in the body" "$out"
-has "mismatch logged too" "reporting 0" "$(log_text)"
-cleanup
-
-echo "== a genuinely clean APPROVE carries no mismatch note =="
-new_sandbox
-write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 APPROVE "Found 0 issues:"
-out=$(curl_log)
-has "reported clean" "✅ widgets PR #7 — no blockers" "$out"
-has_no "no mismatch note" "despite" "$out"
 cleanup
 
 echo "== a failed GitHub post notifies too =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-GH_POST_FAILS=1 finish 7 COMMENT
+GH_POST_FAILS=1 finish 7
 out=$(curl_log)
 has "failure notified" "POST to GitHub failed" "$out"
 has "failure is warning-coloured" "Warning" "$out"
 cleanup
 
-echo "== an empty review body notifies too =="
+echo "== an empty findings file notifies too =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-( cd "$SANDBOX" && bash -c 'source "$1"; record_write pending 7 deadbeef cafef00d; : > "$(pr_path body 7)"; pr_review_finish 7' _ "$LIB" ) 2>/dev/null
-has "empty-body notified" "no review body produced" "$(curl_log)"
+( cd "$SANDBOX" && bash -c 'source "$1"; record_write pending 7 deadbeef cafef00d; : > "$(pr_path findings 7)"; pr_review_finish 7' _ "$LIB" ) 2>/dev/null
+has "empty-findings notified" "no review body produced" "$(curl_log)"
 cleanup
 
 echo "== unconfigured: no channels means no gh title lookup either =="
 new_sandbox
-finish 7 COMMENT
+finish 7
 has_no "no PR title call" "Fix null deref" "$(curl_log)"
 eq "curl never invoked" "" "$(curl_log)"
 cleanup
@@ -289,7 +203,7 @@ cleanup
 echo "== teams selected without a webhook: logged, no curl, tick survives =="
 new_sandbox
 write_config '{"notify":["teams"]}'
-finish 7 COMMENT
+finish 7
 eq "curl never invoked" "" "$(curl_log)"
 has "misconfiguration logged" "teams_webhook is unset" "$(log_text)"
 cleanup
@@ -297,7 +211,7 @@ cleanup
 echo "== a non-2xx webhook response is logged, not fatal =="
 new_sandbox 403
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-finish 7 COMMENT
+finish 7
 has "failure logged with code" "notify: teams FAILED (http 403)" "$(log_text)"
 has "review still posted" "PR #7: posted COMMENT review" "$(log_text)"
 cleanup
@@ -306,7 +220,7 @@ echo "== finish logs to the file only — stderr stays empty (orchestrator conte
 new_sandbox
 ( cd "$SANDBOX" && bash -c '
     source "$1"
-    printf "<!-- DECISION: COMMENT -->\nbody\n" > "$(pr_path body 7)"
+    printf "{\"findings\":[]}\n" > "$(pr_path findings 7)"
     record_write pending 7 deadbeef cafef00d
     pr_review_finish 7' _ "$LIB" ) > /dev/null 2> "$SANDBOX/err"
 eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
@@ -316,7 +230,7 @@ cleanup
 echo "== unknown channel is skipped with a log line =="
 new_sandbox
 write_config '{"notify":["carrier-pigeon"]}'
-finish 7 COMMENT
+finish 7
 eq "curl never invoked" "" "$(curl_log)"
 has "unknown channel logged" "unknown channel 'carrier-pigeon'" "$(log_text)"
 cleanup

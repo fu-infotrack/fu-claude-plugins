@@ -2,7 +2,8 @@
 
 Automated PR-review orchestrator. One `/review-prs` tick finds open PRs that
 need your review on the current repo, dispatches a Task sub-agent per PR (which
-runs `/code-review` and writes a review body), and posts a formal GitHub review.
+runs `/code-review` and writes its findings as JSON), renders the review body from
+those findings, and posts a formal GitHub review.
 Run it on an interval with `/loop` from inside a dedicated review clone.
 
 ```
@@ -27,12 +28,50 @@ merge, so it has to be asked for:
 
 `REQUEST_CHANGES` is never posted — it stays reserved for humans.
 
-Mechanically: the sub-agent's `APPROVE` only means "zero BLOCKERs". `pr_review_init`
-records the tick's mode to `state/<slug>/auto-approve`, and `pr_review_finish`
-downgrades `APPROVE` → `COMMENT` when that file is absent. The mode lives on disk
-for the same reason the decision does — a mid-tick compaction can't flip it — and is
+Mechanically: the verdict is `APPROVE` exactly when the findings hold zero current
+BLOCKERs (see *Findings* below). `pr_review_init` records the tick's mode to
+`state/<slug>/auto-approve`, and `pr_review_finish` downgrades `APPROVE` →
+`COMMENT` when that file is absent. The mode lives on disk for the same reason the
+findings do — a mid-tick compaction can't flip it — and is
 cleared at cleanup so it never leaks into a later tick. `PR_REVIEW_AUTO_APPROVE=1`
 is an equivalent env seam (used by the tests).
+
+## Findings — the sub-agent classifies, bash does the rest
+
+The sub-agent's whole deliverable is `findings-<PR>.json`, and its reply is `DONE`:
+
+```json
+{"findings": [{"severity": "BLOCKER", "text": "Null deref on an empty cart", "where": "src/Cart.cs:42"}],
+ "prior":    [{"status": "RESOLVED", "severity": "BLOCKER", "text": "Unconditional write", "where": "a.cs:266"}]}
+```
+
+`pr_review_finish` derives everything else from that file:
+
+- **The blocker count** is every `BLOCKER` in `findings` plus every prior
+  `BLOCKER` that is `STILL OPEN` or `REINTRODUCED`.
+- **The verdict** is `APPROVE` exactly when that count is zero.
+- **The body** is rendered in a fixed layout: `### Code review — PR #N`, the
+  "Prior findings:" block (DELTA only, as `1. STATUS — [TAG] text — \`where\``),
+  then `Found N issues:` with each finding as `1. [TAG] text — \`where\``. Line
+  breaks inside `text`/`where` become spaces.
+
+Until v0.7.0 the sub-agent wrote the body in prose, plus a decision sidecar, and
+bash parsed the count back out of the prose with a regex. That count could
+disagree with the body. On `EntityPlatform` #2172, a lone RESOLVED prior blocker
+was notified as `🚧 … 1 blocker(s)` while the review it linked to said *"No
+blockers found"*. Now the count, the verdict and the body are three views of one
+list, so they cannot disagree.
+
+**Validation is strict.** An unknown severity or status, an empty `text`, a
+non-string `where`, or invalid JSON rejects the whole file. Nothing posts, the
+reason is logged, the "no review" notification fires, and the PR retries next
+tick. A missing file takes the same path.
+
+**Findings carry forward.** On a successful post, finish saves the live findings
+to `last-findings-<PR>.json`: the current `findings` plus the prior ones still
+open or reintroduced. The next pre-flight copies them into `prior-<PR>.json` for
+the DELTA review to re-check. A review posted before v0.7.0 has no saved findings,
+so its text is fetched from GitHub and passed as `{"findings":[],"legacy_body":…}`.
 
 ## House rules — findings that are BLOCKERs on their own
 
@@ -85,40 +124,8 @@ log. Configure channels in `fu-tools` config; no config means silent:
 
 Fires at the three points where a tick's outcome becomes final: a posted review
 (with its decision and BLOCKER count), a review whose POST to GitHub failed, and
-a sub-agent that produced no body. The failure cases matter most — they are the
-silent misses you would otherwise only find by reading the log.
-
-### Counting blockers (`count_blockers`)
-
-The notified count comes from the body the sub-agent wrote, so it needs no extra
-API call — but it is **not** a raw `[BLOCKER]` occurrence count. In DELTA mode the
-"Prior findings:" block re-prints each prior finding's *original* severity tag
-next to its new status, so a fixed blocker still carries the literal `[BLOCKER]`.
-Counting occurrences reported fixed findings as live ones: on `EntityPlatform`
-#2172 a lone RESOLVED prior blocker was notified as `🚧 … 1 blocker(s)` while the
-review it linked to said *"No blockers found"*.
-
-Two rules keep the number honest:
-
-1. A line counts unless `RESOLVED` appears **before** the tag — the status
-   position the prior-findings block uses. `STILL OPEN` and `REINTRODUCED` still
-   count (Step 3 treats them as current blockers), and the word "resolved" inside
-   a live finding's own description is prose, not a status.
-2. **The decision wins on disagreement.** `APPROVE` means exactly "zero
-   BLOCKERs", so when the sub-agent said APPROVE the count is forced to 0. A
-   notification contradicting the body it links to is the worst kind of false
-   positive for something meant to be triaged from a toast.
-
-Because rule 1 reads a line shape, `review-task.md` Step 2 **pins that shape** —
-status first, before the severity tag, on one line. Producer and parser have to
-agree, and only the prompt can hold the producer to it; the tests encode the
-shape, so a drift there fails them.
-
-Rule 2 does not swallow the disagreement. When it fires, the note
-`decision APPROVE despite N [BLOCKER] tag(s) in the body` rides along on the
-notification (not just the log — the log is what the notifier exists to avoid
-reading), so a sub-agent that writes blockers into the body and `APPROVE` into
-the sidecar still surfaces instead of producing a serene "no blockers" toast.
+a sub-agent that produced no usable findings. The failure cases matter most —
+they are the silent misses you would otherwise only find by reading the log.
 
 Every channel is best-effort and time-bounded (`curl --max-time 20`): a webhook
 that 403s, hangs, or is misconfigured is logged and the tick carries on. The
@@ -224,16 +231,18 @@ and PR-number-keyed state never collides across repos:
   review-prs-<slug>.lock          # flock target, one per repo
   review-prs-<slug>.lock.holder   # holder PID
   review-<slug>.log
-  state/<slug>/last-reviewed-<PR> # commit/tree/reviewed_at of last posted review
-  state/<slug>/pending-<PR>       # commit+tree being reviewed (pre-flight → finish)
-  state/<slug>/scope-<PR>.txt     # REPO/HEAD/MODE/DELTA_BASE header + files to review
-  state/<slug>/prior-<PR>.txt     # prior findings (delta mode)
-  state/<slug>/review-body-<PR>.md
-  state/<slug>/decision-<PR>.txt  # sub-agent's APPROVE|COMMENT
-  state/<slug>/auto-approve       # present only while a --auto-approve tick runs
+  state/<slug>/last-reviewed-<PR>      # commit/tree/reviewed_at of last posted review
+  state/<slug>/last-findings-<PR>.json # findings still live after it (for the next DELTA)
+  state/<slug>/pending-<PR>            # commit+tree being reviewed (pre-flight → finish)
+  state/<slug>/scope-<PR>.txt          # REPO/HEAD/MODE/DELTA_BASE header + files to review
+  state/<slug>/prior-<PR>.json         # prior findings (delta mode)
+  state/<slug>/findings-<PR>.json      # the sub-agent's findings
+  state/<slug>/auto-approve            # present only while a --auto-approve tick runs
 ```
 
-Every per-PR name above comes from one function, `pr_path <kind> <pr>`. The
+Every per-PR name above comes from one function, `pr_path <kind> <pr>`. The first
+two outlive a review and are purged once the PR closes. The rest last for one
+dispatch. The
 `last-reviewed-` and `pending-` records are `key=value` lines. `reviewed_at` is
 GitHub's `submitted_at` for the posted review, and re-request detection compares
 against it. Records written before v0.6.0 are two lines (commit, tree); they
@@ -254,12 +263,12 @@ orchestrator's context is just its token.
   reviewed scope (never bare, so it never inherits an undefined level from the
   invoking context, and never above `medium` in an unattended tick),
   scope-check the diff against the intent, apply the house rules above, write
-  body, reply with a single `DECISION:` line and nothing else. Posts nothing itself.
+  the findings file, reply `DONE` and nothing else. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
   to the one the other plugins ship); used only by the notifier.
-- `test/auto-approve.test.sh`, `test/notify.test.sh`, `test/preflight.test.sh`,
-  `test/state.test.sh` — the posting-policy, notification, pre-flight stdout and
-  state-store contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
+- `test/auto-approve.test.sh`, `test/findings.test.sh`, `test/notify.test.sh`,
+  `test/preflight.test.sh`, `test/state.test.sh` — the posting-policy, findings,
+  notification, pre-flight stdout and state-store contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
 
 ## Docs
 

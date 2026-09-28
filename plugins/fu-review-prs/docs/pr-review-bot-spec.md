@@ -108,7 +108,7 @@ particular text-processing utility.
                                        └───────────────────────────────────┘
                                                   REVIEWER AGENT
                                           isolated context; read-only;
-                                          writes body + decision to Store
+                                          writes findings to Store
 ```
 
 Two structural rules generate most of §7:
@@ -133,10 +133,10 @@ eviction can wipe, and outside the system temp directory (R17, R9).
     log.1                      # rotated predecessor
     mode                       # run-scoped policy record (§4.6)
     reviewed/<pr>              # durable: last posted review (§4.2)
+    carried/<pr>               # durable: findings still live after it (§4.5)
     pending/<pr>               # transient: content being reviewed (§4.3)
-    decision/<pr>              # transient: agent's decision (§4.4)
-    body/<pr>                  # transient: agent's review body (§4.5)
-    prior/<pr>                 # transient: previous findings, for delta mode
+    findings/<pr>              # transient: agent's findings (§4.4)
+    prior/<pr>                 # transient: carried findings, for delta mode (§4.5)
 ```
 
 `<pr>` is the forge's change number/id, as an opaque string.
@@ -183,25 +183,62 @@ Written by pre-flight, before the agent is dispatched. Read by the post step.
 This is what makes the pre-flight → post handoff survive total loss of the
 orchestrator's working memory (R8).
 
-### 4.4 `decision/<pr>`
+### 4.4 `findings/<pr>` — the agent's findings
 
-A single token: `APPROVE` or `COMMENT`. Case-insensitive on read; anything else
-is treated as absent.
+The agent's whole deliverable. It is data, not prose (R11):
 
-### 4.5 `body/<pr>` — the review body document
+```json
+{
+  "findings": [
+    {"severity": "BLOCKER", "text": "Unbounded read of request body", "where": "src/api/upload.go:88"},
+    {"severity": "NIT", "text": "Dead parameter `retries`", "where": "src/api/upload.go:12"}
+  ],
+  "prior": [
+    {"status": "RESOLVED", "severity": "BLOCKER", "text": "Missing auth check", "where": "src/api/upload.go:40"}
+  ]
+}
+```
 
-UTF-8, LF line endings. First line MUST be a decision header:
+- `findings` is required, and is `[]` when nothing was found. `prior` is present
+  only in delta mode.
+- `severity` is exactly `BLOCKER` or `NIT`, and `status` is exactly `RESOLVED`,
+  `STILL OPEN` or `REINTRODUCED`.
+- `text` is a non-empty string, and `where` is an optional string.
+
+The orchestrator validates the document **strictly**. Any violation, or
+unparseable JSON, makes the whole document absent (§4.9): nothing is posted and
+the change is retried.
+
+Everything the post step needs is derived from it (R32):
+
+- **Current blockers** are every `BLOCKER` in `findings`, plus every prior
+  `BLOCKER` whose status is not `RESOLVED`.
+- **The decision** is `APPROVE` exactly when there are no current blockers.
+- **The body** is rendered by the orchestrator in a fixed layout, followed by the
+  marker and footer:
 
 ```
-<!-- DECISION: APPROVE -->
 ### Code review — PR #42
+Prior findings:
+1. RESOLVED — [BLOCKER] Missing auth check — `src/api/upload.go:40`
+
 Found 2 issues:
 1. [BLOCKER] Unbounded read of request body — `src/api/upload.go:88`
 2. [NIT] Dead parameter `retries` — `src/api/upload.go:12`
 ```
 
-The header duplicates `decision/<pr>` deliberately (R11). The orchestrator
-strips the header line before posting and appends the marker and footer itself.
+Line breaks inside `text` and `where` are rendered as spaces, so one finding is
+always one line.
+
+### 4.5 `carried/<pr>` and `prior/<pr>` — findings across reviews
+
+On a successful post the orchestrator writes `carried/<pr>` as
+`{"findings": [...]}`. It holds the current `findings`, plus the prior items that
+are `STILL OPEN` or `REINTRODUCED`, with the status dropped. `RESOLVED` items
+are not carried. Pre-flight copies it to `prior/<pr>` for the next delta review
+to re-check. Where no `carried/<pr>` exists but an earlier marked review does,
+`prior/<pr>` MAY carry that review's text as `legacy_body` beside an empty
+`findings`, so a migration loses no history.
 
 ### 4.6 `mode` — run-scoped policy
 
@@ -223,9 +260,9 @@ NOT be deleted on release (R13); release is a state transition inside it.
 
 ### 4.8 Transient hygiene
 
-Pre-flight MUST delete `body/<pr>`, `decision/<pr>` before dispatching the
-agent (R9). Run start MUST delete `pending/*`, `decision/*`, `body/*`,
-`prior/*`, and every `reviewed/<pr>` whose PR is no longer open.
+Pre-flight MUST delete `findings/<pr>` before dispatching the agent (R9). Run
+start MUST delete `pending/*`, `findings/*`, `prior/*`, and every
+`reviewed/<pr>` and `carried/<pr>` whose PR is no longer open.
 
 ### 4.9 Atomic write rule
 
@@ -317,8 +354,9 @@ preflight(pr, reason):
         Store.put("reviewed/" + pr, state with commit=head.commit)   # refresh only
         return SKIP                             # R19: rebase/no-op push
 
-    Store.put("prior/" + pr, Forge.previous_findings(pr, MARKER))    # R30
-    Store.delete("body/" + pr); Store.delete("decision/" + pr)       # R9
+    Store.put("prior/" + pr, Store.get("carried/" + pr)
+              or {findings: [], legacy_body: Forge.previous_findings(pr, MARKER)})  # R30, §4.5
+    Store.delete("findings/" + pr)                                   # R9
     Store.put("pending/" + pr, {head.commit, head.content_key})      # R8
     return PROCEED
 ```
@@ -327,27 +365,26 @@ preflight(pr, reason):
 
 ```
 finish(pr):
-    body_doc = Store.get("body/" + pr)
-    if body_doc is empty:
-        log("no body produced — not posting, not saving state")
+    doc = validate(Store.get("findings/" + pr))  # §4.4: strict; invalid = absent
+    if doc is absent:
+        log("no usable findings — not posting, not saving state")
         Notifier.send(NO_BODY, pr)              # R27: failure paths notify too
         cleanup_transients(pr); return
 
     pending  = Store.get("pending/" + pr) or Forge.head(pr)          # R8
-    decision = Store.get("decision/" + pr)
-               or header_decision(body_doc)
-               or COMMENT                       # R11: safe default
+    blockers = current_blockers(doc)             # R32: derived, never parsed
+    decision = blockers == 0 ? APPROVE : COMMENT # R11
     if decision == APPROVE and not Store.get("mode").auto_approve:
         decision = COMMENT                      # R23: deterministic gate
         footer_note = "no blockers found; posted as a comment"
 
-    body     = MARKER + "\n" + strip_header(body_doc) + "\n---\n" + footer
-    blockers = count_blockers(body_doc)
+    body = MARKER + "\n" + render(doc) + "\n---\n" + footer          # §4.4 layout
 
     if Forge.post_review(pr, decision, body) succeeded:
         if pending has content_key:
             Store.put("reviewed/" + pr, {pending.content_key, pending.commit,
                                          now(), decision})            # R10
+            Store.put("carried/" + pr, carried(doc))                  # §4.5
         Notifier.send(blockers > 0 ? BLOCKERS : CLEAN, pr, blockers, decision)
     else:
         log("post FAILED — not saving state; retries next tick")
@@ -363,7 +400,7 @@ finish(pr):
 | Before lease acquire | Nothing happened. |
 | Holding lease, process dies | Lease expires by TTL and is stealable (R12). |
 | After pre-flight, before agent | `pending` is stale but harmless; overwritten. |
-| After agent, before post | Body + decision are on disk; **post is fully reconstructable from the store** (R8). Even a total loss of orchestrator memory re-runs `finish(pr)` correctly. |
+| After agent, before post | Findings are on disk; **post is fully reconstructable from the store** (R8). Even a total loss of orchestrator memory re-runs `finish(pr)` correctly. |
 | After post, before `reviewed/<pr>` write | PR is re-reviewed next tick → one duplicate review. Accepted cost of never losing a review (R10). |
 | After `reviewed/<pr>` write | Steady state. |
 
@@ -405,7 +442,7 @@ because it re-reviews forever.
 Agent.run(task_spec) -> COMPLETED | FAILED
 task_spec = {
     pr, repo, mode_hint,
-    paths: { state, prior, body, decision },   # absolute, resolved by caller
+    paths: { scope, prior, findings },         # absolute, resolved by caller
     template_ref                               # location of the static task text
 }
 ```
@@ -557,15 +594,15 @@ deterministic code even if the agent also reasons about it.
 
 **R8 — Every value that crosses a step boundary MUST be persisted to the
 store.** Specifically the reviewed commit and content key (written by
-pre-flight) and the decision and body (written by the agent). The post step
+pre-flight) and the findings (written by the agent). The post step
 MUST take **only the PR id** and recover everything else from the store.
 *Failure mode:* any process restart, context compaction, or crash between the
 agent returning and the post landing produces a wrong or missing post. Parsing
 these values out of the agent's reply is the same fragility.
 
 **R9 — Pre-flight MUST clear this PR's transient artifacts before dispatch.**
-*Failure mode:* a half-finished earlier run leaves a stale decision or body that
-the post step reads and posts — potentially an approval for content nobody
+*Failure mode:* a half-finished earlier run leaves stale findings that the post
+step reads and posts — potentially an approval for content nobody
 reviewed.
 
 **R10 — Durable review state MUST be written only after a confirmed successful
@@ -573,11 +610,15 @@ post.** Indeterminate outcomes count as failure.
 *Failure mode:* a failed or empty run marks the PR done; the review is silently
 never posted and never retried.
 
-**R11 — Decision resolution MUST be ordered, with a conservative default:**
-sidecar record → body header → `COMMENT`. Any unrecognised token resolves to
-`COMMENT`.
-*Failure mode:* ambiguity resolving toward approval; the bot approves on
-malformed output.
+**R11 — The agent MUST deliver findings as structured data, and the
+orchestrator MUST derive the decision from them.** The agent does not state a
+decision. The orchestrator validates the findings document strictly (§4.4):
+one malformed item makes the whole document absent, so nothing is posted and the
+change is retried. It MUST NOT post a partial or best-guess reading.
+*Failure mode:* a decision the agent states separately from its findings can
+contradict them. Ambiguity then resolves toward approval, and the bot approves
+on malformed output. A lenient parser that skips a bad item drops a finding,
+possibly a blocker, without a trace.
 
 ### D. Concurrency
 
@@ -718,24 +759,19 @@ count is zero.
 *Failure mode:* a graded severity scale makes the decision judgement-dependent
 and untestable.
 
-**R32 — `count_blockers(body_doc)` MUST count only CURRENT blockers, and the
-decision MUST win when the two disagree.** A delta review's prior-findings block
-restates each prior finding's original severity alongside its new status, so the
-blocker marker appears on findings that are already fixed. The counter MUST
-therefore be defined against a **pinned prior-findings line shape** — status
-before severity marker, on one line — and that shape MUST be stated in the
-review-agent contract (§7 R30), not only in the counter. A finding whose status
-is *resolved* MUST NOT count; *still open* and *reintroduced* MUST count (R30).
-Where the count disagrees with the decision, the decision governs: a decision of
-approve means exactly zero blockers, so the reported count MUST be zero — and the
-discrepancy MUST be surfaced on the notification itself, not only logged (R27).
-*Failure mode:* counting raw markers reports fixed findings as live ones, so the
-notification contradicts the review body it links to — the reader's only
-cross-check — and trust in every later notification goes with it. Defining the
-counter without pinning the producer's line shape is the same bug one level up:
-the parser and the review agent drift, and the regression returns silently.
-Overriding the count without surfacing the disagreement converts a loud
-inconsistency into a silent one.
+**R32 — The blocker count, the decision and the posted body MUST all be derived
+from the one findings document.** Current blockers are the `BLOCKER` items in
+`findings`, plus the prior `BLOCKER` items whose status is not *resolved*. A
+*still open* or *reintroduced* prior blocker counts (R30). The decision is
+approve exactly when that count is zero (R31), and the body is rendered from the
+same items (§4.4). None of the three may be recovered by parsing another.
+*Failure mode:* a count parsed back out of a prose body contradicts the body it
+links to. The reader's only cross-check fails, and trust in every later
+notification goes with it. A delta review's prior-findings block restates each
+prior finding's original severity beside its new status, so a raw marker count
+reports fixed findings as live ones. That was measured, not hypothetical.
+Pinning the prose's line shape so a parser can read it only moves the bug. The
+parser and the agent drift apart, and the regression comes back silently.
 
 ## 8. OS portability rules
 
@@ -810,13 +846,13 @@ endpoint. Each test states the requirement it pins.
 | 6 | Agent writes body + `APPROVE`, no opt-in | tick | posted event is `COMMENT`; body still contains the findings; footer notes the downgrade | R23, R26 |
 | 7 | Same, with opt-in for this run | tick | posted event is `APPROVE` | R23 |
 | 8 | Run 1 with opt-in completes; run 2 without | run 2 | run 2 posts `COMMENT` | R23 |
-| 9 | Agent writes body, no decision record, header says `APPROVE`, no opt-in | tick | `COMMENT` posted | R11, R23 |
+| 9 | Findings document has one item with an unknown severity | tick | nothing posted, no state saved, the no-body notification fires; retried next tick | R11, R10, R27 |
 | 10 | Agent writes body with no header and no record | tick | `COMMENT` posted | R11 |
 | 11 | Agent writes nothing | tick | no post, no state write, failure notification | R10, R27 |
 | 12 | Forge post returns an error | tick | no state write; next tick retries | R10 |
 | 13 | Forge post times out | tick | treated as failure; no state write | §6, R10 |
 | 14 | Orchestrator state discarded between agent completion and post | resume at post with only the PR id | correct body and decision posted | R8 |
-| 15 | Stale body/decision from an abandoned earlier run present | tick | pre-flight clears them; the new review is posted | R9 |
+| 15 | Stale findings from an abandoned earlier run present | tick | pre-flight clears them; the new review is posted | R9 |
 | 16 | Lease held by a live owner | tick | second tick is a no-op, posts nothing, does not touch state | R12 |
 | 17 | Lease owner crashed, TTL expired | tick | lease stolen; run proceeds | R12 |
 | 18 | Lease released | inspect store | lease record still exists | R13 |
@@ -835,7 +871,7 @@ endpoint. Each test states the requirement it pins.
 | 31 | Delta review after a rebase pulled in upstream files | tick | reviewed set excludes files the PR did not touch | R30 |
 | 32 | PR is closed between queueing and pre-flight | tick | skipped, logged, no post | §5.3 |
 | 33 | Delta review whose only blocker is a *resolved* prior finding | tick | reported count is 0; notification reads clean | R32 |
-| 34 | Body carries blocker markers but the decision is approve | tick | reported count is 0 **and** the discrepancy appears on the notification | R32, R27 |
+| 34 | Delta review whose only prior blocker is resolved, no new findings | tick | reported count is 0, decision approve, and the body lists the prior blocker as resolved | R32 |
 
 ## 12. Reference implementation map
 
@@ -848,7 +884,7 @@ predates this spec and satisfies the Core profile with the deviations noted.
 | Orchestrator (§5.1) | `commands/review-prs.md` (thin; steps 1–3) |
 | Deterministic effects (R5) | `scripts/lib.sh` — `pr_review_init`, `pr_review_preflight`, `pr_review_finish`, `pr_review_cleanup` |
 | Agent task template (R3) | `review-task.md` (read by the agent, not inlined) |
-| Store (§4) | `~/.claude/pr-review/state/<slug>/` — `last-reviewed-<pr>`, `pending-<pr>`, `decision-<pr>.txt`, `review-body-<pr>.md`, `prior-<pr>.txt`, `auto-approve` |
+| Store (§4) | `~/.claude/pr-review/state/<slug>/` — `last-reviewed-<pr>`, `last-findings-<pr>.json` (carried), `pending-<pr>`, `findings-<pr>.json`, `prior-<pr>.json`, `scope-<pr>.txt`, `auto-approve` |
 | Lease (§6.4) | background `flock` holder process + `HOLDER_FILE` |
 | Content key (R19) | GitHub commit tree SHA |
 | Policy gate (R23) | `pr_review_finish` + `auto-approve` on disk; `test/auto-approve.test.sh` |
