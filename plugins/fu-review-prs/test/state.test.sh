@@ -106,24 +106,23 @@ cleanup
 
 echo "== finish without a pending record is a no-op (pre-flight never PROCEEDed) =="
 new_sandbox
-lib 'printf "<!-- DECISION: COMMENT -->\nbody\n" > "$(pr_path body 7)"; pr_review_finish 7'
+lib 'echo "{\"findings\":[]}" > "$(pr_path findings 7)"; pr_review_finish 7'
 eq "nothing posted" "absent" "$([ -e "$GH_POST" ] && echo present || echo absent)"
 eq "no state saved" "absent" "$([ -e "$STATE/last-reviewed-7" ] && echo present || echo absent)"
 has "logged as an ordering error" "PR #7: nothing pending" "$(cat "$LOG")"
 cleanup
 
-echo "== finish after a SKIP (no pending, no body) raises no 'no body' alarm =="
+echo "== finish after a SKIP (no pending, no findings) raises no 'no findings' alarm =="
 new_sandbox
 lib 'pr_review_finish 7'
-eq "no empty-body path taken" "0" "$(grep -c 'no review body produced' "$LOG")"
+eq "no missing-findings path taken" "0" "$(grep -c 'no usable findings' "$LOG")"
 cleanup
 
-# Seed one dispatched PR — pending + every transient + a body — then finish it.
+# Seed one dispatched PR — pending + every transient + findings — then finish it.
 finish_dispatched() {
   lib 'record_write pending 7 deadbeef cafef00d
-       for k in scope prior decision; do echo x > "$(pr_path $k 7)"; done
-       echo COMMENT > "$(pr_path decision 7)"
-       printf "<!-- DECISION: COMMENT -->\nbody\n" > "$(pr_path body 7)"
+       for k in scope prior; do echo x > "$(pr_path $k 7)"; done
+       echo "{\"findings\":[]}" > "$(pr_path findings 7)"
        pr_review_finish 7'
 }
 
@@ -131,7 +130,7 @@ echo "== a posted review records GitHub's submitted_at =="
 new_sandbox
 finish_dispatched
 eq "reviewed record" $'deadbeef\tcafef00d\t2026-09-28T10:00:00Z' "$(lib 'record_read reviewed 7')"
-eq "every transient cleared" "last-reviewed-7" "$(ls "$STATE")"
+eq "every transient cleared, the durable pair kept" $'last-findings-7.json\nlast-reviewed-7' "$(ls "$STATE")"
 cleanup
 
 echo "== no submitted_at in the response: reviewed_at is local UTC now =="
@@ -166,7 +165,8 @@ cleanup
 echo "== purge: closed PRs' records and every PR's transients go, the rest stays =="
 new_sandbox
 lib 'record_write reviewed 7 a b; record_write reviewed 8 c d
-     for k in pending scope prior body decision; do echo x > "$(pr_path $k 8)"; done
+     for k in pending scope prior findings; do echo x > "$(pr_path $k 8)"; done
+     for f in review-body-8.md decision-8.txt prior-8.txt; do echo x > "$STATE_DIR/$f"; done   # pre-v0.7.0
      : > "$AUTO_APPROVE_FILE"'
 OPEN_PRS=8 lib 'pr_review_purge_stale'
 eq "kept: open PR's record, tick flag" $'auto-approve\nlast-reviewed-8' "$(ls "$STATE")"

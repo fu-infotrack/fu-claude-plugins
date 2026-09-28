@@ -3,20 +3,22 @@
 Your deliverable for PR #<PR> is written to **disk** (so it survives even if the
 orchestrator's context is compacted after you return):
 
-1. A review-body file at `BODY_FILE`, whose **first line** is a decision header
-   `<!-- DECISION: APPROVE -->` (or `COMMENT`).
-2. The decision token (`APPROVE` or `COMMENT`) written to `DECISION_FILE`.
-3. A response that is **exactly one line**, `DECISION: APPROVE` or
-   `DECISION: COMMENT` — nothing else (the orchestrator reads the decision from the
-   two files above; your reply only costs it context).
+1. A findings file at `FINDINGS_FILE` — JSON, in the shape Step 3 gives.
+2. A response that is **exactly** `DONE` — nothing else (the orchestrator reads
+   the file above; your reply only costs it context).
 
-You do **NOT** post anything to GitHub yourself — the orchestrator posts the file you write. Running `/code-review` is only how you *gather* findings; it is NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–5. Do not stop after `/code-review`.
+You classify findings; the orchestrator does everything else. It renders the review
+body from your file, derives the verdict and the blocker count from it, and posts
+it. You do **NOT** post anything to GitHub yourself, and you do not write prose, a
+body, or a verdict. Running `/code-review` is only how you *gather* findings; it is
+NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–4.
+Do not stop after `/code-review`.
 
 ## Step 0 — Review context and PR intent
 
-`SCOPE_FILE`, `PRIOR_FILE`, `BODY_FILE`, and `DECISION_FILE` are given to you as
-absolute paths in your task prompt. Use them verbatim — do not construct your own
-(they are namespaced per repo, so a hand-built path will be wrong).
+`SCOPE_FILE`, `PRIOR_FILE`, and `FINDINGS_FILE` are given to you as absolute paths
+in your task prompt. Use them verbatim — do not construct your own (they are
+namespaced per repo, so a hand-built path will be wrong).
 
 1. Read `SCOPE_FILE` — the orchestrator has already decided what you review. It is a
    header, a blank line, then one file path per line:
@@ -51,7 +53,7 @@ Never go above `medium` (`high`/`xhigh`/`max` are out of scope for automated PR 
 
 Scope `/code-review` to the files listed in `SCOPE_FILE`. In DELTA mode, do NOT re-audit unchanged code for new issues, and do NOT review files outside the list (a rebase may have pulled them in).
 
-## Step 2 — Classify findings and assemble the body
+## Step 2 — Classify findings
 
 Map every finding to one severity:
 - **BLOCKER** — security vulnerability, correctness/logic bug, data loss, breaking API change, CLAUDE.md correctness/safety rule violation, or a **house rule** below.
@@ -64,8 +66,8 @@ any codebase here uses: reaching for it means the author never settled what the
 method actually does, so the name tells a reader nothing they can rely on. List it
 like any other finding, and say what to do about it:
 
-```
-1. [BLOCKER] Naming: `MintCredentials` — `Mint` is not this codebase's vocabulary; rename to what the method actually does — `src/Auth/TokenService.cs:31`
+```json
+{"severity": "BLOCKER", "text": "Naming: `MintCredentials` — `Mint` is not this codebase's vocabulary; rename to what the method actually does", "where": "src/Auth/TokenService.cs:31"}
 ```
 
 Match on **name segments**, not raw substring — split the identifier on
@@ -75,88 +77,78 @@ hit; `ConfirmIntent` and `Minutes` do not. Methods the PR only calls, or leaves
 untouched, are out of scope — this is a rule about names the PR is introducing.
 
 **Scope check** (skip if Step 0 recorded "no stated intent"): measure the diff against the stated intent. A scope problem is a finding like any other — tag it BLOCKER or NIT and list it:
-- The PR does **not** address the linked issue's core ask, or implements something materially different/unrelated → **BLOCKER** (it won't actually resolve the issue it claims to). Prefix the description with `Scope:` and cite the issue, e.g. `[BLOCKER] Scope: issue #123 asks for X but the diff does Y / never touches X`.
-- Partial coverage (most of the ask, minor part missing) or unrelated extra churn riding along → **NIT** (`[NIT] Scope: …`). Genuinely matching the intent adds no finding.
+- The PR does **not** address the linked issue's core ask, or implements something materially different/unrelated → **BLOCKER** (it won't actually resolve the issue it claims to). Prefix the text with `Scope:` and cite the issue, e.g. `Scope: issue #123 asks for X but the diff does Y / never touches X`.
+- Partial coverage (most of the ask, minor part missing) or unrelated extra churn riding along → **NIT** (text `Scope: …`). Genuinely matching the intent adds no finding.
 Judge against the stated ask only — do not invent acceptance criteria the issue/PR never stated.
 
-Assemble the review body in this format:
+**DELTA mode only — re-check the prior findings.** `PRIOR_FILE` is JSON:
+`{"findings": [...]}`, the findings still live after the previous review, each
+with its `severity`, `text` and (usually) `where`. For each one, check its status
+at the current head (read cited lines via `gh api repos/<REPO>/contents/...`) and
+record it in `prior` (Step 3) with exactly one status:
+
+- `RESOLVED` — fixed at this head.
+- `STILL OPEN` — still present.
+- `REINTRODUCED` — was fixed, and this delta brings it back.
+
+Keep each prior finding's **original** `severity`, `text` and `where` — do not
+re-grade it. A prior finding that is still open goes in `prior` **only**; do not
+repeat it in `findings`, or it counts twice.
+
+If `PRIOR_FILE` instead carries a `legacy_body` (the previous review was posted
+before findings were saved, so only its text survives), extract its numbered
+findings — status-prefixed lines in a "Prior findings:" block keep their
+original tag — and re-check each the same way. In FULL mode, or when there are no
+prior findings, leave `prior` out.
+
+## Step 3 — Write the findings file
+
+Use the `Write` tool to write `FINDINGS_FILE`. It is the whole review: writing it
+to disk is what lets the orchestrator post the correct review even if its context
+is compacted after you return.
+
+```json
+{
+  "findings": [
+    {"severity": "BLOCKER", "text": "Correctness: null deref on an empty cart", "where": "src/Cart.cs:42"},
+    {"severity": "NIT", "text": "Scope: the README example still shows the old flag"}
+  ],
+  "prior": [
+    {"status": "RESOLVED", "severity": "BLOCKER", "text": "Unconditional write", "where": "src/Store.cs:266"},
+    {"status": "STILL OPEN", "severity": "NIT", "text": "Rename `x`", "where": "src/Store.cs:88"}
+  ]
+}
+```
+
+- `findings` is required — `[]` when you found nothing. `prior` is DELTA only.
+- `severity` is exactly `BLOCKER` or `NIT`; `status` is exactly `RESOLVED`,
+  `STILL OPEN` or `REINTRODUCED`. Uppercase, spelled as shown.
+- `text` is one line: the finding, with any `Scope:`/`Naming:` prefix from Step 2.
+  No severity tag, no numbering, no location — the orchestrator adds those.
+- `where` is `path:line` (or just `path`), optional; leave it out rather than
+  guess.
+
+The file is validated strictly: one malformed item — an unknown severity or
+status, an empty `text`, a non-string `where`, or invalid JSON — rejects the
+whole file, nothing is posted, and the PR is re-reviewed next tick.
+
+You do not decide. The orchestrator counts every `BLOCKER` in `findings`, plus
+every prior `BLOCKER` that is `STILL OPEN` or `REINTRODUCED`, and the verdict is
+APPROVE exactly when that count is zero — so a core scope mismatch or a house-rule
+hit blocks by being tagged `BLOCKER`. Whether an APPROVE posts as a GitHub
+approval is the orchestrator's `--auto-approve` policy, not yours.
+
+## Step 4 — Reply `DONE`
+
+Your **entire response** must be exactly:
 
 ```
-### Code review — PR #<PR>
-Found N issues:
-1. [BLOCKER] Description — `path/to/file.cs:42`
-2. [NIT] Description — `path/to/file.cs:88`
+DONE
 ```
 
-**DELTA mode only** — read `PRIOR_FILE` (your previous review). For each prior finding, check its status at the current head (read cited lines via `gh api repos/<REPO>/contents/...`) and prepend a "Prior findings:" block. If `PRIOR_FILE` is missing or empty, skip this block.
-
-Each prior-findings line puts the status **first, before the severity tag**, and
-repeats the finding's **original** tag:
-
-```
-Prior findings:
-1. RESOLVED — [BLOCKER] Description — `path/to/file.cs:42`
-2. STILL OPEN — [NIT] Description — `path/to/file.cs:88`
-3. REINTRODUCED — [BLOCKER] Description — `path/to/file.cs:12`
-```
-
-Status is exactly one of `RESOLVED`, `STILL OPEN`, `REINTRODUCED`. **That order is
-a wire format, not cosmetics.** The orchestrator counts current blockers off these
-lines and recognises a fixed one only by `RESOLVED` sitting *before* the
-`[BLOCKER]` tag on the same line. Put the status anywhere else — a trailing
-`(RESOLVED)`, a separate `Status:` line — and a blocker you just confirmed fixed
-gets notified as live, which is the exact false alarm this shape prevents.
-
-## Step 3 — Decide
-
-- A STILL OPEN or REINTRODUCED prior BLOCKER counts as a current BLOCKER.
-- A core scope mismatch (Step 2) is a BLOCKER like any other.
-- A house-rule hit (Step 2 — a `Mint`-named method) is a BLOCKER like any other.
-- APPROVE if zero BLOCKERs. COMMENT if one or more BLOCKERs.
-
-`APPROVE` here means exactly "I found zero BLOCKERs" — it is **not** a promise that
-GitHub receives an approval. The orchestrator posts approvals only when the tick was
-started with `--auto-approve`; otherwise it posts your findings as a COMMENT. Report
-your honest verdict and leave that policy to the orchestrator.
-
-## Step 4 — Write the body file and the decision sidecar
-
-Use the `Write` tool to write **both** files. Writing the decision to disk (both
-places) is what lets the orchestrator post the correct review even if its context
-is compacted after you return — do not skip either.
-
-1. **`BODY_FILE`** — a decision header as the very first line, then the assembled
-   review body from Step 2:
-
-   ```
-   <!-- DECISION: APPROVE -->
-   ### Code review — PR #<PR>
-   Found N issues:
-   ...
-   ```
-
-   Use `APPROVE` or `COMMENT` to match your Step 3 decision. Body only after the
-   header — no marker, no footer; the orchestrator adds those and strips the header
-   line before posting. If you found no issues (clean APPROVE), still write the
-   formatted body with `Found 0 issues`.
-
-2. **`DECISION_FILE`** — a single line containing just `APPROVE` or `COMMENT` (the
-   same decision). This sidecar is the authoritative source the orchestrator reads;
-   the body header is its backup.
-
-## Step 5 — Emit the decision sentinel
-
-Your **entire response** must be exactly one of the following lines — no summary,
-no findings, no preamble. The review lives in `BODY_FILE`; the orchestrator reads
-your decision from `DECISION_FILE` / the body header and ignores your reply, which
-lands in its context on every PR of every tick.
-
-```
-DECISION: APPROVE
-```
-```
-DECISION: COMMENT
-```
+No summary, no findings, no preamble. The review lives in `FINDINGS_FILE`; the
+orchestrator ignores your reply, which lands in its context on every PR of every
+tick.
 
 ## Available tools
 

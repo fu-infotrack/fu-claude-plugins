@@ -51,14 +51,15 @@ Ordered highest-leverage first.
    - The sub-agent originally **self-derived** its commit SHA and review mode. That put a second copy of the "what changed since the last review" rule in model-run prose, keyed on the commit SHA while pre-flight used the tree SHA, and its delta file list was untested and unpaginated. Since v0.5.0, pre-flight decides mode and scope in bash and writes them to `scope-<pr>.txt`. The orchestrator's context cost is unchanged because the scope goes to disk, never stdout.
 
 2. **Make irreversible / external actions deterministic bash in the orchestrator, not model-driven.** This is the key reliability lesson. `/code-review` is a large command that tends to *end* the sub-agent's flow. In a real run the sub-agent ran `/code-review` (72 tool uses), returned findings, then never posted the GitHub review and emitted no DECISION line — a silent no-op.
-   - Reframe the sub-agent's deliverable as "write a body file + emit a DECISION line," with `/code-review` demoted to a mere data-gathering substep. Instruct it explicitly: *do NOT stop after `/code-review`.*
-   - The orchestrator reads the body file and posts via `gh api`. The model's job is to *produce content*; the side effect is the orchestrator's job.
+   - Reframe the sub-agent's deliverable as "write a findings file + reply `DONE`," with `/code-review` demoted to a mere data-gathering substep. Instruct it explicitly: *do NOT stop after `/code-review`.*
+   - The orchestrator reads the findings file, renders the body, and posts via `gh api`. The model's job is to *classify*; the side effect is the orchestrator's job.
+   - Push that line as far as it goes: give the model **data to produce, not prose** (v0.7.0). The sub-agent used to write the body and a decision, and bash regex-parsed the blocker count back out of the prose. Count and body then disagreed whenever the prose drifted: a RESOLVED prior blocker was notified as live over a body saying "No blockers found". Now the sub-agent writes `{"findings":[…], "prior":[…]}` JSON, validated strictly. Body, verdict and count are all rendered from that one list, so they cannot disagree.
 
 3. **Hand off between orchestrator and sub-agent through files, not return-value parsing or piped permissions.**
-   - Orchestrator pre-writes prior findings to `state/prior-<pr>.txt`; sub-agent writes the review body to `state/review-body-<pr>.md`.
+   - Orchestrator pre-writes prior findings to `state/prior-<pr>.json`; sub-agent writes its findings to `state/findings-<pr>.json`.
    - File handoff dodges fragile permission matching — a `gh api | jq | sed` pipeline may not satisfy a `Bash(gh:*)` allowlist, whereas a plain file Read/Write always works.
    - Use a stable dir under `state/`, **not** `/tmp` — `/tmp` gets clobbered by parallel jobs sharing the host.
-   - This applies to **every** value the post step needs, not just the body — see guidance #14: parsing the decision/commit/tree out of the model's context is the same fragility, one compaction away from breaking.
+   - This applies to **every** value the post step needs, not just the findings — see guidance #14: parsing a decision/commit/tree out of the model's context is the same fragility, one compaction away from breaking.
 
 4. **Hold cross-tool-call locks with a background holder process.** Each Bash tool call is a *new shell*, so a normal fd-based `flock` releases the instant that call returns — giving no mutual exclusion across the orchestrator's separate bash calls. Spawn a background process that holds the lock for the life of the run, store its PID, and kill it at cleanup. Never delete the lock file (deleting it created a TOCTOU race where two ticks flock different inodes).
 
@@ -72,7 +73,7 @@ Ordered highest-leverage first.
 
 9. **Auto-detect identity from cwd.** `REPO_DIR=$(git rev-parse --show-toplevel)`, `REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)`. Run from a dedicated throwaway clone; bail (logged, lock released) if the repo can't be detected. No hardcoded repo means the same bot reviews whatever clone it is launched in.
 
-10. **Choose safe defaults for the side effect, and make the strongest one opt-in.** The sub-agent's entire reply is the one-line `DECISION: APPROVE|COMMENT` sentinel. The orchestrator ignores it and reads the decision from disk; any longer reply only adds to the orchestrator's context on every PR of every tick. A missing/malformed decision → COMMENT (the safe default); never `REQUEST_CHANGES` (reserved for humans). Go further for the one decision that is *outward-facing and durable*: an approval can satisfy branch protection and unblock a merge, so the sub-agent's `APPROVE` is treated as nothing more than "zero BLOCKERs found" and is **downgraded to COMMENT unless the tick was explicitly started with `--auto-approve`**. The gate is deterministic bash in `pr_review_finish` (the model has no discretion over it), and the mode is recorded on disk for the tick — same reasoning as #14, so a compaction can't flip a comment-only tick into an approving one — then cleared at cleanup so it never leaks into the next tick. The safe direction is also the *lossless* one: the findings post either way; only the event changes. Tree-SHA dedup so pure rebases don't re-trigger; re-request detection compares the `review_requested` event timestamp against the state-file mtime. Delta mode reconciles prior findings as RESOLVED / STILL OPEN / REINTRODUCED.
+10. **Choose safe defaults for the side effect, and make the strongest one opt-in.** The sub-agent's entire reply is `DONE`. The orchestrator ignores it and reads the findings from disk; any longer reply only adds to the orchestrator's context on every PR of every tick. Missing or malformed findings → nothing posts and the PR retries (the safe default); never `REQUEST_CHANGES` (reserved for humans). Go further for the one decision that is *outward-facing and durable*: an approval can satisfy branch protection and unblock a merge, so the `APPROVE` verdict is treated as nothing more than "zero BLOCKERs found" and is **downgraded to COMMENT unless the tick was explicitly started with `--auto-approve`**. The gate is deterministic bash in `pr_review_finish` (the model has no discretion over it), and the mode is recorded on disk for the tick — same reasoning as #14, so a compaction can't flip a comment-only tick into an approving one — then cleared at cleanup so it never leaks into the next tick. The safe direction is also the *lossless* one: the findings post either way; only the event changes. Tree-SHA dedup so pure rebases don't re-trigger; re-request detection compares the `review_requested` event timestamp against the state-file mtime. Delta mode reconciles prior findings as RESOLVED / STILL OPEN / REINTRODUCED.
 
 11. **Keep living docs, delete stale ones.** Delete the brainstorm spec/plan once the implementation diverges; keep the plugin README + this doc as the single source of truth, and revise them when the design moves (as this doc was when the bot became a plugin and gained per-repo namespacing).
 
@@ -80,7 +81,7 @@ Ordered highest-leverage first.
 
 13. **Force-reset the throwaway clone; never `pull`.** The review clone is disposable, and the sub-agent's `gh pr checkout <PR>` leaves it on the PR branch — files the PR *added* are then stranded as untracked when you return to `main`, and a plain `git checkout main` aborts on the dirty tree, silently degrading the baseline. Refresh by making the tree match the remote *exactly*: `git fetch origin main` → `git checkout -f main` → `git reset --hard origin/main` → `git clean -fd`. Use `reset --hard`, not `pull`: `pull` is a merge that can create a merge commit or abort on a force-pushed/rewritten remote `main`, whereas hard-reset is immune to local divergence and history rewrites. Omit `-x` from `clean` so gitignored build caches (`bin/obj`, `node_modules`) survive — only stray untracked source and tracked mods get wiped. Run it both at tick start *and* after each PR, so sequential sub-agents never inherit the prior PR's branch.
 
-14. **Persist every cross-step value to disk, so a mid-tick compaction loses nothing.** In a same-session loop the orchestrator's context grows across ticks and *will* eventually compact — possibly right after a sub-agent returns, before the post step runs. Any value carried in context across that boundary is at risk. The original design carried three: the `DECISION` (parsed from the sub-agent's reply) and the `commit`/`tree` (printed by pre-flight, "held" by the model for the post call). Move all three to disk: pre-flight writes `pending-<pr>` (commit + tree); the sub-agent writes its decision to a `decision-<pr>.txt` sidecar **and** as a `<!-- DECISION: X -->` header on the body's first line (belt-and-suspenders); `pr_review_finish <pr>` then takes **only the PR number** and recovers commit/tree/decision/body entirely from disk. The post step becomes reconstructable from disk alone, so a compaction between pre-flight and post is a no-op. Pre-flight also clears the prior tick's body/decision before dispatch so a half-finished earlier run can't leave a stale decision to be read; decision resolution is sidecar → header → `COMMENT` (the safe default from #10). Combined with #6 (state saved only on a successful post), the worst case degrades to a redundant re-review next tick — never a lost or wrong post.
+14. **Persist every cross-step value to disk, so a mid-tick compaction loses nothing.** In a same-session loop the orchestrator's context grows across ticks and *will* eventually compact — possibly right after a sub-agent returns, before the post step runs. Any value carried in context across that boundary is at risk. The original design carried three: the `DECISION` (parsed from the sub-agent's reply) and the `commit`/`tree` (printed by pre-flight, "held" by the model for the post call). Move all three to disk. Pre-flight writes `pending-<pr>` (commit + tree), and the sub-agent writes `findings-<pr>.json`. The decision is no longer a value at all: `pr_review_finish` derives it from the findings (v0.7.0; until then the sub-agent wrote a decision sidecar plus a `<!-- DECISION -->` body header). `pr_review_finish <pr>` then takes **only the PR number** and recovers commit/tree/findings entirely from disk. The post step becomes reconstructable from disk alone, so a compaction between pre-flight and post is a no-op. Pre-flight also clears the prior tick's findings before dispatch, so a half-finished earlier run can't leave stale findings to be read. Missing or invalid findings post nothing (the safe default from #10). Combined with #6 (state saved only on a successful post), the worst case degrades to a redundant re-review next tick — never a lost or wrong post.
 
 15. **A bot acting as you produces no notification — build the out-of-band signal yourself.** The bot authenticates as your own GitHub account, and GitHub deliberately never notifies you about your own actions, so a posted review is invisible: the only trace is a log file nobody reads at 2am. Fire an explicit notification from the *same* deterministic point as the side effect (`pr_review_finish`), and fire it on the **failure** paths too — a review that produced no body, or whose POST failed, is exactly the silent miss that #6's retry logic hides from you. Keep it opt-in and best-effort: channels come from config (no config = silent, preserving the old behaviour), every send is time-bounded, and a notifier that 403s or hangs is logged and stepped over rather than allowed to fail a tick. Treat the delivery URL as a credential — user-scoped config, never logged, with a test asserting it never reaches the log file.
 
@@ -130,23 +131,25 @@ echo "$HOLDER_PID" > "$HOLDER_FILE"
 # namespaced per repo (see #12): "$BASE_DIR/state/$REPO_SLUG".
 # Pre-flight: pre-write prior findings AND persist the reviewed commit/tree to
 # disk (the pending record), so the post step never needs them from context (#14).
-fetch_prior_findings "$PR" > "$(pr_path prior "$PR")"
-rm -f "$(pr_path body "$PR")" "$(pr_path decision "$PR")"  # clear stale
+write_prior_findings "$PR"          # carried findings -> prior-<pr>.json
+rm -f "$(pr_path findings "$PR")"   # clear stale
 record_write pending "$PR" "$commit" "$tree"
 
-# The sub-agent runs /code-review as a data-gathering substep, then MUST write to
-# the paths passed to it (it must NOT rebuild flat paths from the bare PR number):
-#   - BODY_FILE: a "<!-- DECISION: X -->" header line, then the review body
-#   - DECISION_FILE: the bare APPROVE|COMMENT token (authoritative; header is backup)
+# The sub-agent runs /code-review as a data-gathering substep, then MUST write
+# FINDINGS_FILE at the path passed to it (it must NOT rebuild flat paths from the
+# bare PR number): {"findings":[{severity,text,where?}], "prior":[{status,…}]}.
 # (Instruction to sub-agent: "do NOT stop after /code-review.")
 
 # Orchestrator posts — deterministically, in bash, NOT the model. Takes ONLY $PR;
 # everything else is read from disk, so a compaction after the sub-agent returns
 # loses nothing.
 pr_review_finish "$PR"
-#   - body from review-body-<pr>.md (header line stripped before posting)
-#   - decision from decision-<pr>.txt -> body header -> COMMENT (#10 safe default),
-#     then APPROVE -> COMMENT unless this tick recorded --auto-approve (#10 opt-in)
+#   - findings from findings-<pr>.json, validated strictly; missing or invalid ->
+#     nothing posts, retry next tick (#10 safe default)
+#   - body, blocker count and verdict all rendered from those findings; APPROVE
+#     (zero current BLOCKERs) -> COMMENT unless this tick recorded --auto-approve
+#     (#10 opt-in)
+#   - live findings saved to last-findings-<pr>.json for the next DELTA
 #   - commit/tree from the pending record; no pending record -> no-op (the
 #     orchestrator ran finish without a PROCEED), never a guess at the live head
 #   - reviewed record (commit, tree, GitHub's submitted_at) written ONLY on a

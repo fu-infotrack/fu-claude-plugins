@@ -109,9 +109,8 @@ expected="PROCEED
 Read $ROOT/review-task.md and follow it exactly. Review PR #7.
 Use these absolute paths verbatim — do not construct your own:
   SCOPE_FILE = $STATE/scope-7.txt
-  PRIOR_FILE = $STATE/prior-7.txt
-  BODY_FILE = $STATE/review-body-7.md
-  DECISION_FILE = $STATE/decision-7.txt"
+  PRIOR_FILE = $STATE/prior-7.json
+  FINDINGS_FILE = $STATE/findings-7.json"
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
 eq "stderr is empty" "" "$(err)"
 eq "pending written for finish" "commit=deadbeef

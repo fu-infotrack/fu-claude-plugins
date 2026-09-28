@@ -118,6 +118,7 @@ bash plugins/fu-copilot/test/verify.test.sh
 bash plugins/fu-dev-guards/test/git-guard.test.sh
 bash plugins/fu-dev-guards/test/stamp-session.test.sh
 bash plugins/fu-review-prs/test/auto-approve.test.sh
+bash plugins/fu-review-prs/test/findings.test.sh
 bash plugins/fu-review-prs/test/notify.test.sh
 bash plugins/fu-review-prs/test/preflight.test.sh
 bash plugins/fu-review-prs/test/state.test.sh
