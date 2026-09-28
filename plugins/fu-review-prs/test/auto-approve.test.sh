@@ -85,9 +85,9 @@ run() {
     source "$1"
     pr=$2; decision=$3
     printf "<!-- DECISION: %s -->\n### Code review — PR #%s\nFound 0 issues:\n" "$decision" "$pr" \
-      > "$STATE_DIR/review-body-$pr.md"
-    printf "%s\n" "$decision" > "$STATE_DIR/decision-$pr.txt"
-    write_pending "$pr" deadbeef cafef00d
+      > "$(pr_path body "$pr")"
+    printf "%s\n" "$decision" > "$(pr_path decision "$pr")"
+    record_write pending "$pr" deadbeef cafef00d
     eval "$4"
   ' _ "$LIB" "$pr" "$decision" "$snippet" 2>/dev/null
 }

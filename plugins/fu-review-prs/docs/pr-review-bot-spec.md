@@ -863,15 +863,18 @@ correctness bug in its own environment):
    an owner and expiry (§6.4). Correct on POSIX; the holder process and `flock`
    are both unavailable as specified on Windows, and the sleep-based TTL is a
    process, not a stored deadline.
-2. **Re-request comparison** uses the state file's mtime as the stored side
-   rather than a recorded `reviewed_at` (R20, §4.2).
+2. **Re-request comparison** uses the recorded `reviewed_at`, which is GitHub's
+   `submitted_at` from the POST response, since v0.6.0. A record written before
+   v0.6.0 has no `reviewed_at`, so it falls back to the file's mtime until its
+   next posted review rewrites it (R20, §4.2).
 3. **Shell utilities** (`sed`, `find`, `stat`, `xargs`, `tr`) are hard
    dependencies (§8), as is `jq`.
 4. **Store writes** are direct redirections, not write-temp-then-replace
    (§4.9). A reader concurrent with a write could observe a partial document —
    bounded in practice by R14's sequential processing and the single lease.
-5. `pending-<pr>` and `last-reviewed-<pr>` are two-line text records rather than
-   JSON, so they carry no `reviewed_at` and no schema version.
+5. `pending-<pr>` and `last-reviewed-<pr>` are `key=value` text records
+   (`commit`, `tree`, `reviewed_at`) rather than JSON, with no schema version.
+   The reader also accepts the pre-v0.6.0 two-line `commit`/`tree` shape.
 6. **Slug** is `owner/name` with `/` → `-` only (§4.1): not lowercased, not
    sanitised against reserved names, not forge-qualified. Two remotes differing
    only in case would collide on a case-insensitive filesystem.

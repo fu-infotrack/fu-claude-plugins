@@ -224,7 +224,7 @@ and PR-number-keyed state never collides across repos:
   review-prs-<slug>.lock          # flock target, one per repo
   review-prs-<slug>.lock.holder   # holder PID
   review-<slug>.log
-  state/<slug>/last-reviewed-<PR> # commit+tree of last review
+  state/<slug>/last-reviewed-<PR> # commit/tree/reviewed_at of last posted review
   state/<slug>/pending-<PR>       # commit+tree being reviewed (pre-flight → finish)
   state/<slug>/scope-<PR>.txt     # REPO/HEAD/MODE/DELTA_BASE header + files to review
   state/<slug>/prior-<PR>.txt     # prior findings (delta mode)
@@ -232,6 +232,12 @@ and PR-number-keyed state never collides across repos:
   state/<slug>/decision-<PR>.txt  # sub-agent's APPROVE|COMMENT
   state/<slug>/auto-approve       # present only while a --auto-approve tick runs
 ```
+
+Every per-PR name above comes from one function, `pr_path <kind> <pr>`. The
+`last-reviewed-` and `pending-` records are `key=value` lines. `reviewed_at` is
+GitHub's `submitted_at` for the posted review, and re-request detection compares
+against it. Records written before v0.6.0 are two lines (commit, tree); they
+still read, falling back to the file's mtime for `reviewed_at`.
 
 Pre-flight prints the sub-agent's whole Task prompt after `PROCEED` (built by
 `dispatch_prompt` from `pr_review_paths <PR>`), with the absolute paths already
@@ -251,9 +257,9 @@ orchestrator's context is just its token.
   body, reply with a single `DECISION:` line and nothing else. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
   to the one the other plugins ship); used only by the notifier.
-- `test/auto-approve.test.sh`, `test/notify.test.sh`, `test/preflight.test.sh` —
-  the posting-policy, notification and pre-flight stdout contracts (hermetic:
-  throwaway `HOME`, stubbed `gh`/`git`/`curl`).
+- `test/auto-approve.test.sh`, `test/notify.test.sh`, `test/preflight.test.sh`,
+  `test/state.test.sh` — the posting-policy, notification, pre-flight stdout and
+  state-store contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
 
 ## Docs
 

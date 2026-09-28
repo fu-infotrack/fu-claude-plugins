@@ -114,8 +114,8 @@ Use these absolute paths verbatim — do not construct your own:
   DECISION_FILE = $STATE/decision-7.txt"
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
 eq "stderr is empty" "" "$(err)"
-eq "pending written for finish" "deadbeef
-cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
+eq "pending written for finish" "commit=deadbeef
+tree=cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
 eq "log went to the file instead" "1" \
   "$(grep -c 'PR #7: FULL review (first review), 2 file(s)' "$HOME/.claude/pr-review/review-acme-widgets.log")"
 eq "first review: FULL scope, every PR file" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
