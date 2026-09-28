@@ -77,10 +77,12 @@ pr_path() {
 record_write() {
     local kind=$1 pr=$2 commit=$3 tree=$4 at=${5:-} f
     f=$(pr_path "$kind" "$pr") || return 1
+    # 2>/dev/null first, so a failed open's own error stays off stderr (which
+    # lands in the orchestrator's context); callers act on the return status.
     {
         printf 'commit=%s\ntree=%s\n' "$commit" "$tree"
         if [ -n "$at" ]; then printf 'reviewed_at=%s\n' "$at"; fi
-    } > "$f"
+    } 2>/dev/null > "$f"
 }
 
 # Print "<commit>\t<tree>\t<reviewed_at>", or return 1 when the record is absent
@@ -112,7 +114,8 @@ record_read() {
 # Remove every transient file of one PR's dispatch. pr_clear <pr>
 pr_clear() {
     local pr=$1 kind
-    for kind in $TRANSIENT_KINDS; do rm -f "$(pr_path "$kind" "$pr")"; done
+    for kind in $TRANSIENT_KINDS; do rm -f "$(pr_path "$kind" "$pr")" 2>/dev/null; done
+    return 0   # best-effort: an unremovable entry must not fail the caller
 }
 
 # Print this PR's namespaced state paths, for dispatch_prompt to inject into the
@@ -672,7 +675,12 @@ pr_review_preflight() {
     # not be read by pr_review_finish. Then persist the reviewed commit/tree: the
     # pending record is the PROCEED token pr_review_finish requires.
     rm -f "$(pr_path body "$pr")" "$(pr_path decision "$pr")"
-    record_write pending "$pr" "$current_commit" "$current_tree"
+    record_write pending "$pr" "$current_commit" "$current_tree" || {
+        # No token, no dispatch: finish would drop the finished review as a no-op.
+        log "PR #$pr: could not write the pending record, skipping"
+        pr_clear "$pr"
+        echo "SKIP"; return 0
+    }
 
     # 👀 only once we know a review will run — a SKIP tick must not re-add it to
     # a PR whose posted review already cleared it (pr_review_finish).
@@ -709,6 +717,7 @@ pr_review_finish() {
     if ! pend=$(record_read pending "$pr"); then
         log "PR #$pr: nothing pending (pre-flight did not PROCEED) — finish is a no-op"
         pr_clear "$pr"
+        pr_review_reset_tree   # still leave the clone on main for the next PR
         return 0
     fi
     IFS=$'\t' read -r commit tree _at <<< "$pend"

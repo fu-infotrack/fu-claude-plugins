@@ -189,6 +189,14 @@ eq "stdout is SKIP" "SKIP" "$(out)"
 eq "stderr is empty" "" "$(err)"
 cleanup
 
+echo "== a pending record that can't be written is a SKIP, not a PROCEED =="
+new_sandbox
+mkdir -p "$STATE/pending-7"   # a directory where the record goes: the write fails
+preflight 7 review_requested
+eq "stdout is SKIP" "SKIP" "$(out)"
+eq "stderr is empty" "" "$(err)"
+cleanup
+
 echo "== an unresolvable head is a bare SKIP, with nothing pending =="
 new_sandbox
 STATE="$HOME/.claude/pr-review/state/acme-widgets"
