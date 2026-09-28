@@ -46,15 +46,85 @@ MAX_LOG_BYTES=128000
 
 mkdir -p "$STATE_DIR"
 
+# ── Per-PR state store ─────────────────────────────────────────────────────────
+# pr_path is the ONE place that knows the per-PR file names under STATE_DIR:
+#   reviewed  last-reviewed-<pr>   record of the last posted review (durable)
+#   pending   pending-<pr>         record of the head pre-flight dispatched — the
+#                                  PROCEED token pr_review_finish requires
+#   scope     scope-<pr>.txt       what the sub-agent reviews (write_review_scope)
+#   prior     prior-<pr>.txt       our previous review body, for DELTA mode
+#   body      review-body-<pr>.md  the sub-agent's review body
+#   decision  decision-<pr>.txt    the sub-agent's APPROVE|COMMENT
+# Every kind but `reviewed` lives for one dispatch (TRANSIENT_KINDS).
+TRANSIENT_KINDS="pending scope prior body decision"
+
+pr_path() {
+    local kind=$1 pr=$2
+    case $kind in
+        reviewed) printf '%s/last-reviewed-%s\n'  "$STATE_DIR" "$pr" ;;
+        pending)  printf '%s/pending-%s\n'        "$STATE_DIR" "$pr" ;;
+        scope)    printf '%s/scope-%s.txt\n'      "$STATE_DIR" "$pr" ;;
+        prior)    printf '%s/prior-%s.txt\n'      "$STATE_DIR" "$pr" ;;
+        body)     printf '%s/review-body-%s.md\n' "$STATE_DIR" "$pr" ;;
+        decision) printf '%s/decision-%s.txt\n'   "$STATE_DIR" "$pr" ;;
+        *) return 1 ;;
+    esac
+}
+
+# A record (kinds `reviewed` and `pending`) is key=value lines: commit, tree, and
+# for `reviewed` the time GitHub recorded the review. record_write <kind> <pr>
+# <commit> <tree> [reviewed_at]
+record_write() {
+    local kind=$1 pr=$2 commit=$3 tree=$4 at=${5:-} f
+    f=$(pr_path "$kind" "$pr") || return 1
+    # 2>/dev/null first, so a failed open's own error stays off stderr (which
+    # lands in the orchestrator's context); callers act on the return status.
+    {
+        printf 'commit=%s\ntree=%s\n' "$commit" "$tree"
+        if [ -n "$at" ]; then printf 'reviewed_at=%s\n' "$at"; fi
+    } 2>/dev/null > "$f"
+}
+
+# Print "<commit>\t<tree>\t<reviewed_at>", or return 1 when the record is absent
+# or incomplete. Also reads the legacy two-line commit/tree shape (≤ v0.5.0); a
+# `reviewed` record without reviewed_at falls back to the file's mtime, which is
+# what detection used before reviewed_at existed. record_read <kind> <pr>
+record_read() {
+    local kind=$1 pr=$2 f line commit="" tree="" at=""
+    f=$(pr_path "$kind" "$pr") || return 1
+    [ -f "$f" ] || return 1
+    if head -n 1 "$f" | grep -q '^commit='; then
+        while IFS= read -r line; do
+            case $line in
+                commit=*)      commit=${line#commit=} ;;
+                tree=*)        tree=${line#tree=} ;;
+                reviewed_at=*) at=${line#reviewed_at=} ;;
+            esac
+        done < "$f"
+    else
+        { read -r commit; read -r tree; } < "$f"
+    fi
+    [ -n "$commit" ] && [ -n "$tree" ] || return 1
+    if [ -z "$at" ] && [ "$kind" = reviewed ]; then
+        at=$(date -u -r "$f" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    fi
+    printf '%s\t%s\t%s\n' "$commit" "$tree" "$at"
+}
+
+# Remove every transient file of one PR's dispatch. pr_clear <pr>
+pr_clear() {
+    local pr=$1 kind
+    for kind in $TRANSIENT_KINDS; do rm -f "$(pr_path "$kind" "$pr")" 2>/dev/null; done
+    return 0   # best-effort: an unremovable entry must not fail the caller
+}
+
 # Print this PR's namespaced state paths, for dispatch_prompt to inject into the
 # review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
     printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
-        "$STATE_DIR/scope-$pr.txt" \
-        "$STATE_DIR/prior-$pr.txt" \
-        "$STATE_DIR/review-body-$pr.md" \
-        "$STATE_DIR/decision-$pr.txt"
+        "$(pr_path scope "$pr")" "$(pr_path prior "$pr")" \
+        "$(pr_path body "$pr")" "$(pr_path decision "$pr")"
 }
 
 rotate_log() {
@@ -111,50 +181,14 @@ get_pr_head_info() {
     printf '%s\t%s\n' "$head_sha" "$tree_sha"
 }
 
-save_review_state() {
-    local pr=$1 commit=$2 tree=$3
-    printf '%s\n%s\n' "$commit" "$tree" > "$STATE_DIR/last-reviewed-${pr}"
-}
-
-read_review_state() {
-    local pr=$1
-    local state_file="$STATE_DIR/last-reviewed-${pr}"
-    [ -f "$state_file" ] || return 1
-    local commit tree
-    { read -r commit; read -r tree; } < "$state_file"
-    [ -z "$commit" ] && return 1
-    [ -z "$tree" ] && return 1
-    printf '%s\t%s\n' "$commit" "$tree"
-}
-
-# pending-<pr>: the commit/tree being reviewed, persisted by pre-flight so the
-# post step recovers them from DISK rather than from the orchestrator's context.
-# This makes the pre-flight -> post handoff immune to a context compaction that
-# lands mid-tick (right after the sub-agent returns). Same two-line shape as the
-# state file. Written only on the PROCEED path; cleared by pr_review_finish.
-write_pending() {
-    local pr=$1 commit=$2 tree=$3
-    printf '%s\n%s\n' "$commit" "$tree" > "$STATE_DIR/pending-${pr}"
-}
-
-read_pending() {
-    local pr=$1
-    local f="$STATE_DIR/pending-${pr}"
-    [ -f "$f" ] || return 1
-    local commit tree
-    { read -r commit; read -r tree; } < "$f"
-    [ -z "$commit" ] && return 1
-    [ -z "$tree" ] && return 1
-    printf '%s\t%s\n' "$commit" "$tree"
-}
-
 # Resolve the sub-agent's decision from DISK, never from the orchestrator's
 # context: the decision-<pr>.txt sidecar first (clean single token), else the
 # "<!-- DECISION: X -->" header the sub-agent also writes as the body's first
 # line, else COMMENT (conservative — never auto-approve on ambiguity).
 read_decision() {
     local pr=$1 body_file=$2 d=""
-    local sidecar="$STATE_DIR/decision-${pr}.txt"
+    local sidecar
+    sidecar=$(pr_path decision "$pr")
     if [ -s "$sidecar" ]; then
         d=$(tr -d ' \t\r\n' < "$sidecar" | tr '[:lower:]' '[:upper:]')
     fi
@@ -392,10 +426,9 @@ detect_queued_prs() {
 
     while IFS= read -r pr; do
         [ -z "$pr" ] && continue
-        local state_file="$STATE_DIR/last-reviewed-${pr}"
-
-        # Case A: never reviewed (or state file lost)
-        if [ ! -f "$state_file" ]; then
+        local rec
+        # Case A: never reviewed (or state record lost)
+        if ! rec=$(record_read reviewed "$pr"); then
             # Check if our marker already exists on GH (lost state file recovery)
             local last_review_ts
             last_review_ts=$(gh api "repos/$REPO/pulls/$pr/reviews" 2>/dev/null \
@@ -429,12 +462,12 @@ detect_queued_prs() {
                 | max_by(.created_at) | .created_at // empty')
         [ -z "$last_req_ts" ] && continue
 
-        local state_mtime_iso
-        state_mtime_iso=$(date -u -r "$state_file" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-        [ -z "$state_mtime_iso" ] && continue
+        local reviewed_at
+        reviewed_at=$(cut -f3 <<< "$rec")
+        [ -z "$reviewed_at" ] && continue
 
-        if [[ "$last_req_ts" > "$state_mtime_iso" ]]; then
-            log "PR #$pr: re-requested at $last_req_ts (state mtime $state_mtime_iso) — queueing"
+        if [[ "$last_req_ts" > "$reviewed_at" ]]; then
+            log "PR #$pr: re-requested at $last_req_ts (reviewed at $reviewed_at) — queueing"
             echo "$pr review_re_requested"
         fi
     done <<< "$requested_prs"
@@ -442,14 +475,20 @@ detect_queued_prs() {
 
 # Remove stale temp files and state files for closed PRs. Safe to call anytime.
 pr_review_purge_stale() {
-    local open_prs
+    local open_prs name prefix suffix f pr kind
     open_prs=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' 2>/dev/null || true)
-    while IFS= read -r state_file; do
-        local pr_num
-        pr_num=$(basename "$state_file" | sed -E 's/last-reviewed-//')
-        echo "$open_prs" | grep -qw "$pr_num" || rm -f "$state_file"
-    done < <(find "$STATE_DIR" -maxdepth 1 -name "last-reviewed-*" 2>/dev/null)
-    find "$STATE_DIR" -maxdepth 1 \( -name "codeql-wait-*" -o -name "copilot-wait-*" -o -name "prior-*.txt" -o -name "review-body-*.md" -o -name "pending-*" -o -name "decision-*.txt" -o -name "scope-*.txt" \) -delete 2>/dev/null || true
+    # File names come from pr_path with a `*` PR, so this knows no names itself.
+    name=$(basename "$(pr_path reviewed '*')")
+    prefix=${name%%\**} suffix=${name#*\*}
+    for f in "$STATE_DIR"/$name; do
+        [ -e "$f" ] || continue
+        pr=${f##*/}; pr=${pr#"$prefix"}; pr=${pr%"$suffix"}
+        grep -qx -- "$pr" <<< "$open_prs" || rm -f "$f"
+    done
+    for kind in $TRANSIENT_KINDS; do
+        name=$(basename "$(pr_path "$kind" '*')")
+        for f in "$STATE_DIR"/$name; do rm -f "$f"; done
+    done
 }
 
 # Release the lock held by the background holder process.
@@ -553,15 +592,16 @@ pr_review_init() {
 # be fetched. The list goes to disk, never stdout (orchestrator context).
 write_review_scope() {
     local pr=$1 commit=$2 tree=$3
-    local pr_files files="" mode=FULL base="" why="first review"
-    rm -f "$STATE_DIR/scope-$pr.txt"
+    local pr_files files="" mode=FULL base="" why="first review" scope_file
+    scope_file=$(pr_path scope "$pr")
+    rm -f "$scope_file"
     pr_files=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename' 2>/dev/null) || return 1
     pr_files=$(printf '%s\n' "$pr_files" | grep . | LC_ALL=C sort -u)
     [ -z "$pr_files" ] && return 1
 
-    local state
-    if state=$(read_review_state "$pr"); then
-        local last_commit=${state%%$'\t'*} last_tree=${state##*$'\t'}
+    local rec last_commit last_tree _at
+    if rec=$(record_read reviewed "$pr"); then
+        IFS=$'\t' read -r last_commit last_tree _at <<< "$rec"
         if [ "$last_tree" = "$tree" ]; then
             why="tree unchanged"
         else
@@ -585,7 +625,7 @@ write_review_scope() {
     [ "$mode" = FULL ] && files=$pr_files
 
     { printf 'REPO=%s\nHEAD=%s\nMODE=%s\nDELTA_BASE=%s\n\n' "$REPO" "$commit" "$mode" "$base"
-      printf '%s\n' "$files"; } > "$STATE_DIR/scope-$pr.txt"
+      printf '%s\n' "$files"; } > "$scope_file"
     log "PR #$pr: $mode review ($why), $(printf '%s\n' "$files" | grep -c .) file(s)"
 }
 
@@ -628,13 +668,19 @@ pr_review_preflight() {
 
     # Pre-write prior findings for the sub-agent (empty if none). Done here so the
     # sub-agent reads it from disk and never needs gh-pipe permissions of its own.
-    fetch_prior_findings "$pr" > "$STATE_DIR/prior-${pr}.txt" 2>/dev/null || true
+    fetch_prior_findings "$pr" > "$(pr_path prior "$pr")" 2>/dev/null || true
 
     # Clear this PR's transient outputs so the sub-agent's run starts clean — a
     # stale body/decision from a prior tick that never reached the post step must
-    # not be read by pr_review_finish. Then persist the reviewed commit/tree.
-    rm -f "$STATE_DIR/review-body-${pr}.md" "$STATE_DIR/decision-${pr}.txt"
-    write_pending "$pr" "$current_commit" "$current_tree"
+    # not be read by pr_review_finish. Then persist the reviewed commit/tree: the
+    # pending record is the PROCEED token pr_review_finish requires.
+    rm -f "$(pr_path body "$pr")" "$(pr_path decision "$pr")"
+    record_write pending "$pr" "$current_commit" "$current_tree" || {
+        # No token, no dispatch: finish would drop the finished review as a no-op.
+        log "PR #$pr: could not write the pending record, skipping"
+        pr_clear "$pr"
+        echo "SKIP"; return 0
+    }
 
     # 👀 only once we know a review will run — a SKIP tick must not re-add it to
     # a PR whose posted review already cleared it (pr_review_finish).
@@ -661,25 +707,25 @@ dispatch_prompt() {
 # failed/empty review retries next tick.
 pr_review_finish() {
     local pr=$1
-    local body_file="$STATE_DIR/review-body-${pr}.md"
-    local pending_file="$STATE_DIR/pending-${pr}"
-    local decision_file="$STATE_DIR/decision-${pr}.txt"
+    local body_file
+    body_file=$(pr_path body "$pr")
+
+    # pending-<pr> is the PROCEED token: without it no review was dispatched for
+    # this head (the orchestrator ran finish after a SKIP, or out of order), so
+    # there is nothing to post — and no reviewed commit to record.
+    local pend commit tree _at
+    if ! pend=$(record_read pending "$pr"); then
+        log "PR #$pr: nothing pending (pre-flight did not PROCEED) — finish is a no-op"
+        pr_clear "$pr"
+        pr_review_reset_tree   # still leave the clone on main for the next PR
+        return 0
+    fi
+    IFS=$'\t' read -r commit tree _at <<< "$pend"
 
     if [ ! -s "$body_file" ]; then
         log "PR #$pr: no review body produced — NOT posting, NOT saving state (will retry next tick)"
         pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
     else
-        # commit/tree from disk; re-derive from the live head only if pending is
-        # missing (anomaly) — logged, since that risks recording a newer commit.
-        local commit="" tree="" pend
-        if pend=$(read_pending "$pr"); then
-            commit=${pend%%$'\t'*}; tree=${pend##*$'\t'}
-        else
-            log "PR #$pr: pending file missing — re-deriving head (may record a newer commit than reviewed)"
-            local hi
-            hi=$(get_pr_head_info "$pr") && { commit=${hi%%$'\t'*}; tree=${hi##*$'\t'}; }
-        fi
-
         local decision agent_decision review_body downgraded=0
         decision=$(read_decision "$pr" "$body_file")
         # Keep the sub-agent's own verdict: the downgrade below overwrites
@@ -731,15 +777,15 @@ $footer"
             blockers=0
         fi
 
-        if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
-                -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
+        local submitted_at
+        if submitted_at=$(gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
+                -f "event=$decision" -f "body=$body" --jq '.submitted_at // empty' 2>/dev/null); then
             log "PR #$pr: posted $decision review"
             clear_looking_eyes "$pr"
-            if [ -n "$commit" ] && [ -n "$tree" ]; then
-                save_review_state "$pr" "$commit" "$tree"
-            else
-                log "PR #$pr: posted but commit/tree unresolved — state NOT saved (will re-review next tick)"
-            fi
+            # reviewed_at on GitHub's clock, so detection compares it against
+            # GitHub's review_requested timestamps like for like.
+            [ -n "$submitted_at" ] || submitted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            record_write reviewed "$pr" "$commit" "$tree" "$submitted_at"
             if [ "$blockers" -gt 0 ] 2>/dev/null; then
                 pr_review_notify blockers "$pr" "$blockers" "$decision" ""
             else
@@ -751,7 +797,7 @@ $footer"
         fi
     fi
     # Always clear this PR's transients; the next tick regenerates them.
-    rm -f "$body_file" "$pending_file" "$decision_file"
+    pr_clear "$pr"
 
     # Return the dedicated clone to a clean main so the next PR's sub-agent
     # (or the next tick) starts from a pristine tree, not this PR's branch.

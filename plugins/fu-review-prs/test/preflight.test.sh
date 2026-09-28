@@ -114,8 +114,8 @@ Use these absolute paths verbatim — do not construct your own:
   DECISION_FILE = $STATE/decision-7.txt"
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
 eq "stderr is empty" "" "$(err)"
-eq "pending written for finish" "deadbeef
-cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
+eq "pending written for finish" "commit=deadbeef
+tree=cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
 eq "log went to the file instead" "1" \
   "$(grep -c 'PR #7: FULL review (first review), 2 file(s)' "$HOME/.claude/pr-review/review-acme-widgets.log")"
 eq "first review: FULL scope, every PR file" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
@@ -185,6 +185,14 @@ cleanup
 echo "== an unfetchable PR is a bare SKIP =="
 new_sandbox
 PR_STATE=none preflight 7 review_requested
+eq "stdout is SKIP" "SKIP" "$(out)"
+eq "stderr is empty" "" "$(err)"
+cleanup
+
+echo "== a pending record that can't be written is a SKIP, not a PROCEED =="
+new_sandbox
+mkdir -p "$STATE/pending-7"   # a directory where the record goes: the write fails
+preflight 7 review_requested
 eq "stdout is SKIP" "SKIP" "$(out)"
 eq "stderr is empty" "" "$(err)"
 cleanup

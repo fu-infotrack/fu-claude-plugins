@@ -126,12 +126,13 @@ echo "$HOLDER_PID" > "$HOLDER_FILE"
 ### File handoff + deterministic post
 
 ```bash
-# STATE_DIR is namespaced per repo (see #12): "$BASE_DIR/state/$REPO_SLUG".
+# Every per-PR file name comes from pr_path <kind> <pr>, under a STATE_DIR that is
+# namespaced per repo (see #12): "$BASE_DIR/state/$REPO_SLUG".
 # Pre-flight: pre-write prior findings AND persist the reviewed commit/tree to
-# disk (pending-<pr>), so the post step never needs them from context (see #14).
-fetch_prior_findings "$PR" > "$STATE_DIR/prior-${PR}.txt"
-rm -f "$STATE_DIR/review-body-${PR}.md" "$STATE_DIR/decision-${PR}.txt"  # clear stale
-write_pending "$PR" "$commit" "$tree"
+# disk (the pending record), so the post step never needs them from context (#14).
+fetch_prior_findings "$PR" > "$(pr_path prior "$PR")"
+rm -f "$(pr_path body "$PR")" "$(pr_path decision "$PR")"  # clear stale
+record_write pending "$PR" "$commit" "$tree"
 
 # The sub-agent runs /code-review as a data-gathering substep, then MUST write to
 # the paths passed to it (it must NOT rebuild flat paths from the bare PR number):
@@ -146,8 +147,10 @@ pr_review_finish "$PR"
 #   - body from review-body-<pr>.md (header line stripped before posting)
 #   - decision from decision-<pr>.txt -> body header -> COMMENT (#10 safe default),
 #     then APPROVE -> COMMENT unless this tick recorded --auto-approve (#10 opt-in)
-#   - commit/tree from pending-<pr> (re-derived from live head only if missing)
-#   - save_review_state ONLY on a successful post (#6) -> failures retry next tick
+#   - commit/tree from the pending record; no pending record -> no-op (the
+#     orchestrator ran finish without a PROCEED), never a guess at the live head
+#   - reviewed record (commit, tree, GitHub's submitted_at) written ONLY on a
+#     successful post (#6) -> failures retry next tick
 ```
 
 ### Auto-detect identity from cwd

@@ -84,9 +84,9 @@ finish() {
       source "$1"
       pr=$2; decision=$3; extra=$4
       { printf "<!-- DECISION: %s -->\n### Code review — PR #%s\n" "$decision" "$pr"
-        [ -n "$extra" ] && printf "%s\n" "$extra"; } > "$STATE_DIR/review-body-$pr.md"
-      printf "%s\n" "$decision" > "$STATE_DIR/decision-$pr.txt"
-      write_pending "$pr" deadbeef cafef00d
+        [ -n "$extra" ] && printf "%s\n" "$extra"; } > "$(pr_path body "$pr")"
+      printf "%s\n" "$decision" > "$(pr_path decision "$pr")"
+      record_write pending "$pr" deadbeef cafef00d
       pr_review_finish "$pr"
     ' _ "$LIB" "$pr" "$decision" "$extra" 2>/dev/null )
 }
@@ -275,7 +275,7 @@ cleanup
 echo "== an empty review body notifies too =="
 new_sandbox
 write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
-( cd "$SANDBOX" && bash -c 'source "$1"; : > "$STATE_DIR/review-body-7.md"; pr_review_finish 7' _ "$LIB" ) 2>/dev/null
+( cd "$SANDBOX" && bash -c 'source "$1"; record_write pending 7 deadbeef cafef00d; : > "$(pr_path body 7)"; pr_review_finish 7' _ "$LIB" ) 2>/dev/null
 has "empty-body notified" "no review body produced" "$(curl_log)"
 cleanup
 
@@ -306,8 +306,8 @@ echo "== finish logs to the file only — stderr stays empty (orchestrator conte
 new_sandbox
 ( cd "$SANDBOX" && bash -c '
     source "$1"
-    printf "<!-- DECISION: COMMENT -->\nbody\n" > "$STATE_DIR/review-body-7.md"
-    write_pending 7 deadbeef cafef00d
+    printf "<!-- DECISION: COMMENT -->\nbody\n" > "$(pr_path body 7)"
+    record_write pending 7 deadbeef cafef00d
     pr_review_finish 7' _ "$LIB" ) > /dev/null 2> "$SANDBOX/err"
 eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
 has "log went to the file instead" "PR #7: posted COMMENT review" "$(log_text)"
