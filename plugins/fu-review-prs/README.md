@@ -225,8 +225,11 @@ and PR-number-keyed state never collides across repos:
   review-prs-<slug>.lock.holder   # holder PID
   review-<slug>.log
   state/<slug>/last-reviewed-<PR> # commit+tree of last review
+  state/<slug>/pending-<PR>       # commit+tree being reviewed (pre-flight → finish)
+  state/<slug>/scope-<PR>.txt     # REPO/HEAD/MODE/DELTA_BASE header + files to review
   state/<slug>/prior-<PR>.txt     # prior findings (delta mode)
   state/<slug>/review-body-<PR>.md
+  state/<slug>/decision-<PR>.txt  # sub-agent's APPROVE|COMMENT
   state/<slug>/auto-approve       # present only while a --auto-approve tick runs
 ```
 
@@ -240,7 +243,7 @@ orchestrator's context is just its token.
 
 - `commands/review-prs.md` — the per-tick orchestrator (context-thin).
 - `scripts/lib.sh` — lock/setup/detect/finish helpers; sourced per Bash call.
-- `review-task.md` — sub-agent spec: derive mode, read PR/linked-issue intent,
+- `review-task.md` — sub-agent spec: read the scope pre-flight decided, read PR/linked-issue intent,
   run `/code-review` with an explicit `low` or `medium` level picked from the
   reviewed scope (never bare, so it never inherits an undefined level from the
   invoking context, and never above `medium` in an unattended tick),
