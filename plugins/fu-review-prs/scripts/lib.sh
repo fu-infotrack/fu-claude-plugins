@@ -46,8 +46,8 @@ MAX_LOG_BYTES=128000
 
 mkdir -p "$STATE_DIR"
 
-# Print this PR's namespaced state paths, for the orchestrator to inject into
-# the review sub-agent's prompt (the sub-agent must not derive its own).
+# Print this PR's namespaced state paths, for dispatch_prompt to inject into the
+# review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
     printf 'STATE_FILE=%s\nPRIOR_FILE=%s\nBODY_FILE=%s\nDECISION_FILE=%s\n' \
@@ -66,8 +66,9 @@ rotate_log() {
 
 log() {
     local line="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+    # File only, never stderr: the Bash tool captures stderr into the
+    # orchestrator's context, which a /loop session accumulates tick after tick.
     printf '%s\n' "$line" >> "$LOG_FILE"
-    printf '%s\n' "$line" >&2
 }
 
 GH_USER=""
@@ -610,6 +611,16 @@ pr_review_preflight() {
     react_looking_eyes "$pr"
 
     printf 'PROCEED\n'
+    dispatch_prompt "$pr"
+}
+
+# The review sub-agent's Task prompt, printed by pre-flight after PROCEED so the
+# orchestrator passes it verbatim — it never assembles the prompt or holds paths.
+dispatch_prompt() {
+    local pr=$1
+    printf 'Read %s and follow it exactly. Review PR #%s.\n' "$REVIEW_TASK_FILE" "$pr"
+    printf 'Use these absolute paths verbatim — do not construct your own:\n'
+    pr_review_paths "$pr" | sed 's/^\([A-Z_]*\)=/  \1 = /'
 }
 
 # Post the sub-agent's review to GitHub, then save state. Takes ONLY the PR number

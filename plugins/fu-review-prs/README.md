@@ -230,8 +230,11 @@ and PR-number-keyed state never collides across repos:
   state/<slug>/auto-approve       # present only while a --auto-approve tick runs
 ```
 
-The orchestrator resolves these via `pr_review_paths <PR>` and injects the
-absolute paths into the sub-agent prompt — the sub-agent never builds its own.
+Pre-flight prints the sub-agent's whole Task prompt after `PROCEED` (built by
+`dispatch_prompt` from `pr_review_paths <PR>`), with the absolute paths already
+injected. The orchestrator passes it verbatim and the sub-agent never builds its
+own paths. `log()` writes only to the log file, so each step's output reaching the
+orchestrator's context is just its token.
 
 ## Pieces
 
@@ -242,11 +245,12 @@ absolute paths into the sub-agent prompt — the sub-agent never builds its own.
   reviewed scope (never bare, so it never inherits an undefined level from the
   invoking context, and never above `medium` in an unattended tick),
   scope-check the diff against the intent, apply the house rules above, write
-  body, emit a `DECISION:` line. Posts nothing itself.
+  body, reply with a single `DECISION:` line and nothing else. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
   to the one the other plugins ship); used only by the notifier.
-- `test/auto-approve.test.sh`, `test/notify.test.sh` — the posting-policy and
-  notification contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
+- `test/auto-approve.test.sh`, `test/notify.test.sh`, `test/preflight.test.sh` —
+  the posting-policy, notification and pre-flight stdout contracts (hermetic:
+  throwaway `HOME`, stubbed `gh`/`git`/`curl`).
 
 ## Docs
 

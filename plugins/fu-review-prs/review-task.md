@@ -6,8 +6,9 @@ orchestrator's context is compacted after you return):
 1. A review-body file at `BODY_FILE`, whose **first line** is a decision header
    `<!-- DECISION: APPROVE -->` (or `COMMENT`).
 2. The decision token (`APPROVE` or `COMMENT`) written to `DECISION_FILE`.
-3. A `DECISION:` line as the very last line of your response (a human-readable
-   trace; the orchestrator reads the decision from the two files above, not this).
+3. A response that is **exactly one line**, `DECISION: APPROVE` or
+   `DECISION: COMMENT` — nothing else (the orchestrator reads the decision from the
+   two files above; your reply only costs it context).
 
 You do **NOT** post anything to GitHub yourself — the orchestrator posts the file you write. Running `/code-review` is only how you *gather* findings; it is NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–5. Do not stop after `/code-review`.
 
@@ -153,9 +154,10 @@ is compacted after you return — do not skip either.
 
 ## Step 5 — Emit the decision sentinel
 
-The LAST line of your response must be exactly one of the following. (The
-orchestrator reads your decision from `DECISION_FILE` / the body header, not from
-this line — but still emit it as a human-readable trace.)
+Your **entire response** must be exactly one of the following lines — no summary,
+no findings, no preamble. The review lives in `BODY_FILE`; the orchestrator reads
+your decision from `DECISION_FILE` / the body header and ignores your reply, which
+lands in its context on every PR of every tick.
 
 ```
 DECISION: APPROVE

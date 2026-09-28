@@ -119,6 +119,7 @@ bash plugins/fu-dev-guards/test/git-guard.test.sh
 bash plugins/fu-dev-guards/test/stamp-session.test.sh
 bash plugins/fu-review-prs/test/auto-approve.test.sh
 bash plugins/fu-review-prs/test/notify.test.sh
+bash plugins/fu-review-prs/test/preflight.test.sh
 bash plugins/fu-skills/test/export-guard.test.sh
 bash plugins/fu-statusline/test/install.test.sh
 bash plugins/fu-statusline/test/statusline.test.sh
