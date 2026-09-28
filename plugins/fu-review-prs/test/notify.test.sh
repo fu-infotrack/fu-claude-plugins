@@ -302,6 +302,17 @@ has "failure logged with code" "notify: teams FAILED (http 403)" "$(log_text)"
 has "review still posted" "PR #7: posted COMMENT review" "$(log_text)"
 cleanup
 
+echo "== finish logs to the file only — stderr stays empty (orchestrator context) =="
+new_sandbox
+( cd "$SANDBOX" && bash -c '
+    source "$1"
+    printf "<!-- DECISION: COMMENT -->\nbody\n" > "$STATE_DIR/review-body-7.md"
+    write_pending 7 deadbeef cafef00d
+    pr_review_finish 7' _ "$LIB" ) > /dev/null 2> "$SANDBOX/err"
+eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
+has "log went to the file instead" "PR #7: posted COMMENT review" "$(log_text)"
+cleanup
+
 echo "== unknown channel is skipped with a log line =="
 new_sandbox
 write_config '{"notify":["carrier-pigeon"]}'

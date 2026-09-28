@@ -6,80 +6,49 @@ argument-hint: [--auto-approve]
 
 # /review-prs — Automated PR Review Orchestrator
 
-You are an automated PR review orchestrator. Follow these steps exactly, in order. Do not skip steps.
+Follow these steps exactly, in order. Every value that crosses a step lives on disk, so carry nothing in context beyond the work queue.
 
-**Posting policy:** reviews post as `COMMENT` by default, including reviews that found zero BLOCKERs. `APPROVE` is only ever posted when the tick was started with `--auto-approve`. You do not decide this — `pr_review_finish` enforces it from the flag recorded in Step 1.
-
----
+**Posting policy:** you do not decide APPROVE vs COMMENT — `pr_review_finish` enforces it from the flag Step 1 records.
 
 ## Step 1 — Lock, setup, detect work
-
-Pass this tick's arguments straight through (empty is fine — that is the default, comment-only mode):
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_init $ARGUMENTS
 ```
 
-- `LOCKED` → **stop**. Another instance is running (lock not held by us).
-- `NO_WORK` → **stop**. Lock already released and run logged — do NOT run Step 3.
-- One or more `PR_NUM REASON` lines → work queue. Process one at a time in Step 2, then run Step 3.
-
----
+- `LOCKED` → **stop**. Another instance holds the lock.
+- `NO_WORK` → **stop**. Lock already released — do NOT run Step 3.
+- One or more `PR_NUM REASON` lines → work queue. Process each in Step 2, then run Step 3.
 
 ## Step 2 — For each queued PR (sequential)
 
-### Step 2a — Pre-flight
+### 2a — Pre-flight
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_preflight <PR> <REASON>
 ```
 
-- `SKIP` → skip this PR, next.
-- `PROCEED` → this PR needs review; go to Step 2b. (Pre-flight has already persisted the reviewed commit/tree to disk — you do **not** carry them in context.)
+- `SKIP` → next PR.
+- `PROCEED` on the first line → go to 2b.
 
-### Step 2b — Spawn Task sub-agent
+### 2b — Spawn Task sub-agent
 
-Resolve the task-file path and this PR's namespaced state paths:
+Dispatch a Task sub-agent whose prompt is **everything after the `PROCEED` line, verbatim**. Do not edit it or add to it.
 
-```bash
-source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
-echo "TASK_FILE=$REVIEW_TASK_FILE"
-pr_review_paths <PR>
-```
+**Ignore the Task's reply** — whatever it says, always run 2c.
 
-Dispatch a Task sub-agent. Use this prompt, substituting the PR number and the five absolute paths just printed (`TASK_FILE`, `STATE_FILE`, `PRIOR_FILE`, `BODY_FILE`, `DECISION_FILE`):
-
-```
-Read <TASK_FILE> and follow it exactly. Review PR #<PR>.
-Use these absolute paths verbatim — do not construct your own:
-  STATE_FILE    = <STATE_FILE>
-  PRIOR_FILE    = <PRIOR_FILE>
-  BODY_FILE     = <BODY_FILE>
-  DECISION_FILE = <DECISION_FILE>
-```
-
-The sub-agent derives its own commit/tree/mode, runs `/code-review`, writes the review body to `BODY_FILE` (with a `<!-- DECISION: X -->` header line), writes its decision token to `DECISION_FILE`, and emits a `DECISION:` line. It does NOT post to GitHub — Step 2c does.
-
-### Step 2c — Post review, save state, log
-
-After Task completes:
+### 2c — Post review, save state
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_finish <PR>
 ```
 
-`pr_review_finish` needs **only the PR number** — it recovers everything from disk: the reviewed commit/tree (from pre-flight's `pending-<PR>`), the decision (from the sub-agent's `decision-<PR>.txt` sidecar, falling back to the body's `<!-- DECISION: X -->` header, then `COMMENT`), and the body (from `review-body-<PR>.md`). So a context compaction landing right after the Task returns loses nothing. It posts the GitHub Review and saves state only on a successful post (a sub-agent that produced no body retries next tick).
-
-It also applies the posting policy: an `APPROVE` decision is downgraded to `COMMENT` unless Step 1 recorded `--auto-approve` (the body then notes that no blockers were found). The findings are posted either way.
-
----
-
 ## Step 3 — Release lock (work path only)
 
-Run this after all queued PRs are processed, even if some failed. Skip it only if Step 1 returned `LOCKED` or `NO_WORK` (those already released the lock).
+Run after all queued PRs, even if some failed. Skip only if Step 1 returned `LOCKED` or `NO_WORK`.
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
