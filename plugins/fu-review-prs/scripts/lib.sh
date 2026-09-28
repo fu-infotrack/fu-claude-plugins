@@ -84,6 +84,21 @@ react_looking_eyes() {
         --method POST -f content=eyes >/dev/null 2>&1 || true
 }
 
+# Remove our own 👀 once the review is posted — it means "review in progress",
+# not "seen". Only our reaction: other people's eyes stay. Best-effort.
+clear_looking_eyes() {
+    local pr=$1 me id
+    me=$(get_gh_user)
+    [ -z "$me" ] && return 0
+    gh api "repos/$REPO/issues/$pr/reactions?content=eyes" --paginate \
+        --jq ".[] | select(.user.login == \"$me\") | .id" 2>/dev/null |
+    while read -r id; do
+        [ -n "$id" ] && gh api "repos/$REPO/issues/$pr/reactions/$id" \
+            --method DELETE >/dev/null 2>&1
+    done
+    return 0
+}
+
 get_pr_head_info() {
     local pr=$1
     local head_sha
@@ -552,8 +567,6 @@ pr_review_preflight() {
         echo "SKIP"; return 0
     fi
 
-    react_looking_eyes "$pr"
-
     local head_info current_commit current_tree
     head_info=$(get_pr_head_info "$pr") || {
         log "PR #$pr: could not fetch head info, skipping"
@@ -591,6 +604,10 @@ pr_review_preflight() {
     # not be read by pr_review_finish. Then persist the reviewed commit/tree.
     rm -f "$STATE_DIR/review-body-${pr}.md" "$STATE_DIR/decision-${pr}.txt"
     write_pending "$pr" "$current_commit" "$current_tree"
+
+    # 👀 only once we know a review will run — a SKIP tick must not re-add it to
+    # a PR whose posted review already cleared it (pr_review_finish).
+    react_looking_eyes "$pr"
 
     printf 'PROCEED\n'
 }
@@ -676,6 +693,7 @@ $footer"
         if gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" >/dev/null 2>&1; then
             log "PR #$pr: posted $decision review"
+            clear_looking_eyes "$pr"
             if [ -n "$commit" ] && [ -n "$tree" ]; then
                 save_review_state "$pr" "$commit" "$tree"
             else

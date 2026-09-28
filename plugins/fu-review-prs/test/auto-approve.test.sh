@@ -28,7 +28,7 @@ new_sandbox() {
   SANDBOX=$(mktemp -d)
   export HOME="$SANDBOX/home"
   mkdir -p "$HOME" "$SANDBOX/bin"
-  export GH_POST="$SANDBOX/gh-post.txt"
+  export GH_POST="$SANDBOX/gh-post.txt" GH_DEL="$SANDBOX/gh-del.txt"
   # gh stub: answers the repo lookup and records a posted review's flags.
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -39,8 +39,20 @@ case "$1 $2" in
 esac
 if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then
   # A POST is a review being submitted; a GET is the prior-review lookup (none).
-  [[ "$*" == *"--method POST"* ]] && printf '%s\n' "$@" > "$GH_POST"
+  if [[ "$*" == *"--method POST"* ]]; then
+    [ -n "${GH_FAIL_REVIEW:-}" ] && exit 1
+    printf '%s\n' "$@" > "$GH_POST"
+  fi
   exit 0
+fi
+# Reactions: the eyes lookup answers with our reaction's id (the user filter is
+# gh's --jq, so the stub just returns it); a DELETE is recorded.
+if [ "$1" = "api" ] && [[ "$2" == *"/reactions/"* ]]; then
+  [[ "$*" == *"--method DELETE"* ]] && echo "$2" >> "$GH_DEL"
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" == *"/reactions?content=eyes" ]]; then
+  echo 11; exit 0
 fi
 exit 0
 STUB
@@ -58,7 +70,7 @@ exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
-  unset PR_REVIEW_AUTO_APPROVE
+  unset PR_REVIEW_AUTO_APPROVE GH_FAIL_REVIEW
 }
 cleanup() { [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ] && rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -169,6 +181,18 @@ new_sandbox
 out=$(run_init)
 has "queue detected" "7 review_requested" "$out"
 has "no flag recorded" "mode=off" "$out"
+cleanup
+
+echo "== a posted review clears our eyes reaction =="
+new_sandbox
+run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7'
+eq "eyes reaction deleted" "repos/acme/widgets/issues/7/reactions/11" "$(cat "$GH_DEL" 2>/dev/null)"
+cleanup
+
+echo "== a failed post leaves the eyes reaction in place =="
+new_sandbox
+GH_FAIL_REVIEW=1 run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7'
+eq "nothing deleted" "" "$(cat "$GH_DEL" 2>/dev/null)"
 cleanup
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
