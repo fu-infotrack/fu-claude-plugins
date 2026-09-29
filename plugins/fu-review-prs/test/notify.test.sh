@@ -86,7 +86,7 @@ finish() {
       printf "%s\n" "$3" > "$(pr_path findings "$pr")"
       record_write pending "$pr" deadbeef cafef00d
       pr_review_finish "$pr"
-    ' _ "$LIB" "$pr" "$findings" 2>/dev/null )
+    ' _ "$LIB" "$pr" "$findings" >/dev/null 2>&1 )
 }
 
 curl_log()  { cat "$CURL_LOG" 2>/dev/null; }

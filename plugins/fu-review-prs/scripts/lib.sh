@@ -773,8 +773,12 @@ dispatch_prompt() {
 # findings from findings-<pr>.json (sub-agent), from which the body, verdict and
 # blocker count are derived here. State is saved ONLY on a successful post, so a
 # failed post or a missing/invalid findings file retries next tick.
+# Prints ONE status token, so the orchestrator can tell the outcomes apart without
+# reading the log: POSTED <APPROVE|COMMENT>, FAILED (the POST failed),
+# NO_FINDINGS (missing or invalid findings file), or NOTHING_PENDING (no PROCEED
+# token). The reason for a non-POSTED outcome stays in the log only.
 pr_review_finish() {
-    local pr=$1
+    local pr=$1 status
 
     # pending-<pr> is the PROCEED token: without it no review was dispatched for
     # this head (the orchestrator ran finish after a SKIP, or out of order), so
@@ -784,6 +788,7 @@ pr_review_finish() {
         log "PR #$pr: nothing pending (pre-flight did not PROCEED) — finish is a no-op"
         pr_clear "$pr"
         pr_review_reset_tree   # still leave the clone on main for the next PR
+        echo "NOTHING_PENDING"
         return 0
     fi
     IFS=$'\t' read -r commit tree _at <<< "$pend"
@@ -793,6 +798,7 @@ pr_review_finish() {
         why=$findings
         log "PR #$pr: no usable findings ($why) — NOT posting, NOT saving state (will retry next tick)"
         pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
+        status=NO_FINDINGS
     else
         local decision=COMMENT blockers review_body downgraded=0
         blockers=$(findings_blockers <<< "$findings")
@@ -824,6 +830,7 @@ $footer"
         if submitted_at=$(gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" --jq '.submitted_at // empty' 2>/dev/null); then
             log "PR #$pr: posted $decision review"
+            status="POSTED $decision"
             clear_looking_eyes "$pr"
             # reviewed_at on GitHub's clock, so detection compares it against
             # GitHub's review_requested timestamps like for like.
@@ -846,6 +853,7 @@ $footer"
         else
             log "PR #$pr: FAILED to post review — NOT saving state (will retry next tick)"
             pr_review_notify failed "$pr" "$blockers" "$decision" "retries next tick"
+            status=FAILED
         fi
     fi
     # Always clear this PR's transients; the next tick regenerates them.
@@ -854,6 +862,7 @@ $footer"
     # Return the dedicated clone to a clean main so the next PR's sub-agent
     # (or the next tick) starts from a pristine tree, not this PR's branch.
     pr_review_reset_tree
+    echo "$status"
 }
 
 # End-of-run: log completion and release the lock. Stale-file purge already
