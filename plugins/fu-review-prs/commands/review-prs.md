@@ -46,6 +46,13 @@ source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_finish <PR>
 ```
 
+It prints one status token. Keep it for the tick summary and take no other action — every non-posted outcome retries next tick on its own:
+
+- `POSTED APPROVE` / `POSTED COMMENT` → the review is on GitHub.
+- `FAILED` → the GitHub POST failed.
+- `NO_FINDINGS` → the sub-agent left no valid findings file; nothing was posted.
+- `NOTHING_PENDING` → pre-flight never PROCEEDed for this PR; nothing to post.
+
 ## Step 3 — Release lock (work path only)
 
 Run after all queued PRs, even if some failed. Skip only if Step 1 returned `LOCKED` or `NO_WORK`.

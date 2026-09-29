@@ -115,7 +115,8 @@ posted_body()  { cat "$GH_POST" 2>/dev/null; }
 
 echo "== default (no flag): a zero-blocker review posts as COMMENT =="
 new_sandbox
-run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7'
+out=$(run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
 eq "posted event" "COMMENT" "$(posted_event)"
 has "body explains the downgrade" "auto-approve is off" "$(posted_body)"
 has "findings still posted" "Found 0 issues" "$(posted_body)"
@@ -123,7 +124,8 @@ cleanup
 
 echo "== --auto-approve: a zero-blocker review posts as APPROVE =="
 new_sandbox
-run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7'
+out=$(run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED APPROVE" "$out"
 eq "posted event" "APPROVE" "$(posted_event)"
 has_no "no downgrade note" "auto-approve is off" "$(posted_body)"
 cleanup
@@ -185,13 +187,14 @@ cleanup
 
 echo "== a posted review clears our eyes reaction =="
 new_sandbox
-run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7'
+run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7' >/dev/null
 eq "eyes reaction deleted" "repos/acme/widgets/issues/7/reactions/11" "$(cat "$GH_DEL" 2>/dev/null)"
 cleanup
 
 echo "== a failed post leaves the eyes reaction in place =="
 new_sandbox
-GH_FAIL_REVIEW=1 run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7'
+out=$(GH_FAIL_REVIEW=1 run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7')
+eq "status token" "FAILED" "$out"
 eq "nothing deleted" "" "$(cat "$GH_DEL" 2>/dev/null)"
 cleanup
 

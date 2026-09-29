@@ -215,7 +215,7 @@ rejected "one bad of two"   '{"findings":[{"severity":"NIT","text":"ok"},{"sever
 
 echo "== no findings file at all: the same retry path =="
 new_sandbox
-lib 'record_write pending 7 deadbeef cafef00d; pr_review_finish 7'
+eq "status token" "NO_FINDINGS" "$(lib 'record_write pending 7 deadbeef cafef00d; pr_review_finish 7')"
 eq "nothing posted" "no" "$(posted)"
 has "reason logged" "no findings file" "$(cat "$LOG")"
 has "notified" "no review body produced" "$(notified)"
