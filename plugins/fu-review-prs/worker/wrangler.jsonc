@@ -1,0 +1,10 @@
+// Deliberately no account_id and no database_id: the account comes from
+// `wrangler login`, and wrangler (>= 4.45) provisions the D1 database on the
+// first deploy and re-finds it by binding name afterwards. Deploy with
+// `CI=true npx wrangler deploy` so the provisioned id is not written back here.
+{
+  "name": "review-bot-heartbeat",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [{ "binding": "DB" }]
+}

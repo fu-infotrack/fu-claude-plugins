@@ -122,6 +122,7 @@ bash plugins/fu-review-prs/test/findings.test.sh
 bash plugins/fu-review-prs/test/notify.test.sh
 bash plugins/fu-review-prs/test/preflight.test.sh
 bash plugins/fu-review-prs/test/state.test.sh
+node --test plugins/fu-review-prs/worker/test/*.test.mjs
 bash plugins/fu-skills/test/export-guard.test.sh
 bash plugins/fu-statusline/test/install.test.sh
 bash plugins/fu-statusline/test/statusline.test.sh
@@ -145,9 +146,9 @@ No package manager pulls these — they must be on PATH:
 - `gh` (authenticated for the target repo) — `fu-log-sweep`, `fu-review-prs`.
 - `vault` (authenticated, `VAULT_ADDR` set) — the `fu-pg` skill; plus `psql` to actually connect.
 - `sqlcmd` — the `fu-mssql` skill: on Windows the ODBC `sqlcmd` (v17/18) or `go-sqlcmd`; under WSL the **Windows-host `sqlcmd.exe`** on PATH (interop). No `vault`. `jq` only to persist the host.
-- `node` — `fu-log-sweep` and its `node --test` suite.
+- `node` — `fu-log-sweep` and its `node --test` suite, plus the `fu-review-prs` heartbeat Worker's badge tests. `npx wrangler` (Cloudflare) only to deploy that Worker, once, by hand.
 - `python3` — the `fu-ce` skill's frontmatter validator.
-- `curl` — the `fu-k8` skill (the only hard dep; `jq` optional, used for formatting); `fu-review-prs` only when a notification channel is configured.
+- `curl` — the `fu-k8` skill (the only hard dep; `jq` optional, used for formatting); `fu-review-prs` only when a notification channel or the heartbeat is configured.
 - `pup` — the `fu-pup` skill (plus the bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-log-sweep`** (its sole Datadog access path). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
 - `copilot` (GitHub Copilot CLI, authenticated) — `fu-copilot` only. Its test suites stub it on PATH, so they need nothing installed.
 - `wsl.exe`, PowerShell 7+, `winget` — the `fu-wsl` skill (Windows-host only; drives a Debian/Ubuntu WSL instance).
