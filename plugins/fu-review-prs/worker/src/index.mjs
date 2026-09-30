@@ -2,7 +2,7 @@
 //
 //   POST /ping/<owner>/<repo>        Bearer PING_TOKEN; records the Worker's own time
 //   GET  /badge/<owner>/<repo>.svg   that repo's bot: up/down + last ping, or "no bot"
-//   GET  /badge.svg                  every live bot by repo name, or "no bot active"
+//   GET  /badge.svg                  every live bot, one row each with its last ping, or "no bot active"
 //
 // Storage is the D1 binding DB. The table is created here on first use, so a
 // deploy needs no migration step.
@@ -33,8 +33,8 @@ async function tokenMatches(header, secret) {
   return crypto.subtle.timingSafeEqual(a, b);
 }
 
-function svg(badge) {
-  return new Response(renderSvg(badge), {
+function svg(rows) {
+  return new Response(renderSvg(rows), {
     headers: {
       'Content-Type': 'image/svg+xml; charset=utf-8',
       'Cache-Control': 'public, max-age=60',
@@ -77,7 +77,7 @@ export default {
       await ensureSchema(env.DB);
       const row = await env.DB.prepare('SELECT last_ping FROM pings WHERE owner = ?1 AND repo = ?2')
         .bind(owner, repo).first();
-      return svg(repoBadge(row?.last_ping, now));
+      return svg([repoBadge(row?.last_ping, now)]);
     }
 
     return new Response(null, { status: 404 });

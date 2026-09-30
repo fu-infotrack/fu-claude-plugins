@@ -230,7 +230,7 @@ badges:
 | URL | Shows |
 |---|---|
 | `GET /badge/<owner>/<repo>.svg` | green dot + last ping time (Sydney), red once older than **15 min**, grey `no bot` if it never pinged |
-| `GET /badge.svg` | every live bot by repo name, or grey `no bot active` |
+| `GET /badge.svg` | every live bot, one row each (repo + last ping time), or grey `no bot active` |
 
 Badges are sent with `Cache-Control: public, max-age=60`. A dead bot drops off
 `/badge.svg` by itself, so a retired repo needs no cleanup.

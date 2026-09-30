@@ -47,34 +47,48 @@ export function repoBadge(lastPing, now) {
   return { state: isLive(lastPing, now) ? 'up' : 'down', text: formatTime(lastPing, now) };
 }
 
-// Every repo: the live ones only, by name. A dead bot drops off rather than
-// showing red, so a retired repo needs no cleanup.
+// Every repo: the live ones only, one row each with its last ping, sorted by
+// name. A dead bot drops off rather than showing red, so a retired repo needs
+// no cleanup.
 export function allBadge(rows, now) {
   const live = rows
     .filter((r) => isLive(r.last_ping, now))
-    .map((r) => r.repo)
-    .sort((a, b) => a.localeCompare(b));
-  if (live.length === 0) return { state: 'none', text: 'no bot active' };
-  return { state: 'up', text: live.join(' · ') };
+    .sort((a, b) => a.repo.localeCompare(b.repo))
+    .map((r) => ({ state: 'up', text: r.repo, detail: formatTime(r.last_ping, now) }));
+  return live.length ? live : [{ state: 'none', text: 'no bot active' }];
 }
 
 function escapeXml(s) {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-// Minimal badge: a coloured dot, a robot, the text. The dot is a <circle>
-// rather than an emoji so the colour — the part that carries the meaning —
-// never depends on the viewer's emoji font. Width is an estimate (~7px/char).
-export function renderSvg({ state, text }) {
-  const textX = 38;
-  const width = textX + [...text].length * 7 + 8;
-  const label = escapeXml(`${state === 'up' ? 'review bot up' : state === 'down' ? 'review bot down' : 'no review bot'}: ${text}`);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="20" role="img" aria-label="${label}">`
+const STATE_LABEL = { up: 'review bot up', down: 'review bot down', none: 'no review bot' };
+const ROW_H = 20;
+const TEXT_X = 38;
+const textWidth = (s) => [...s].length * 7; // an estimate: ~7px/char at 11px
+
+// Minimal badge, one row per entry: a coloured dot, a robot, the text, and an
+// optional detail (the ping time) aligned in a second column. The dot is a
+// <circle> rather than an emoji so the colour — the part that carries the
+// meaning — never depends on the viewer's emoji font.
+export function renderSvg(rows) {
+  const textEnd = TEXT_X + Math.max(...rows.map((r) => textWidth(r.text)));
+  const detailX = textEnd + 10;
+  const detailW = Math.max(...rows.map((r) => (r.detail ? textWidth(r.detail) : 0)));
+  const width = (detailW ? detailX + detailW : textEnd) + 8;
+  const height = rows.length * ROW_H;
+  const label = escapeXml(rows
+    .map((r) => `${STATE_LABEL[r.state]}: ${r.text}${r.detail ? ` ${r.detail}` : ''}`)
+    .join('; '));
+  const body = rows.map((r, i) => {
+    const y = i * ROW_H;
+    return `<circle cx="10" cy="${y + 10}" r="5" fill="${COLORS[r.state]}"/>`
+      + `<text x="19" y="${y + 14}">🤖</text>`
+      + `<text x="${TEXT_X}" y="${y + 14}">${escapeXml(r.text)}</text>`
+      + (r.detail ? `<text x="${detailX}" y="${y + 14}">${escapeXml(r.detail)}</text>` : '');
+  }).join('');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" role="img" aria-label="${label}">`
     + `<title>${label}</title>`
-    + `<rect width="${width}" height="20" rx="3" fill="#444"/>`
-    + `<circle cx="10" cy="10" r="5" fill="${COLORS[state]}"/>`
-    + `<g font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" fill="#fff">`
-    + `<text x="19" y="14">🤖</text>`
-    + `<text x="${textX}" y="14">${escapeXml(text)}</text>`
-    + `</g></svg>`;
+    + `<rect width="${width}" height="${height}" rx="3" fill="#444"/>`
+    + `<g font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" fill="#fff">${body}</g></svg>`;
 }
