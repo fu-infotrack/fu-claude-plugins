@@ -1,6 +1,6 @@
 {
   "name": "fu-statusline",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "A bash + jq status line renderer for Claude Code — a drop-in replacement for `npx ccstatusline` that renders the same widgets at a fraction of the cost. Ships a `/statusline-config` command that patches settings.json, because statusLine is not a plugin capability.",
   "author": {
     "name": "fu-infotrack",

@@ -416,18 +416,27 @@ eq "level with origin/main drops the widget entirely" \
 
 printf '2\n' >"$clone/a.txt"; gitc "$clone" commit -qam two
 printf '3\n' >"$clone/a.txt"; gitc "$clone" commit -qam three
-eq "two unpushed commits read as ahead" \
-  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+eq "two unpushed commits read as ahead, with their diffstat" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2 1f +1 -1') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$clone")"
 
-# origin moves and the clone fetches: both sides now count.
+# Uncommitted work stays in (+N,-M) and does not leak into the branch diffstat.
+printf '4\nx\n' >"$clone/a.txt"
+eq "uncommitted changes stay out of the branch diffstat" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2 1f +1 -1') $(c $C_WARN '(+2,-1)')")" \
+  "$(gitline "$clone")"
+gitc "$clone" checkout -q -- a.txt
+
+# origin moves and the clone fetches: both sides now count. The remote commit adds
+# b.txt, so a two-dot diff against origin/main would count it as a deletion of
+# ours; the diffstat is from the merge base and stays 1f +1 -1.
 printf 'x\n' >"$seed/b.txt"
 gitc "$seed" add b.txt
 gitc "$seed" commit -qm remote
 gitc "$seed" push -q "$SANDBOX/origin.git" main
 gitc "$clone" fetch -q
 eq "a fetched remote commit reads as behind alongside ahead" \
-  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$clone") $(c $C_BODY main) $(c $C_DETAIL '⇡2 ⇣1 1f +1 -1') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$clone")"
 
 # Detached HEAD leaves the branch field empty, and it now sits ahead of two more
@@ -435,8 +444,12 @@ eq "a fetched remote commit reads as behind alongside ahead" \
 gitc "$clone" update-ref --no-deref HEAD "$(git -C "$clone" rev-parse HEAD)"
 cold=$(gitline "$clone")
 warm=$(payload s1 "$SANDBOX/t.jsonl" "$clone" | render | sed -n 2p)
+# The git widgets are wide enough here to push the sandbox path over budget, and
+# how it abbreviates depends on what else is in /tmp — so compare from the first
+# widget reset on, which is everything after the directory.
+exp=$(ln_ "$(c $C_BODY "$clone") $(c $C_WARN '⎇ detached') $(c $C_DETAIL '⇡2 ⇣1 1f +1 -1') $(c $C_DETAIL '(+0,-0)')")
 eq "detached HEAD still counts, with no branch widget" \
-  "$(ln_ "$(c $C_BODY "$clone") $(c $C_WARN '⎇ detached') $(c $C_DETAIL '⇡2 ⇣1') $(c $C_DETAIL '(+0,-0)')")" "$cold"
+  "${exp#*"$ESC[39m"}" "${cold#*"$ESC[39m"}"
 eq "and the cached read agrees with the cold one" "$cold" "$warm"
 
 # With no origin/HEAD the fallback list decides, and a remote candidate outranks
@@ -454,7 +467,7 @@ gitc "$loc" update-ref refs/heads/feature HEAD
 git -C "$loc" symbolic-ref HEAD refs/heads/feature >/dev/null 2>&1
 printf '3\n' >"$loc/a.txt"; gitc "$loc" commit -qam c3
 eq "origin/master outranks the local master as the base" \
-  "$(ln_ "$(c $C_BODY "$loc") $(c $C_BODY feature) $(c $C_DETAIL '⇡2') $(c $C_DETAIL '(+0,-0)')")" \
+  "$(ln_ "$(c $C_BODY "$loc") $(c $C_BODY feature) $(c $C_DETAIL '⇡2 1f +1 -1') $(c $C_DETAIL '(+0,-0)')")" \
   "$(gitline "$loc")"
 
 # An unborn HEAD has nothing to count against and must not fail the render.

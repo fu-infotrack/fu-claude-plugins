@@ -15,7 +15,8 @@
 #
 # Layout started from ~/.config/ccstatusline/settings.json and has diverged:
 #   1. model | thinking effort | context bar (slider) | output rate | session name
-#   2. working directory | git branch | ahead/behind the default branch | changes
+#   2. working directory | git branch | ahead/behind the default branch and the
+#      branch's diffstat against it | uncommitted changes
 #   3. 5h usage | 5h reset | weekly usage | weekly reset | tokens | session cost
 #
 # Lines 2 and 3 are each a pair of ccstatusline lines merged, and both are ordered
@@ -151,10 +152,10 @@ if [ -n "$tpath" ] && [ -f "$tpath" ] && [ -n "$sid" ]; then
 fi
 
 # --- git ---------------------------------------------------------------------
-# Cache line, US separated: in_repo branch insertions deletions ahead behind top.
-# The branch is empty on a detached HEAD, which is exactly the field a tab
-# separator would swallow. The git4_ prefix marks the format; git_, git2_ and
-# git3_ files are ignored.
+# Cache line, US separated: in_repo branch insertions deletions ahead behind top
+# bfiles bins bdels. The branch is empty on a detached HEAD, which is exactly the
+# field a tab separator would swallow. The git5_ prefix marks the format; git_
+# through git4_ files are ignored.
 in_repo=0
 branch=""
 ins=0
@@ -162,12 +163,15 @@ dels=0
 ahead=0
 behind=0
 top=""
+bfiles=0
+bins=0
+bdels=0
 if [ -n "$dir" ] && [ -d "$dir" ]; then
     gkey=${dir//\//%}
     # Keep the key inside the filename length limit without letting distinct
     # directories collide onto one cache file.
     [ ${#gkey} -gt 200 ] && gkey="${#gkey}_${gkey:${#gkey}-190}"
-    gcache="$CACHE_DIR/git4_$gkey"
+    gcache="$CACHE_DIR/git5_$gkey"
     fresh=0
     if [ -r "$gcache" ]; then
         mtime=$(stat -c%Y "$gcache" 2>/dev/null || echo 0)
@@ -175,7 +179,7 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
     fi
 
     if [ "$fresh" = 1 ]; then
-        IFS="$SEP" read -r in_repo branch ins dels ahead behind top <"$gcache" || true
+        IFS="$SEP" read -r in_repo branch ins dels ahead behind top bfiles bins bdels <"$gcache" || true
     else
         # Both answers from one process: --show-toplevel is what settles whether
         # the branch is the one this worktree implies (see line 2 below).
@@ -223,10 +227,22 @@ if [ -n "$dir" ] && [ -d "$dir" ]; then
                     behind=${BASH_REMATCH[1]}
                     ahead=${BASH_REMATCH[2]}
                 fi
+                # What the branch itself changes. The three-dot form diffs from
+                # the merge base, so commits that landed on the base since you
+                # branched do not show up as your deletions. Committed work only:
+                # the uncommitted side is already the (+N,-M) widget. Nothing is
+                # ahead means nothing to diff, so no fork then.
+                if [ "$ahead" -gt 0 ]; then
+                    bstat=$(git -C "$dir" diff --shortstat "$base...HEAD" 2>/dev/null)
+                    [[ $bstat =~ ([0-9]+)[[:space:]]+file ]] && bfiles=${BASH_REMATCH[1]}
+                    [[ $bstat =~ ([0-9]+)[[:space:]]+insertion ]] && bins=${BASH_REMATCH[1]}
+                    [[ $bstat =~ ([0-9]+)[[:space:]]+deletion ]] && bdels=${BASH_REMATCH[1]}
+                fi
             fi
         fi
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
             "$in_repo" "$branch" "$ins" "$dels" "$ahead" "$behind" "$top" \
+            "$bfiles" "$bins" "$bdels" \
             >"$gcache.$$" 2>/dev/null && mv -f "$gcache.$$" "$gcache" 2>/dev/null
     fi
 fi
@@ -335,6 +351,10 @@ if [ "$in_repo" = 1 ]; then
     fi
     [ "$ahead" -gt 0 ] && g_div="⇡$ahead"
     [ "$behind" -gt 0 ] && g_div="${g_div:+$g_div }⇣$behind"
+    # The branch's diffstat against its base is the size of the ⇡ commits, so it
+    # rides with them and shares their absence. Unbracketed, so it does not read
+    # as the uncommitted (+N,-M) beside it.
+    [ "$ahead" -gt 0 ] && g_div+=" ${bfiles}f +$bins -$bdels"
     g_changes="(+$ins,-$dels)"
 else
     # One `⎇ no git` says it; the second widget saying `(no git)` beside it was
