@@ -461,6 +461,44 @@ pr_review_notify() {
     done <<< "$channels"
 }
 
+# ---------------------------------------------------------------------------
+# Heartbeat
+#
+# Tells teammates a bot is running on this repo: each tick pings a Cloudflare
+# Worker (worker/ in this plugin), which serves a live/dead badge per repo. Both
+# keys must be set, in USER config — the token is a bearer credential and, like
+# teams_webhook, is never logged:
+#
+#   { "review-prs": { "heartbeat_url": "https://review-bot-heartbeat.<sub>.workers.dev",
+#                     "heartbeat_token": "…",
+#                     "heartbeat_footer": true } }
+#
+# heartbeat_footer (optional) embeds this repo's badge in every review footer.
+# ---------------------------------------------------------------------------
+
+# Base URL of the heartbeat Worker, or nothing when the heartbeat is off.
+heartbeat_url() {
+    local url token
+    url=$(fu_cfg heartbeat_url | head -n1)
+    token=$(fu_cfg heartbeat_token | head -n1)
+    [ -n "$url" ] && [ -n "$token" ] && printf '%s' "${url%/}"
+}
+
+# Called once the tick holds the lock, so every tick that runs pings — including
+# NO_WORK ones — and a LOCKED tick does not. Best-effort and time-bounded: it
+# never fails the tick. The token goes in via stdin, not argv, so ps can't see it.
+pr_review_heartbeat() {
+    local url code
+    url=$(heartbeat_url) || return 0
+    code=$(fu_cfg heartbeat_token | head -n1 | sed 's/^/Authorization: Bearer /' |
+        curl -sS -m 5 -o /dev/null -w '%{http_code}' -X POST -H @- \
+            "$url/ping/$REPO" 2>/dev/null) || true
+    case "$code" in
+        2*) log "heartbeat ok (http $code)" ;;
+        *)  log "heartbeat FAILED (http ${code:-000})" ;;  # never log the URL or token
+    esac
+}
+
 fetch_prior_findings() {
     local pr=$1
     gh api "repos/$REPO/pulls/$pr/reviews" 2>/dev/null \
@@ -626,6 +664,7 @@ pr_review_init() {
         return 0
     fi
     log "Target repo: $REPO (checkout: $REPO_DIR)"
+    pr_review_heartbeat
     # After the REPO check, so the flag always lands in the right repo's state dir
     # (and an undetected-repo bail writes no flag at all).
     pr_review_set_mode "$@"
@@ -817,6 +856,12 @@ pr_review_finish() {
         if [ "$downgraded" = 1 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
+        fi
+        local hb_url
+        if [ "$(fu_cfg heartbeat_footer | head -n1)" = true ] && hb_url=$(heartbeat_url); then
+            footer="$footer
+
+![review bot status]($hb_url/badge/$REPO.svg)"
         fi
 
         local body

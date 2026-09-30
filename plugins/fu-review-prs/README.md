@@ -220,6 +220,57 @@ Tested against a real flow — why **Post message** is the recommendation:
   field it stays literal text and the flowbot rejects it with
   `InvalidBotRequestMessageBody: … message body is invalid JSON`.
 
+## Heartbeat badge — opt-in, off by default
+
+The bot reviews as *your* account, so teammates can't tell a bot is running.
+With the heartbeat on, every tick that takes the lock (including `NO_WORK`
+ticks) pings a small Cloudflare Worker (`worker/`). The Worker serves live
+badges:
+
+| URL | Shows |
+|---|---|
+| `GET /badge/<owner>/<repo>.svg` | green dot + last ping time (Sydney), red once older than **15 min**, grey `no bot` if it never pinged |
+| `GET /badge.svg` | every live bot by repo name, or grey `no bot active` |
+
+Badges are sent with `Cache-Control: public, max-age=60`. A dead bot drops off
+`/badge.svg` by itself, so a retired repo needs no cleanup.
+
+### Deploy the Worker (once)
+
+A Workers Free account is enough. D1 is created on the first deploy (wrangler
+≥ 4.45 auto-provisions it; nothing account-specific is committed):
+
+```bash
+cd plugins/fu-review-prs/worker
+npx wrangler login
+npx wrangler secret put PING_TOKEN        # paste a long random string, e.g. `openssl rand -hex 32`
+CI=true npx wrangler deploy               # CI=true: don't write the D1 id back into wrangler.jsonc
+```
+
+`wrangler deploy` prints the Worker URL, `https://review-bot-heartbeat.<subdomain>.workers.dev`.
+
+### Turn it on
+
+In **user** config (`~/.claude/fu-tools/config.json`). The token is a bearer
+credential, so it is never logged:
+
+```json
+{
+  "review-prs": {
+    "heartbeat_url": "https://review-bot-heartbeat.<subdomain>.workers.dev",
+    "heartbeat_token": "<the PING_TOKEN value>",
+    "heartbeat_footer": true
+  }
+}
+```
+
+Both `heartbeat_url` and `heartbeat_token` must be set. `heartbeat_footer`
+(optional) embeds the repo's badge in every review footer. Email clients don't
+render SVG, so the badge only shows on github.com. The ping is `curl -m 5`,
+best-effort. A failure logs `heartbeat FAILED (http N)` and never fails the tick.
+
+Check it: `curl -s <url>/badge.svg` after the next tick.
+
 ## Per-repo isolation
 
 Lock, log, and state are namespaced by a repo slug (`owner/name` → `owner-name`),
@@ -265,7 +316,10 @@ orchestrator's context is just its token.
   scope-check the diff against the intent, apply the house rules above, write
   the findings file, reply `DONE` and nothing else. Posts nothing itself.
 - `scripts/fu-config.sh` — the standard fu-tools config resolver (identical copy
-  to the one the other plugins ship); used only by the notifier.
+  to the one the other plugins ship); used by the notifier and the heartbeat.
+- `worker/` — the heartbeat Cloudflare Worker: `src/badge-lib.mjs` (pure liveness
+  + SVG logic, `node --test worker/test/*.test.mjs`) and `src/index.mjs` (the
+  fetch handler over D1).
 - `test/auto-approve.test.sh`, `test/findings.test.sh`, `test/notify.test.sh`,
   `test/preflight.test.sh`, `test/state.test.sh` — the posting-policy, findings,
   notification, pre-flight stdout and state-store contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
