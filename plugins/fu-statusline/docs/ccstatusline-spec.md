@@ -244,6 +244,12 @@ the widget disappears with both, so a branch sitting on its base adds nothing to
 stays `detail` grey in every state: being some commits ahead is the ordinary condition of working,
 not a threshold crossing, and the count itself is what you read.
 
+When `⇡` is shown, the branch's own diffstat follows it in the same widget —
+`diff --shortstat <base>...HEAD`, rendered `<files>f +<ins> -<dels>` (e.g. `⇡2 ⇣1 3f +40 -12`).
+The three-dot form diffs from the merge base, so commits that landed on the base after you branched
+do not count as your deletions. It is committed work only; the uncommitted side stays in
+`(+N,-M)`. It is absent with `⇡` and costs no fork then.
+
 `<base>` is the **default branch**, resolved without touching the network:
 
 1. `symbolic-ref --short refs/remotes/origin/HEAD` — a local ref written at clone time. This is

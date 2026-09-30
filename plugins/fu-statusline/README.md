@@ -268,8 +268,14 @@ budget. Measured 20 cold renders on a 99-column path: **10 ms → 11 ms**.
 
 ## Divergence from the default branch
 
-The git side of line 2 reads `<branch> ⇡<ahead> ⇣<behind> (+N,-M)`. Each arrow is omitted at zero
-and the widget vanishes with both, so a branch level with its base costs nothing on the line.
+The git side of line 2 reads `<branch> ⇡<ahead> ⇣<behind> <F>f +<I> -<D> (+N,-M)`. Each arrow is
+omitted at zero and the widget vanishes with both, so a branch level with its base costs nothing on
+the line.
+
+`<F>f +<I> -<D>` is what the branch's commits change against the base, i.e. the size of the PR it
+would become: `git diff --shortstat <base>...HEAD`, from the merge base, so work that landed on the
+base since you branched is not counted as yours. It shows only with `⇡`, and covers committed work
+only. Uncommitted changes stay in the bracketed `(+N,-M)`.
 
 The base is the default branch, resolved locally: `refs/remotes/origin/HEAD` if the clone has one
 (it settles `main` vs `master` for you), else the first of `origin/main`, `origin/master`, local
