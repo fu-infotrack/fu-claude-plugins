@@ -34,26 +34,50 @@ test('repo badge: up, down, never pinged', () => {
   assert.deepEqual(repoBadge(undefined, NOW), { state: 'none', text: 'no bot' });
 });
 
-test('all-bots badge lists live repos only, sorted', () => {
+test('all-bots badge: one row per live repo, sorted, with its ping time', () => {
   const rows = [
     { repo: 'Zeta', last_ping: NOW - MIN },
     { repo: 'Dead', last_ping: NOW - 60 * MIN },
     { repo: 'Alpha', last_ping: NOW - 2 * MIN },
   ];
-  assert.deepEqual(allBadge(rows, NOW), { state: 'up', text: 'Alpha · Zeta' });
+  assert.deepEqual(allBadge(rows, NOW), [
+    { state: 'up', text: 'Alpha', detail: '14:03' },
+    { state: 'up', text: 'Zeta', detail: '14:04' },
+  ]);
 });
 
 test('all-bots badge says so when nothing is live', () => {
-  const none = { state: 'none', text: 'no bot active' };
+  const none = [{ state: 'none', text: 'no bot active' }];
   assert.deepEqual(allBadge([], NOW), none);
   assert.deepEqual(allBadge([{ repo: 'Dead', last_ping: NOW - 60 * MIN }], NOW), none);
 });
 
 test('svg: dot colour carries the state, text is escaped', () => {
-  assert.match(renderSvg({ state: 'up', text: '14:05' }), /fill="#2ea043"/);
-  assert.match(renderSvg({ state: 'down', text: '13:20' }), /fill="#cf222e"/);
-  assert.match(renderSvg({ state: 'none', text: 'no bot' }), /fill="#8c959f"/);
-  const out = renderSvg({ state: 'up', text: 'a<b&c' });
+  assert.match(renderSvg([{ state: 'up', text: '14:05' }]), /fill="#2ea043"/);
+  assert.match(renderSvg([{ state: 'down', text: '13:20' }]), /fill="#cf222e"/);
+  assert.match(renderSvg([{ state: 'none', text: 'no bot' }]), /fill="#8c959f"/);
+  const out = renderSvg([{ state: 'up', text: 'a<b&c', detail: '<x>' }]);
   assert.ok(!out.includes('a<b&c'));
   assert.match(out, /a&#60;b&#38;c/);
+  assert.match(out, /&#60;x&#62;/);
+});
+
+test('svg: a single row is one 20px badge, sized to its text', () => {
+  const out = renderSvg([{ state: 'up', text: '14:05' }]);
+  assert.match(out, /^<svg [^>]*width="81" height="20"/); // 38 + 5*7 + 8
+  assert.equal(out.match(/<circle /g).length, 1);
+});
+
+test('svg: rows stack vertically, times aligned in one column', () => {
+  const out = renderSvg([
+    { state: 'up', text: 'Alpha', detail: '14:03' },
+    { state: 'up', text: 'LongerName', detail: '29 Sep 14:04' },
+  ]);
+  // Names end at 38 + 10*7 = 108; times start at 118; widest time is 12*7 = 84.
+  assert.match(out, /^<svg [^>]*width="210" height="40"/);
+  assert.match(out, /<circle cx="10" cy="10" /);
+  assert.match(out, /<circle cx="10" cy="30" /);
+  assert.match(out, /<text x="118" y="14">14:03</);
+  assert.match(out, /<text x="118" y="34">29 Sep 14:04</);
+  assert.match(out, /aria-label="review bot up: Alpha 14:03; review bot up: LongerName 29 Sep 14:04"/);
 });
