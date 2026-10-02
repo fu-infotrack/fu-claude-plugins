@@ -174,6 +174,24 @@ eq "no pending file" "absent" "$([ -e "$STATE/pending-7" ] && echo present || ec
 eq "no scope file" "" "$(scope)"
 cleanup
 
+echo "== the PR changes no files: SKIP, recorded as empty, nothing pending =="
+new_sandbox
+PR_FILES='' preflight 7 review_requested
+eq "stdout is SKIP" "SKIP" "$(out)"
+eq "stderr is empty" "" "$(err)"
+eq "empty record at the head" "commit=deadbeef
+tree=cafef00d" "$(cat "$STATE/empty-7" 2>/dev/null)"
+eq "no pending file" "absent" "$([ -e "$STATE/pending-7" ] && echo present || echo absent)"
+eq "logged as no changes, not a fetch failure" "1" \
+  "$(grep -c 'PR #7: changes no files' "$HOME/.claude/pr-review/review-acme-widgets.log")"
+cleanup
+
+echo "== a fetch failure writes no empty record =="
+new_sandbox
+FILES_FAIL=1 preflight 7 review_requested
+eq "no empty record" "absent" "$([ -e "$STATE/empty-7" ] && echo present || echo absent)"
+cleanup
+
 echo "== a closed PR is a bare SKIP =="
 new_sandbox
 PR_STATE=CLOSED preflight 7 review_requested

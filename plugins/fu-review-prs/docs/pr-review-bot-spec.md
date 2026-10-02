@@ -884,7 +884,7 @@ predates this spec and satisfies the Core profile with the deviations noted.
 | Orchestrator (§5.1) | `commands/review-prs.md` (thin; steps 1–3) |
 | Deterministic effects (R5) | `scripts/lib.sh` — `pr_review_init`, `pr_review_preflight`, `pr_review_finish`, `pr_review_cleanup` |
 | Agent task template (R3) | `review-task.md` (read by the agent, not inlined) |
-| Store (§4) | `~/.claude/pr-review/state/<slug>/` — `last-reviewed-<pr>`, `last-findings-<pr>.json` (carried), `pending-<pr>`, `findings-<pr>.json`, `prior-<pr>.json`, `scope-<pr>.txt`, `auto-approve` |
+| Store (§4) | `~/.claude/pr-review/state/<slug>/` — `last-reviewed-<pr>`, `last-findings-<pr>.json` (carried), `empty-<pr>` (no-diff head), `pending-<pr>`, `findings-<pr>.json`, `prior-<pr>.json`, `scope-<pr>.txt`, `auto-approve` |
 | Lease (§6.4) | background `flock` holder process + `HOLDER_FILE` |
 | Content key (R19) | GitHub commit tree SHA |
 | Policy gate (R23) | `pr_review_finish` + `auto-approve` on disk; `test/auto-approve.test.sh` |

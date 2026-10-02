@@ -56,9 +56,11 @@ mkdir -p "$STATE_DIR"
 #   scope     scope-<pr>.txt            what the sub-agent reviews (write_review_scope)
 #   prior     prior-<pr>.json           the carried findings, for DELTA mode
 #   findings  findings-<pr>.json        the sub-agent's findings
-# `reviewed` and `carried` outlive a dispatch (DURABLE_KINDS, removed by purge
-# once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
-DURABLE_KINDS="reviewed carried"
+#   empty     empty-<pr>                record of a head at which the PR changes no
+#                                       file — detection skips it until the tree moves
+# `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
+# purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
+DURABLE_KINDS="reviewed carried empty"
 TRANSIENT_KINDS="pending scope prior findings"
 
 pr_path() {
@@ -70,11 +72,12 @@ pr_path() {
         scope)    printf '%s/scope-%s.txt\n'          "$STATE_DIR" "$pr" ;;
         prior)    printf '%s/prior-%s.json\n'         "$STATE_DIR" "$pr" ;;
         findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
+        empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
         *) return 1 ;;
     esac
 }
 
-# A record (kinds `reviewed` and `pending`) is key=value lines: commit, tree, and
+# A record (kinds `reviewed`, `pending` and `empty`) is key=value lines: commit, tree, and
 # for `reviewed` the time GitHub recorded the review. record_write <kind> <pr>
 # <commit> <tree> [reviewed_at]
 record_write() {
@@ -528,6 +531,14 @@ detect_queued_prs() {
     while IFS= read -r pr; do
         [ -z "$pr" ] && continue
         local rec
+        # A PR that changed no file at its recorded head has nothing to review,
+        # whatever its request history, until a push moves its tree.
+        if rec=$(record_read empty "$pr"); then
+            local head_now
+            head_now=$(get_pr_head_info "$pr") || continue
+            [ "${head_now##*$'\t'}" = "$(cut -f2 <<< "$rec")" ] && continue
+            rm -f "$(pr_path empty "$pr")"
+        fi
         # Case A: never reviewed (or state record lost)
         if ! rec=$(record_read reviewed "$pr"); then
             # Check if our marker already exists on GH (lost state file recovery)
@@ -696,7 +707,9 @@ pr_review_init() {
 # carries rebased-in main commits). Any uncertain delta — empty, compare failed,
 # compare at its 300-file cap — falls back to FULL: a wider review is only ever
 # a comment. Returns 1 (pre-flight SKIPs) only when the PR's own file list can't
-# be fetched. The list goes to disk, never stdout (orchestrator context).
+# be fetched, and 2 when it is fetched but empty — a PR that changes nothing (an
+# empty commit), which a retry would re-SKIP every tick forever. The list goes to
+# disk, never stdout (orchestrator context).
 write_review_scope() {
     local pr=$1 commit=$2 tree=$3
     local pr_files files="" mode=FULL base="" why="first review" scope_file
@@ -704,7 +717,7 @@ write_review_scope() {
     rm -f "$scope_file"
     pr_files=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename' 2>/dev/null) || return 1
     pr_files=$(printf '%s\n' "$pr_files" | grep . | LC_ALL=C sort -u)
-    [ -z "$pr_files" ] && return 1
+    [ -z "$pr_files" ] && return 2
 
     local rec last_commit last_tree _at
     if rec=$(record_read reviewed "$pr"); then
@@ -768,10 +781,17 @@ pr_review_preflight() {
     current_commit=${head_info%%$'\t'*}
     current_tree=${head_info##*$'\t'}
 
-    write_review_scope "$pr" "$current_commit" "$current_tree" || {
+    local scope_rc=0
+    write_review_scope "$pr" "$current_commit" "$current_tree" || scope_rc=$?
+    if [ "$scope_rc" -eq 2 ]; then
+        # Recorded so detection stops queueing the PR until its tree changes.
+        record_write empty "$pr" "$current_commit" "$current_tree"
+        log "PR #$pr: changes no files, nothing to review — skipping until its tree changes"
+        echo "SKIP"; return 0
+    elif [ "$scope_rc" -ne 0 ]; then
         log "PR #$pr: could not fetch the PR's file list, skipping"
         echo "SKIP"; return 0
-    }
+    fi
 
     # Pre-write prior findings for the sub-agent. Done here so the sub-agent reads
     # it from disk and never needs gh-pipe permissions of its own.
