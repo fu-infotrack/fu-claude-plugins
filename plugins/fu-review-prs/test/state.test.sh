@@ -34,13 +34,16 @@ new_sandbox() {
   #   SUBMITTED_AT — submitted_at in the review POST's response ("" = omitted)
   #   OPEN_PRS     — `pr list` answer (open PRs, and the review-requested ones)
   #   REREQ_AT     — created_at of our latest review_requested event
+  #   HEAD_TREE    — the PR head's tree SHA (default tr33)
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$1 $2" in
   "repo view") echo "acme/widgets"; exit 0 ;;
   "api user")  echo "bot"; exit 0 ;;
   "pr list")   printf '%s\n' "${OPEN_PRS-7}"; exit 0 ;;
+  "pr view")   echo "c0mm1t"; exit 0 ;;
 esac
+if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo "${HEAD_TREE:-tr33}"; exit 0; fi
 if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/reviews" ]]; then
   if [[ "$*" == *"--method POST"* ]]; then
     printf '%s\n' "$@" > "$GH_POST"
@@ -69,7 +72,7 @@ exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
-  unset SUBMITTED_AT OPEN_PRS REREQ_AT PR_REVIEW_AUTO_APPROVE
+  unset SUBMITTED_AT OPEN_PRS REREQ_AT HEAD_TREE PR_REVIEW_AUTO_APPROVE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
   LOG="$HOME/.claude/pr-review/review-acme-widgets.log"
 }
@@ -162,9 +165,23 @@ touch -d '2026-09-28T10:00:00Z' "$STATE/last-reviewed-7"
 eq "queued" "7 review_re_requested" "$(REREQ_AT=2026-09-28T11:00:00Z lib 'detect_queued_prs')"
 cleanup
 
+echo "== detection: an empty PR at an unchanged tree is not queued, even re-requested =="
+new_sandbox
+lib 'record_write empty 7 c0mm1t tr33'
+eq "not queued" "" "$(REREQ_AT=2026-09-28T11:00:00Z lib 'detect_queued_prs')"
+eq "record kept" "present" "$([ -e "$STATE/empty-7" ] && echo present || echo absent)"
+cleanup
+
+echo "== detection: an empty PR whose tree moved is queued again =="
+new_sandbox
+lib 'record_write empty 7 c0mm1t tr33'
+eq "queued as a first review" "7 review_requested" "$(HEAD_TREE=n3wtr33 lib 'detect_queued_prs')"
+eq "record dropped" "absent" "$([ -e "$STATE/empty-7" ] && echo present || echo absent)"
+cleanup
+
 echo "== purge: closed PRs' records and every PR's transients go, the rest stays =="
 new_sandbox
-lib 'record_write reviewed 7 a b; record_write reviewed 8 c d
+lib 'record_write reviewed 7 a b; record_write reviewed 8 c d; record_write empty 9 e f
      for k in pending scope prior findings; do echo x > "$(pr_path $k 8)"; done
      for f in review-body-8.md decision-8.txt prior-8.txt; do echo x > "$STATE_DIR/$f"; done   # pre-v0.7.0
      : > "$AUTO_APPROVE_FILE"'
