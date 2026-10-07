@@ -22,7 +22,7 @@ durable, outward-facing signal that can satisfy branch protection and unblock a
 merge, so it has to be asked for:
 
 ```
-/loop 30m /review-prs --auto-approve    # clean PRs get an APPROVE
+/loop 30m /review-prs --auto-approve    # clean docs/tests/UI-only PRs get an APPROVE
 /loop 30m /review-prs                   # default: comment-only
 ```
 
@@ -35,6 +35,16 @@ BLOCKERs (see *Findings* below). `pr_review_init` records the tick's mode to
 findings do — a mid-tick compaction can't flip it — and is
 cleared at cleanup so it never leaks into a later tick. `PR_REVIEW_AUTO_APPROVE=1`
 is an equivalent env seam (used by the tests).
+
+**Only docs, tests and UI are ever approved.** Even with `--auto-approve`, a
+zero-BLOCKER PR posts as `COMMENT` unless **every** file it touches — the whole
+PR, not just a DELTA scope, and a rename's old path too — matches a low-risk
+pattern (`LOW_RISK_PATHS_DEFAULT` in `scripts/lib.sh`: Markdown/docs dirs, test
+dirs and `*.test.*`/`*.spec.*`/`*Tests/`, and `*.UI/`/`ui/`/`frontend/` dirs plus
+markup, style and image extensions). Pre-flight writes the verdict to
+`gate-<PR>.txt` (`low-risk`, or the first path that isn't); a missing record fails
+closed. Patterns are bash globs on the full path where `*` also crosses `/`;
+replace the list per repo with the fu-tools array `review-prs.low_risk_paths`.
 
 ## Findings — the sub-agent classifies, bash does the rest
 
@@ -288,6 +298,7 @@ and PR-number-keyed state never collides across repos:
   state/<slug>/scope-<PR>.txt          # REPO/HEAD/MODE/DELTA_BASE header + files to review
   state/<slug>/prior-<PR>.json         # prior findings (delta mode)
   state/<slug>/findings-<PR>.json      # the sub-agent's findings
+  state/<slug>/gate-<PR>.txt           # approval gate: `low-risk` or the first code path
   state/<slug>/auto-approve            # present only while a --auto-approve tick runs
 ```
 

@@ -1,7 +1,7 @@
 {
   "name": "fu-review-prs",
-  "version": "0.9.2",
-  "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean PRs.",
+  "version": "0.10.0",
+  "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean docs/tests/UI-only PRs.",
   "author": {
     "name": "fu-infotrack",
     "url": "https://github.com/fu-infotrack"
