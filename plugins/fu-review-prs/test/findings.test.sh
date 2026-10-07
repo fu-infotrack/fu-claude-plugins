@@ -95,11 +95,13 @@ trap cleanup EXIT
 # lib <shell-snippet>
 lib() { ( cd "$SANDBOX" && bash -c 'source "$1"; eval "$2"' _ "$LIB" "$1" ) 2>/dev/null; }
 
-# Seed a dispatched PR 7 whose sub-agent wrote <json>, then finish it.
-# finish <json> [set_mode-args]
+# Seed a dispatched PR 7 whose sub-agent wrote <json>, then finish it. The
+# approval gate is seeded open (a docs/tests/UI-only PR); auto-approve.test.sh
+# covers the gate itself. finish <json> [set_mode-args]
 finish() {
   mkdir -p "$STATE"
   printf '%s\n' "$1" > "$STATE/findings-7.json"
+  echo low-risk > "$STATE/gate-7.txt"
   lib "record_write pending 7 deadbeef cafef00d; pr_review_set_mode ${2:-}; pr_review_finish 7"
 }
 # The body field of the posted review, and its event.

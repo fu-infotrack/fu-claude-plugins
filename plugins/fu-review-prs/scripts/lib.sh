@@ -56,12 +56,14 @@ mkdir -p "$STATE_DIR"
 #   scope     scope-<pr>.txt            what the sub-agent reviews (write_review_scope)
 #   prior     prior-<pr>.json           the carried findings, for DELTA mode
 #   findings  findings-<pr>.json        the sub-agent's findings
+#   gate      gate-<pr>.txt             the approval gate's file check: `low-risk`,
+#                                       or the first PR path that is not (classify_pr_files)
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings"
+TRANSIENT_KINDS="pending scope prior findings gate"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -72,6 +74,7 @@ pr_path() {
         scope)    printf '%s/scope-%s.txt\n'          "$STATE_DIR" "$pr" ;;
         prior)    printf '%s/prior-%s.json\n'         "$STATE_DIR" "$pr" ;;
         findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
+        gate)     printf '%s/gate-%s.txt\n'           "$STATE_DIR" "$pr" ;;
         empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
         *) return 1 ;;
     esac
@@ -305,6 +308,47 @@ pr_review_set_mode() {
 }
 
 auto_approve_enabled() { [ -f "$AUTO_APPROVE_FILE" ]; }
+
+# Even with --auto-approve, only a PR whose every file is docs, tests or UI may be
+# approved: a clean review of code that runs on a server is still posted as a
+# COMMENT. Bash patterns, matched against the whole path, where `*` also matches
+# `/` — so `*.md` is any Markdown file at any depth, and a directory needs both
+# `dir/*` (at the root) and `*/dir/*` (nested). Override the whole list with the
+# fu-tools array `review-prs.low_risk_paths`.
+LOW_RISK_PATHS_DEFAULT=(
+    # docs
+    '*.md' '*.mdx' '*.markdown' '*.rst' '*.adoc'
+    'docs/*' '*/docs/*' 'doc/*' '*/doc/*' 'LICENSE*' '*/LICENSE*'
+    # tests
+    'test/*' '*/test/*' 'tests/*' '*/tests/*' '__tests__/*' '*/__tests__/*'
+    '__snapshots__/*' '*/__snapshots__/*' 'e2e/*' '*/e2e/*'
+    '*Tests/*' '*Test/*' '*.test.*' '*.spec.*' '*_test.*' 'test_*.py' '*/test_*.py'
+    # ui
+    '*.UI/*' 'ui/*' '*/ui/*' 'frontend/*' '*/frontend/*'
+    '*.tsx' '*.jsx' '*.vue' '*.svelte' '*.html' '*.cshtml' '*.razor'
+    '*.css' '*.scss' '*.sass' '*.less'
+    '*.svg' '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.ico' '*.woff' '*.woff2'
+)
+
+# Read paths on stdin, one per line. Print `low-risk` when every path matches a
+# low-risk pattern, else the first path that matches none. An empty list is not
+# low-risk: there is nothing to vouch for.
+classify_pr_files() {
+    local -a pats=()
+    local f p hit n=0
+    mapfile -t pats < <(fu_cfg low_risk_paths | grep .)
+    [ "${#pats[@]}" -gt 0 ] || pats=("${LOW_RISK_PATHS_DEFAULT[@]}")
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        n=$((n + 1)) hit=0
+        for p in "${pats[@]}"; do
+            # shellcheck disable=SC2053  # $p is a pattern on purpose
+            [[ $f == $p ]] && { hit=1; break; }
+        done
+        [ "$hit" = 1 ] || { printf '%s\n' "$f"; return 0; }
+    done
+    [ "$n" -gt 0 ] && echo low-risk || echo "(no files)"
+}
 
 # ---------------------------------------------------------------------------
 # Notifications
@@ -715,9 +759,14 @@ write_review_scope() {
     local pr_files files="" mode=FULL base="" why="first review" scope_file
     scope_file=$(pr_path scope "$pr")
     rm -f "$scope_file"
-    pr_files=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename' 2>/dev/null) || return 1
-    pr_files=$(printf '%s\n' "$pr_files" | grep . | LC_ALL=C sort -u)
+    local listing
+    listing=$(gh api "repos/$REPO/pulls/$pr/files" --paginate \
+        --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) || return 1
+    pr_files=$(printf '%s\n' "$listing" | cut -f1 | grep . | LC_ALL=C sort -u)
     [ -z "$pr_files" ] && return 2
+    # The approval gate judges the WHOLE PR, never just a DELTA, and a rename's
+    # old path too — moving code into docs/ still deletes code.
+    tr '\t' '\n' <<< "$listing" | grep . | classify_pr_files > "$(pr_path gate "$pr")"
 
     local rec last_commit last_tree _at
     if rec=$(record_read reviewed "$pr"); then
@@ -870,12 +919,26 @@ pr_review_finish() {
             decision="COMMENT"
             downgraded=1
         fi
+        # Second gate: only docs/tests/UI-only PRs are approved (see
+        # LOW_RISK_PATHS_DEFAULT). A missing gate file fails closed.
+        local gate=""
+        if [ "$decision" = "APPROVE" ]; then
+            gate=$(head -n 1 "$(pr_path gate "$pr")" 2>/dev/null)
+            if [ "$gate" != low-risk ]; then
+                log "PR #$pr: no blockers found, but not docs/tests/UI only (${gate:-no gate record}) — posting COMMENT"
+                decision="COMMENT"
+                downgraded=2
+            fi
+        fi
         review_body=$(findings_body "$pr" <<< "$findings")
 
         local footer="*Automated review by Claude Code via /code-review*"
         if [ "$downgraded" = 1 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
+        elif [ "$downgraded" = 2 ]; then
+            footer="$footer
+*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes are auto-approved.*"
         fi
         local hb_url
         if [ "$(fu_cfg heartbeat_footer | head -n1)" = true ] && hb_url=$(heartbeat_url); then

@@ -7,7 +7,7 @@
     { "name": "fu-log-sweep", "source": "./plugins/fu-log-sweep", "category": "productivity",
       "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature." },
     { "name": "fu-review-prs", "source": "./plugins/fu-review-prs", "category": "productivity",
-      "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean PRs." },
+      "description": "Automated PR review orchestrator. Posts COMMENT reviews by default; --auto-approve opts into approving clean docs/tests/UI-only PRs." },
     { "name": "fu-skills", "source": "./plugins/fu-skills", "category": "productivity",
       "description": "All fu- scenario skills in one plugin: fu-pg (Postgres via Vault), fu-mssql (SQL Server, Windows auth), fu-k8 (k8dash proxy inspection), fu-pup (Datadog pup CLI), fu-order (Orders API), fu-wsl (WSL provisioning), fu-ce (compound docs), plus /ask-fu as the catalogue/router. fu-pg and fu-pup auto-trigger; the rest are hidden from context and invoked explicitly." },
     { "name": "fu-copilot", "source": "./plugins/fu-copilot", "category": "productivity",

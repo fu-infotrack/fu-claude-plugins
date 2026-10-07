@@ -78,6 +78,7 @@ trap cleanup EXIT
 # Source lib.sh in a fresh shell per case (it computes its paths at source time),
 # seed one PR's sub-agent findings on disk, then run the requested commands. The
 # verdict is derived from the findings: APPROVE seeds none, COMMENT one BLOCKER.
+# GATE is pre-flight's file check (default `low-risk`; `none` seeds no file).
 # run <pr> <APPROVE|COMMENT> <shell-snippet>
 run() {
   local pr=$1 findings='{"findings":[]}' snippet=$3
@@ -88,8 +89,9 @@ run() {
     pr=$2
     printf "%s\n" "$3" > "$(pr_path findings "$pr")"
     record_write pending "$pr" deadbeef cafef00d
+    [ "$5" = none ] || printf "%s\n" "$5" > "$(pr_path gate "$pr")"
     eval "$4"
-  ' _ "$LIB" "$pr" "$findings" "$snippet" 2>/dev/null
+  ' _ "$LIB" "$pr" "$findings" "$snippet" "${GATE-low-risk}" 2>/dev/null
 }
 
 # Drive pr_review_init end-to-end (real flock holder, stubbed gh/git) and report
@@ -169,6 +171,28 @@ echo "== an unknown argument is ignored, not treated as opt-in =="
 new_sandbox
 run 7 APPROVE 'pr_review_set_mode --yolo; pr_review_finish 7'
 eq "posted event" "COMMENT" "$(posted_event)"
+cleanup
+
+echo "== --auto-approve: a clean PR that touches code posts as COMMENT =="
+new_sandbox
+out=$(GATE=src/a.cs run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
+eq "posted event" "COMMENT" "$(posted_event)"
+has "body explains the downgrade" "only docs, tests and UI changes are auto-approved" "$(posted_body)"
+has_no "not blamed on the flag" "auto-approve is off" "$(posted_body)"
+cleanup
+
+echo "== --auto-approve: no gate record fails closed =="
+new_sandbox
+GATE=none run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+cleanup
+
+echo "== finish clears the gate record =="
+new_sandbox
+out=$(run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7 >/dev/null
+  [ -e "$(pr_path gate 7)" ] && echo gate=present || echo gate=absent')
+eq "gate cleared" "gate=absent" "$out"
 cleanup
 
 echo "== pr_review_init records the mode from its arguments =="

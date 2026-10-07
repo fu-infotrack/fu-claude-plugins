@@ -120,6 +120,42 @@ eq "log went to the file instead" "1" \
 eq "first review: FULL scope, every PR file" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"
 cleanup
 
+echo "== approval gate: a code file anywhere in the PR is recorded =="
+new_sandbox
+preflight 7 review_requested
+eq "first non-low-risk path" "src/a.cs" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== approval gate: docs + tests + UI only is low-risk =="
+new_sandbox
+PR_FILES=$'README.md\ndocs/guide/setup.png\nsrc/Api.Tests/OrderTests.cs\nweb/src/app.test.ts\nsrc/Acme.UI/src/hooks/useOrders.ts\nweb/src/Button.tsx\nweb/styles/site.scss' \
+  preflight 7 review_requested
+eq "low-risk" "low-risk" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== approval gate: judges every PR file, not just a DELTA =="
+new_sandbox
+reviewed 01dtree
+PR_FILES=$'README.md\nsrc/a.cs' COMPARE_FILES='README.md' preflight 7 review_requested
+eq "DELTA scope is docs only" "$(scope_file DELTA 0ldc0mm1t README.md)" "$(scope)"
+eq "gate still sees the code file" "src/a.cs" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== approval gate: a rename's old path counts (code moved into docs/) =="
+new_sandbox
+PR_FILES=$'docs/a.cs\tsrc/a.cs' preflight 7 review_requested
+eq "scope lists the new path only" "$(scope_file FULL '' docs/a.cs)" "$(scope)"
+eq "gate flags the old path" "src/a.cs" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== approval gate: fu-tools low_risk_paths replaces the defaults =="
+new_sandbox
+mkdir -p "$HOME/.claude/fu-tools"
+echo '{"review-prs":{"low_risk_paths":["src/*"]}}' > "$HOME/.claude/fu-tools/config.json"
+(cd "$SANDBOX" && PR_FILES=$'src/a.cs\nREADME.md' preflight 7 review_requested)
+eq "README.md no longer low-risk" "README.md" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
 echo "== the PR file list is paginated =="
 new_sandbox
 PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs' preflight 7 review_requested
