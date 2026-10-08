@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   windowStartMs, classify, buildTitle,
-  parseRepoFromRemote, collectServices, buildServiceQuery, buildLogQuery, mergeConfig,
+  parseRepoFromRemote, collectServices, buildServiceQuery, buildLogQuery, mergeConfig, releaseCheck,
 } from './log-sweep-lib.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -200,4 +200,28 @@ test('marker round-trips through extractSig', () => {
 });
 test('extractSig: no marker -> null', () => {
   assert.equal(extractSig('no marker here'), null);
+});
+
+const REL = [
+  { tag: 'v1', publishedAt: '2026-09-01T00:00:00Z' },
+  { tag: 'v2', publishedAt: '2026-09-10T00:00:00Z' },
+];
+const CLOSED = Date.parse('2026-09-05T00:00:00Z');
+
+test('releaseCheck: only pre-fix builds still erroring -> not a regression', () => {
+  const r = releaseCheck([{ version: 'v1', count: 40 }], REL, CLOSED);
+  assert.equal(r.regressed, false);
+  assert.deepEqual(r.preFixVersions, ['v1']);
+});
+test('releaseCheck: recurrence on a post-fix build -> regression', () => {
+  const r = releaseCheck([{ version: 'v1', count: 40 }, { version: 'v2', count: 3 }], REL, CLOSED);
+  assert.equal(r.regressed, true);
+  assert.equal(r.postFixCount, 3);
+});
+test('releaseCheck: unknown version counts as post-fix', () => {
+  assert.equal(releaseCheck([{ version: 'v9', count: 1 }], REL, CLOSED).regressed, true);
+});
+test('releaseCheck: no release data -> reopen as before', () => {
+  assert.equal(releaseCheck([{ version: 'v1', count: 1 }], [], CLOSED).regressed, true);
+  assert.equal(releaseCheck([], REL, CLOSED).regressed, true);
 });
