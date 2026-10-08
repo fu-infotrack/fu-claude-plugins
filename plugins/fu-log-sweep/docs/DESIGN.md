@@ -54,13 +54,29 @@ new one. The root-cause section is a draft, not a verdict.*
 ```markdown
 **Regressed** — recurred after close.
 - Seen again: <last-seen ISO>
-- Count this window: <count>
+- Count this window: <count> (<postFixCount> on post-fix builds: <versions>)
 - Datadog: <Logs Explorer URL>
 <one-line note if the suspected root cause shifted vs the original>
 
 **Changed since close** *(prime suspects)*
 - `<short-sha>` <date> <author-login> — <commit subject> (#<pr>)
 ```
+
+## Release gate (don't reopen before the fix ships)
+
+An issue is usually closed when the fix merges, but prod keeps erroring until the
+next release. Reopening on that tail is noise, so a REGRESSION candidate must have
+recurred on a build that carries the fix:
+
+- **Build identity:** Datadog logs carry a `version` tag (e.g. `v0.2.957-main0306`)
+  equal to the GitHub release tag. The sweep groups the bucket's recent errors by it.
+- **Fix time:** the issue's `closedAt`. A release published at/after it carries the fix.
+- **Rule** (`releaseCheck`): reopen only if some errors are on a post-fix (or unknown)
+  version. Only pre-fix versions → held, reported as "fix not in prod yet"; the next
+  tick re-evaluates, and it reopens as soon as the error shows on a post-fix build.
+- **Fail open:** no releases, or no version data → reopen as before.
+- Config: `version_tag` (default `version`). Caveat: an issue closed by hand before
+  its fix merged looks fixed from `closedAt`.
 
 ## Recent changes (author context)
 

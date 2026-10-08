@@ -28,7 +28,7 @@ override the config-resolved defaults.
 `services` (auto from k8_settings `app_name`), `env` (prod), `repo` (auto from
 git remote), `count_threshold` (1), `app_namespace` (stack-frame app prefix, e.g.
 `["Acme"]`), `status_query` (`status:error`), `logs_url_base` (Logs Explorer URL
-prefix for the issue link).
+prefix for the issue link), `version_tag` (Datadog tag with the deployed build, `version`; closed issues reopen only if the error recurs on a build released after the close).
 
 ## Tests
 

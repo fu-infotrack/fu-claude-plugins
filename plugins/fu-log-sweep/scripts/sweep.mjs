@@ -6,10 +6,11 @@
 //   node sweep.mjs title '<errorType>' '<message>'
 //   node sweep.mjs marker '<sig>'
 //   node sweep.mjs signature '<json:{errorKind,service,stack,message,appNamespace}>'
+//   node sweep.mjs release-check '<json:{versions,releases,closedAt}>'
 //   node sweep.mjs resolve '<cliJson>'
 import {
   windowStartMs, classify, buildTitle, buildMarker, buildSignature,
-  parseRepoFromRemote, collectServices, buildLogQuery, mergeConfig,
+  parseRepoFromRemote, collectServices, buildLogQuery, mergeConfig, releaseCheck,
 } from './log-sweep-lib.mjs';
 
 const [, , cmd, ...args] = process.argv;
@@ -47,6 +48,11 @@ switch (cmd) {
   case 'signature': {
     const i = JSON.parse(args[0]);
     out(buildSignature(i.errorKind, i.service, i.stack, i.message, asArray(i.appNamespace)));
+    break;
+  }
+  case 'release-check': {
+    const i = JSON.parse(args[0]);
+    out(releaseCheck(i.versions, i.releases, Date.parse(i.closedAt)));
     break;
   }
   case 'resolve': {
@@ -88,6 +94,8 @@ switch (cmd) {
     merged.errorFacet = merged.errorFacet || merged.error_facet || '@Properties.exception.type';
     merged.stackPath = merged.stackPath || merged.stack_path || 'attributes.attributes.Exception';
     merged.messagePath = merged.messagePath || merged.message_path || 'attributes.message';
+    // Datadog tag holding the deployed build version (matches the GitHub release tag).
+    merged.versionTag = merged.versionTag || merged.version_tag || 'version';
     if (merged.services && merged.services.length) {
       merged.query = buildLogQuery(merged.services, merged.env, merged.statusQuery);
     }

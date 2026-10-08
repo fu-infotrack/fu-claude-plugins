@@ -24,6 +24,31 @@ export function classify(matches) {
   return { kind: 'REGRESSION', number: matches[0].number };
 }
 
+// Has a closed issue's fix reached prod, and did the error recur on a build that
+// has it? versions: [{version, count}] from Datadog's `version` tag; releases:
+// [{tag, publishedAt}] from GitHub (tag names equal the Datadog version tag);
+// closedAtMs: when the issue was closed (the fix merge). A version published at
+// or after close carries the fix; an unknown version counts as post-fix so an
+// unmatched tag never hides a real regression. No releases or no version data =>
+// can't tell => regressed (the old always-reopen behaviour).
+export function releaseCheck(versions, releases, closedAtMs) {
+  const published = new Map((releases || []).map((r) => [r.tag, Date.parse(r.publishedAt)]));
+  const seen = (versions || []).filter((v) => v.version && v.count > 0);
+  if (published.size === 0 || seen.length === 0) {
+    return { regressed: true, reason: 'no-release-data', postFixCount: 0, preFixVersions: [] };
+  }
+  const preFix = [];
+  let postFixCount = 0;
+  for (const v of seen) {
+    const at = published.get(v.version);
+    if (at !== undefined && at < closedAtMs) preFix.push(v.version);
+    else postFixCount += v.count;
+  }
+  return postFixCount > 0
+    ? { regressed: true, reason: 'post-fix-build', postFixCount, preFixVersions: preFix }
+    : { regressed: false, reason: 'fix-not-in-prod', postFixCount: 0, preFixVersions: preFix };
+}
+
 // GitHub issue title; truncates the message so the title stays around 80 chars.
 export function buildTitle(errorType, message) {
   const shortType = errorType.includes('.') ? errorType.split('.').pop() : errorType;
