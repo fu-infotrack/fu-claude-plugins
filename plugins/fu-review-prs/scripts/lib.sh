@@ -431,9 +431,14 @@ notify_teams() {
            else "no review body produced" end) as $summary
         # Headline uses the bare repo name — the owner eats toast width and never
         # varies in practice. The full owner/name stays in the FactSet.
+        # The posted event, with its own emoji so APPROVE vs COMMENT reads at a
+        # glance — independent of $icon, since a clean review can still be a COMMENT.
+        | (if $e.decision == "APPROVE"   then "👍 APPROVE"
+           elif $e.decision == "COMMENT" then "💬 COMMENT"
+           else $e.decision end) as $decision
         | ($e.repo | split("/") | last) as $repo_short
         | ($repo_short + " PR #" + $e.pr + " — " + $summary) as $headline
-        | ([ (if $e.decision != "" then "posted " + $e.decision else empty end),
+        | ([ (if $e.decision != "" then "posted " + $decision else empty end),
              (if $e.detail   != "" then $e.detail else empty end) ]
            | join(" · ")) as $meta
         | ([ "<b>" + ($icon + " " + $headline | @html) + "</b>",
@@ -457,7 +462,7 @@ notify_teams() {
                  else [] end)
               + [{ type: "FactSet", facts: ([
                     { title: "Repo", value: $e.repo }
-                  ] + (if $e.decision != "" then [{ title: "Posted", value: $e.decision }] else [] end)
+                  ] + (if $e.decision != "" then [{ title: "Posted", value: $decision }] else [] end)
                     + (if $e.kind == "blockers" then [{ title: "Blockers", value: $e.blockers }] else [] end)
                     + (if $e.detail != "" then [{ title: "Note", value: $e.detail }] else [] end)) }]),
             actions: [{ type: "Action.OpenUrl", title: "Open PR", url: $e.url }]
