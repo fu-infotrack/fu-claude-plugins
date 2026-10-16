@@ -112,7 +112,9 @@ finish 7
 out=$(curl_log)
 has "webhook called" "$HOOK" "$out"
 has "headline: repo, PR, state" "✅ widgets PR #7 — no blockers" "$out"
-has "decision on the meta line" "posted COMMENT" "$out"
+has "decision on the meta line, with its emoji" "posted 💬 COMMENT" "$out"
+eq "card's Posted fact carries the emoji" "💬 COMMENT" \
+   "$(jq -r '[.card.body[] | select(.type=="FactSet") | .facts[] | select(.title=="Posted") | .value] | first' "$CURL_PAYLOAD")"
 
 has "PR title fetched and shown" "<i>Fix null deref in OrderService</i>" "$out"
 has "HTML emphasis on the headline" "<b>✅ widgets PR #7" "$out"
@@ -131,12 +133,25 @@ eq "cardJson is the card, serialized" "true" \
    "$(jq -r '(.cardJson | fromjson) == .card' "$CURL_PAYLOAD")"
 # summary is the notification preview a DIRECT channel webhook shows; the flowbot
 # action drops it (it takes a bare card), which is why `text` is the default shape.
-has "summary is a plain one-liner" "✅ widgets PR #7 — no blockers · posted COMMENT" \
+has "summary is a plain one-liner" "✅ widgets PR #7 — no blockers · posted 💬 COMMENT" \
    "$(jq -r '.summary' "$CURL_PAYLOAD")"
 eq "messageJson envelope carries the summary" "true" \
    "$(jq -r '(.messageJson | fromjson) as $m
              | ($m.type == "message" and $m.summary == .summary)' "$CURL_PAYLOAD")"
 has "success logged" "notify: teams ok (http 202)" "$(log_text)"
+cleanup
+
+echo "== teams: an approved review shows the APPROVE emoji =="
+new_sandbox
+write_config "{\"notify\":[\"teams\"],\"teams_webhook\":\"$HOOK\"}"
+( cd "$SANDBOX" && bash -c '
+    source "$1"
+    pr_review_set_mode --auto-approve
+    printf "low-risk\n" > "$(pr_path gate 7)"' _ "$LIB" >/dev/null 2>&1 )
+finish 7
+has "approve emoji on the summary" "posted 👍 APPROVE" "$(jq -r '.summary' "$CURL_PAYLOAD")"
+eq "card's Posted fact carries the emoji" "👍 APPROVE" \
+   "$(jq -r '[.card.body[] | select(.type=="FactSet") | .facts[] | select(.title=="Posted") | .value] | first' "$CURL_PAYLOAD")"
 cleanup
 
 echo "== a PR title containing markup is escaped in the HTML field =="
