@@ -128,7 +128,7 @@ cleanup
 
 echo "== approval gate: docs + tests + UI only is low-risk =="
 new_sandbox
-PR_FILES=$'README.md\ndocs/guide/setup.png\nsrc/Api.Tests/OrderTests.cs\nweb/src/app.test.ts\nsrc/Acme.UI/src/hooks/useOrders.ts\nweb/src/Button.tsx\nweb/styles/site.scss' \
+PR_FILES=$'README.md\ndocs/guide/setup.png\nsrc/Api.Tests/OrderTests.cs\nweb/src/app.test.ts\nsrc/Acme.UI/src/hooks/useOrders.ts\nweb/src/Button.tsx\nweb/styles/site.scss\nweb/src/types/order.ts\nweb/src/site.css' \
   preflight 7 review_requested
 eq "low-risk" "low-risk" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
 cleanup

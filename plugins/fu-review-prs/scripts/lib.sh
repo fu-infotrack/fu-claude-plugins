@@ -325,7 +325,7 @@ LOW_RISK_PATHS_DEFAULT=(
     '*Tests/*' '*Test/*' '*.test.*' '*.spec.*' '*_test.*' 'test_*.py' '*/test_*.py'
     # ui
     '*.UI/*' 'ui/*' '*/ui/*' 'frontend/*' '*/frontend/*'
-    '*.tsx' '*.jsx' '*.vue' '*.svelte' '*.html' '*.cshtml' '*.razor'
+    '*.ts' '*.tsx' '*.jsx' '*.vue' '*.svelte' '*.html' '*.cshtml' '*.razor'
     '*.css' '*.scss' '*.sass' '*.less'
     '*.svg' '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.ico' '*.woff' '*.woff2'
 )
