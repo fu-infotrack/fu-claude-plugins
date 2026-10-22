@@ -1,5 +1,5 @@
 ---
-description: One tick of the automated PR-review loop for the current repo (auto-detected from cwd) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review as a COMMENT (pass --auto-approve to let clean docs/tests/UI-only PRs be approved). Run via /loop from inside the review clone.
+description: One tick of the automated PR-review loop for the current repo (auto-detected from the cwd checkout's origin) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review as a COMMENT (pass --auto-approve to let clean docs/tests/UI-only PRs be approved). Run via /loop from any checkout of the repo, locally or in a cloud session; reviews run in a separate worktree, so the checkout is never touched.
 argument-hint: [--auto-approve]
 ---
 

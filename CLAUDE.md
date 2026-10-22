@@ -96,7 +96,7 @@ open it explicitly.
 | Plugin | Read first | Why it matters |
 |---|---|---|
 | fu-copilot | `plugins/fu-copilot/CLAUDE.md` | Four constraints measured against the real Copilot CLI (it cannot read `~/.claude`; the brief must be inlined prompt text; never foreground; a self-report is not a completion signal), plus the AI-credit cap and flag policy |
-| fu-review-prs | `plugins/fu-review-prs/CLAUDE.md` | Which steps must stay deterministic bash, the disk-based (compaction-immune) handoff, approve-is-opt-in, the blocker-count rule, house rules |
+| fu-review-prs | `plugins/fu-review-prs/CLAUDE.md` | Which steps must stay deterministic bash, the disk-based (compaction-immune) handoff, approve-is-opt-in, the blocker-count rule, house rules, why every GitHub call is REST and reviews run in their own worktree |
 | fu-skills | `plugins/fu-skills/CLAUDE.md` | Per-skill designs: `fu-pg` (Vault, LDAP, the `--export` failure contract), `fu-mssql` (Windows auth, named hosts), `fu-k8` (GET-only proxy replay) |
 | fu-dev-guards | `plugins/fu-dev-guards/CLAUDE.md` | The command-matching rule (`cmd_invokes`, "data is not a command"), advisory-vs-enforcement, and the session-stamp marker wire format |
 | fu-log-sweep | `plugins/fu-log-sweep/CLAUDE.md` | The self-computed error signature it dedups on — a wire format |
@@ -118,6 +118,7 @@ bash plugins/fu-copilot/test/verify.test.sh
 bash plugins/fu-dev-guards/test/git-guard.test.sh
 bash plugins/fu-dev-guards/test/stamp-session.test.sh
 bash plugins/fu-review-prs/test/auto-approve.test.sh
+bash plugins/fu-review-prs/test/cloud-session.test.sh
 bash plugins/fu-review-prs/test/findings.test.sh
 bash plugins/fu-review-prs/test/notify.test.sh
 bash plugins/fu-review-prs/test/preflight.test.sh
@@ -159,7 +160,7 @@ No package manager pulls these — they must be on PATH:
 | Plugin | Kind | Purpose |
 |---|---|---|
 | fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups, deduping on a self-computed error signature (`type\|service\|top-app-frame` sha1) |
-| fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo). Comment-only by default — `--auto-approve` to approve clean docs/tests/UI-only PRs |
+| fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo). REST-only GitHub calls and a separate review worktree, so it runs in Claude Code cloud sessions too. Comment-only by default — `--auto-approve` to approve clean docs/tests/UI-only PRs |
 | fu-skills | skills + agents + scripts | **All scenario skills in one plugin.** `/fu-pg` (Postgres via HashiCorp Vault credentials) and `/fu-pup` (Datadog via the `pup` CLI) stay model-invocable — they're daily drivers and auto-trigger. The rest are `disable-model-invocation: true` (zero context until explicitly invoked): `/fu-mssql` (SQL Server via Windows integrated auth — `sqlcmd -E` native, or the Windows-host `sqlcmd.exe` under WSL; named hosts + default), `/fu-k8` (read-only K8s across clusters via the k8dash pass-through proxy, GET-only, user's OIDC token), `/fu-order` (Orders API inspection), `/fu-wsl` (provision a WSL work environment from Windows PowerShell 7+), `/fu-ce` (document solved problems; EveryInc fork, MIT — ships the ce-* review agents). `/ask-fu` (also hidden) is the catalogue/router for when the name escapes you. **fu-tools config keys are unchanged** (`pg-stage`, `mssql-stage`, `k8dash`, `inspecting-orders-api`) — the scripts kept their tool names, so no config migration |
 | fu-copilot | skill + agent + scripts | Delegate a coding task to GitHub Copilot CLI and verify the outcome from git. `dispatch.sh` stages the brief in `/tmp`, inlines it into `-p`, launches detached and confirms it reached the process; `verify.sh` waits on the PID and checks HEAD moved / empty commits / losslessness / log denials |
 | fu-dev-guards | hooks | Worktree path enforcement, protected-branch commit blocking, protected-directory edit + branch-switch blocking (forces worktrees), a SessionStart notice when a session opens in a protected checkout, a SessionStart session-id stamp for PR bodies, dotnet format pre-commit |

@@ -32,11 +32,31 @@ new_sandbox() {
   # gh stub: answers the repo lookup and records a posted review's flags.
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# REST endpoints answer raw JSON and apply --jq with the real jq, as gh does, so
+# lib.sh's filters run for real. GraphQL-backed gh commands are not stubbed:
+# cloud sessions reject them, and lib.sh must never call them.
+jqf="" prev=""
+for a in "$@"; do [ "$prev" = "--jq" ] && jqf=$a; prev=$a; done
+respond() { if [ -n "$jqf" ]; then jq -r "$jqf"; else cat; fi; }
 case "$1 $2" in
-  "repo view") echo "acme/widgets"; exit 0 ;;
-  "api user")  echo "bot"; exit 0 ;;
-  "pr list")   echo "7"; exit 0 ;;   # both the open-PR and review-requested queries
+  "api user") echo "bot"; exit 0 ;;
+  "pr "*|"repo "*|"issue "*) echo "GraphQL is not available" >&2; exit 1 ;;
 esac
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls?state=open"* ]]; then
+  [ -n "${OPEN_PRS_FAIL:-}" ] && exit 1
+  printf '%s\n' "${OPEN_PRS-7}" \
+    | jq -R 'select(length > 0) | {number: tonumber, requested_reviewers: [{login: "bot"}]}' \
+    | jq -s . | respond
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" =~ /pulls/[0-9]+$ ]]; then
+  [ "${PR_STATE:-open}" = "none" ] && exit 1
+  [ -n "${HEAD_FAIL:-}" ] && [[ "$jqf" == *head* ]] && exit 1
+  jq -n --arg state "${PR_STATE:-open}" --arg sha "${HEAD_SHA:-deadbeef}" \
+        --arg title "${PR_TITLE-Some PR}" \
+    '{user: {login: "alice"}, state: $state, head: {sha: $sha}, title: $title}' | respond
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then
   # A POST is a review being submitted; a GET is the prior-review lookup (none).
   if [[ "$*" == *"--method POST"* ]]; then
@@ -60,6 +80,7 @@ STUB
   # clone is a work tree — answering "no" makes pr_review_reset_tree a no-op.
   cat >"$SANDBOX/bin/git" <<'STUB'
 #!/usr/bin/env bash
+for a in "$@"; do [ "$a" = "remote.origin.url" ] && { echo "https://github.com/acme/widgets.git"; exit 0; }; done
 for a in "$@"; do
   [ "$a" = "--is-inside-work-tree" ] && exit 1
 done

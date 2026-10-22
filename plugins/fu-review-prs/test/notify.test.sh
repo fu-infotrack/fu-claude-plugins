@@ -34,15 +34,37 @@ new_sandbox() {
   export CURL_LOG="$SANDBOX/curl.txt" CURL_CODE="${1:-202}"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# REST endpoints answer raw JSON and apply --jq with the real jq, as gh does, so
+# lib.sh's filters run for real. GraphQL-backed gh commands are not stubbed:
+# cloud sessions reject them, and lib.sh must never call them.
+jqf="" prev=""
+for a in "$@"; do [ "$prev" = "--jq" ] && jqf=$a; prev=$a; done
+respond() { if [ -n "$jqf" ]; then jq -r "$jqf"; else cat; fi; }
 case "$1 $2" in
-  "repo view") echo "acme/widgets"; exit 0 ;;
-  "pr view")   printf '%s\n' "${PR_TITLE-Fix null deref in OrderService}"; exit 0 ;;
+  "api user") echo "bot"; exit 0 ;;
+  "pr "*|"repo "*|"issue "*) echo "GraphQL is not available" >&2; exit 1 ;;
 esac
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls?state=open"* ]]; then
+  [ -n "${OPEN_PRS_FAIL:-}" ] && exit 1
+  printf '%s\n' "${OPEN_PRS-7}" \
+    | jq -R 'select(length > 0) | {number: tonumber, requested_reviewers: [{login: "bot"}]}' \
+    | jq -s . | respond
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" =~ /pulls/[0-9]+$ ]]; then
+  [ "${PR_STATE:-open}" = "none" ] && exit 1
+  [ -n "${HEAD_FAIL:-}" ] && [[ "$jqf" == *head* ]] && exit 1
+  jq -n --arg state "${PR_STATE:-open}" --arg sha "${HEAD_SHA:-deadbeef}" \
+        --arg title "${PR_TITLE-Fix null deref in OrderService}" \
+    '{user: {login: "alice"}, state: $state, head: {sha: $sha}, title: $title}' | respond
+  exit 0
+fi
 [ "${GH_POST_FAILS:-0}" = "1" ] && exit 1
 exit 0
 STUB
   cat >"$SANDBOX/bin/git" <<'STUB'
 #!/usr/bin/env bash
+for a in "$@"; do [ "$a" = "remote.origin.url" ] && { echo "https://github.com/acme/widgets.git"; exit 0; }; done
 for a in "$@"; do [ "$a" = "--is-inside-work-tree" ] && exit 1; done
 for a in "$@"; do [ "$a" = "rev-parse" ] && { echo "/nonexistent/review-clone"; exit 0; }; done
 exit 0

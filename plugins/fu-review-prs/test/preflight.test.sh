@@ -28,7 +28,7 @@ new_sandbox() {
   export HOME="$SANDBOX/home"
   mkdir -p "$HOME" "$SANDBOX/bin"
   # gh stub. The real gh applies --jq itself, so the stub answers post-jq values.
-  #   PR_STATE   — the PR's state (default OPEN); "none" makes the info fetch fail
+  #   PR_STATE   — the PR's REST state (default open); "none" makes the info fetch fail
   #   HEAD_FAIL  — non-empty makes the head-commit lookup fail
   #   HEAD_TREE  — the head's tree SHA (default cafef00d)
   #   PR_FILES   — the PR's files, one per line; the stub serves them as TWO
@@ -39,18 +39,31 @@ new_sandbox() {
   export GH_COMPARE="$SANDBOX/gh-compare.txt"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# REST endpoints answer raw JSON and apply --jq with the real jq, as gh does, so
+# lib.sh's filters run for real. GraphQL-backed gh commands are not stubbed:
+# cloud sessions reject them, and lib.sh must never call them.
+jqf="" prev=""
+for a in "$@"; do [ "$prev" = "--jq" ] && jqf=$a; prev=$a; done
+respond() { if [ -n "$jqf" ]; then jq -r "$jqf"; else cat; fi; }
 case "$1 $2" in
-  "repo view") echo "acme/widgets"; exit 0 ;;
-  "pr view")
-    if [[ "$*" == *"author,state"* ]]; then
-      [ "${PR_STATE:-OPEN}" = "none" ] && exit 1
-      printf '{"author":{"login":"alice"},"state":"%s"}\n' "${PR_STATE:-OPEN}"
-    else
-      [ -n "${HEAD_FAIL:-}" ] && exit 1
-      echo "deadbeef"
-    fi
-    exit 0 ;;
+  "api user") echo "bot"; exit 0 ;;
+  "pr "*|"repo "*|"issue "*) echo "GraphQL is not available" >&2; exit 1 ;;
 esac
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls?state=open"* ]]; then
+  [ -n "${OPEN_PRS_FAIL:-}" ] && exit 1
+  printf '%s\n' "${OPEN_PRS-7}" \
+    | jq -R 'select(length > 0) | {number: tonumber, requested_reviewers: [{login: "bot"}]}' \
+    | jq -s . | respond
+  exit 0
+fi
+if [ "$1" = "api" ] && [[ "$2" =~ /pulls/[0-9]+$ ]]; then
+  [ "${PR_STATE:-open}" = "none" ] && exit 1
+  [ -n "${HEAD_FAIL:-}" ] && [[ "$jqf" == *head* ]] && exit 1
+  jq -n --arg state "${PR_STATE:-open}" --arg sha "${HEAD_SHA:-deadbeef}" \
+        --arg title "${PR_TITLE-Some PR}" \
+    '{user: {login: "alice"}, state: $state, head: {sha: $sha}, title: $title}' | respond
+  exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo "${HEAD_TREE:-cafef00d}"; exit 0; fi
 if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files" ]]; then
   [ -n "${FILES_FAIL:-}" ] && exit 1
@@ -70,6 +83,7 @@ exit 0
 STUB
   cat >"$SANDBOX/bin/git" <<'STUB'
 #!/usr/bin/env bash
+for a in "$@"; do [ "$a" = "remote.origin.url" ] && { echo "https://github.com/acme/widgets.git"; exit 0; }; done
 for a in "$@"; do [ "$a" = "--is-inside-work-tree" ] && exit 1; done
 for a in "$@"; do [ "$a" = "rev-parse" ] && { echo "/nonexistent/review-clone"; exit 0; }; done
 exit 0
@@ -110,7 +124,8 @@ Read $ROOT/review-task.md and follow it exactly. Review PR #7.
 Use these absolute paths verbatim — do not construct your own:
   SCOPE_FILE = $STATE/scope-7.txt
   PRIOR_FILE = $STATE/prior-7.json
-  FINDINGS_FILE = $STATE/findings-7.json"
+  FINDINGS_FILE = $STATE/findings-7.json
+  REVIEW_DIR = $HOME/.claude/pr-review/worktrees/acme-widgets"
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
 eq "stderr is empty" "" "$(err)"
 eq "pending written for finish" "commit=deadbeef
@@ -230,7 +245,7 @@ cleanup
 
 echo "== a closed PR is a bare SKIP =="
 new_sandbox
-PR_STATE=CLOSED preflight 7 review_requested
+PR_STATE=closed preflight 7 review_requested
 eq "stdout is SKIP" "SKIP" "$(out)"
 eq "stderr is empty" "" "$(err)"
 cleanup

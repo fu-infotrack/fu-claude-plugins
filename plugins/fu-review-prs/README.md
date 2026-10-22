@@ -4,15 +4,31 @@ Automated PR-review orchestrator. One `/review-prs` tick finds open PRs that
 need your review on the current repo, dispatches a Task sub-agent per PR (which
 runs `/code-review` and writes its findings as JSON), renders the review body from
 those findings, and posts a formal GitHub review.
-Run it on an interval with `/loop` from inside a dedicated review clone.
+Run it on an interval with `/loop` from any checkout of the repo, locally or in
+a Claude Code cloud session.
 
 ```
-cd <review-clone> && claude
+cd <checkout> && claude
 /loop 30m /review-prs
 ```
 
-The target repo is **auto-detected from cwd** (`gh repo view`), so run from
-inside the clone. `gh` must be authenticated for that repo.
+The target repo is **auto-detected from the checkout's `origin` URL** (set
+`PR_REVIEW_REPO=owner/name` to override). `gh` must be authenticated for that
+repo.
+
+**Runs in cloud sessions.** Cloud sessions reject GitHub GraphQL with HTTP 403,
+and `gh repo view`, `gh pr list`, `gh pr view`, `gh issue view` and
+`gh pr checkout` are GraphQL underneath. So every GitHub call, here and in the
+review sub-agent's brief, is REST (`gh api`, `gh pr diff`), which works
+everywhere.
+
+**The checkout is never touched.** Reviews run in a separate, detached worktree
+of it at `~/.claude/pr-review/worktrees/<owner>-<name>`, created on first use.
+Pre-flight checks out the PR's head there (fetched as `refs/pull/<n>/head`), and
+every tick and every finished PR put it back on a clean `origin/main`. The
+checkout you started the loop from keeps its branch, its uncommitted work and
+its other branches, which matters in a cloud session, where that checkout is the
+session's own.
 
 ## Posting policy — COMMENT by default
 
@@ -334,6 +350,11 @@ orchestrator's context is just its token.
 - `test/auto-approve.test.sh`, `test/findings.test.sh`, `test/notify.test.sh`,
   `test/preflight.test.sh`, `test/state.test.sh` — the posting-policy, findings,
   notification, pre-flight stdout and state-store contracts (hermetic: throwaway `HOME`, stubbed `gh`/`git`/`curl`).
+- `test/cloud-session.test.sh` — what lets it run in a cloud session: the repo from
+  the origin URL, no GraphQL-backed `gh` command in `lib.sh`, REST detection, a
+  failed open-PR listing keeping every review record, and the review worktree
+  leaving the checkout's branch, uncommitted work and other branches alone (real
+  `git` against a local bare origin).
 
 ## Docs
 
