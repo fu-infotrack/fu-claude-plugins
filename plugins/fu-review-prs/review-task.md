@@ -14,11 +14,34 @@ body, or a verdict. Running `/code-review` is only how you *gather* findings; it
 NOT the end of your task. After `/code-review` returns, you MUST still do Steps 2–4.
 Do not stop after `/code-review`.
 
+## GitHub access: REST only
+
+This review may run in a Claude Code cloud session, where GitHub's GraphQL API
+is blocked: every GraphQL request fails with HTTP 403. `gh pr view`,
+`gh pr list`, `gh pr checkout`, `gh issue view` and `gh repo view` are GraphQL
+underneath, so **do not use them**, wherever you run. What works everywhere:
+
+| Need | Use |
+|---|---|
+| PR title, body, author, head | `gh api repos/<REPO>/pulls/<PR>` |
+| The diff | `gh pr diff <PR> --repo <REPO>` |
+| An issue | `gh api repos/<REPO>/issues/<N>` |
+| An issue's comments | `gh api repos/<REPO>/issues/<N>/comments --paginate` |
+| A file at a commit | `gh api repos/<REPO>/contents/<path>?ref=<sha>` |
+
+`/code-review` may reach for a GraphQL command; when one fails with
+"GraphQL is not available", use the REST equivalent above and carry on.
+
+**The PR's head is already checked out** for you, detached, in the worktree at
+`REVIEW_DIR`. Read, grep and blame the code there. Every Bash call starts in the
+checkout the loop runs from, not in `REVIEW_DIR`, so always pass absolute paths
+(`Read`/`Grep` on `REVIEW_DIR/...`, `git -C REVIEW_DIR log`/`blame`).
+
 ## Step 0 — Review context and PR intent
 
-`SCOPE_FILE`, `PRIOR_FILE`, and `FINDINGS_FILE` are given to you as absolute paths
-in your task prompt. Use them verbatim — do not construct your own (they are
-namespaced per repo, so a hand-built path will be wrong).
+`SCOPE_FILE`, `PRIOR_FILE`, `FINDINGS_FILE` and `REVIEW_DIR` are given to you as
+absolute paths in your task prompt. Use them verbatim — do not construct your own
+(they are namespaced per repo, so a hand-built path will be wrong).
 
 1. Read `SCOPE_FILE` — the orchestrator has already decided what you review. It is a
    header, a blank line, then one file path per line:
@@ -35,8 +58,8 @@ namespaced per repo, so a hand-built path will be wrong).
    the PR's files that changed since `DELTA_BASE` (rebased-in main files already
    excluded). Do not re-derive the mode or the list, and do not widen it.
 2. Read the PR's stated intent so you can judge whether the diff actually delivers it:
-   - `gh pr view <PR> --repo <REPO> --json title,body,closingIssuesReferences`
-   - For each entry in `closingIssuesReferences` (issues the PR closes via "Closes/Fixes #N"), read it **including its comments**: `gh issue view <N> --repo <REPO> --json title,body,labels,comments`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
+   - `gh api repos/<REPO>/pulls/<PR> --jq '{title, body}'`
+   - The REST API has no list of the issues a PR closes, so find them in the body: every `#<N>` after a closing keyword (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`, any case). Read each **including its comments**: `gh api repos/<REPO>/issues/<N> --jq '{title, body, labels: [.labels[].name]}'` and `gh api repos/<REPO>/issues/<N>/comments --paginate --jq '.[] | {author: .user.login, body}'`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
    - **Read the issue comments, not just the body.** Product managers / maintainers often post the real detail there — clarifications, revised acceptance criteria, or scope cuts added after the issue was opened. Fold genuine requirement updates into the intent, and where a later clarifying comment conflicts with the original body, **the comment wins**. Ignore bot/status/CI chatter and side discussion; weight the issue author's and maintainers' clarifying comments.
    - Distil one line of **stated intent** (the issue's core ask, as refined by its clarifying comments, + the PR's own description). You compare the diff against it in Step 2. If there is no linked issue **and** the PR body is empty, record "no stated intent" and skip the scope check entirely (do not invent requirements). A body holding **only HTML comments** counts as empty — `fu-dev-guards` stamps `<!-- claude-session: <uuid> -->` into every PR body, so a genuinely description-less PR is no longer literally empty. Never distil intent from a marker comment.
 
@@ -84,7 +107,7 @@ Judge against the stated ask only — do not invent acceptance criteria the issu
 **DELTA mode only — re-check the prior findings.** `PRIOR_FILE` is JSON:
 `{"findings": [...]}`, the findings still live after the previous review, each
 with its `severity`, `text` and (usually) `where`. For each one, check its status
-at the current head (read cited lines via `gh api repos/<REPO>/contents/...`) and
+at the current head (read the cited lines under `REVIEW_DIR`) and
 record it in `prior` (Step 3) with exactly one status:
 
 - `RESOLVED` — fixed at this head.
@@ -152,10 +175,14 @@ tick.
 
 ## Available tools
 
-`SlashCommand` (to run `/code-review`), `Write`, `Bash(gh:*)`, `Bash(git log:*)`, `Bash(git blame:*)`, `Read`, `Glob`, `Grep`
+`Skill` (to run `/code-review`), `Write`, `Bash(gh api:*)`, `Bash(gh pr diff:*)`, `Bash(git -C <REVIEW_DIR> log:*)`, `Bash(git -C <REVIEW_DIR> blame:*)`, `Read`, `Glob`, `Grep`
 
 ## Working tree rules
 
-`gh pr checkout <PR>` is allowed and encouraged for reading files at the PR's head — you do **not** need to restore the tree afterwards. The orchestrator force-resets the dedicated clone back to a clean `main` (discarding tracked changes and untracked files) after your review, so leaving it on the PR branch is fine.
+The PR's head is already checked out in `REVIEW_DIR`; do not check anything out
+yourself, there or anywhere else. The checkout each Bash call starts in may hold
+the user's work: never run `git checkout`, `git switch`, `git reset`, `git clean`
+or `git stash` in it. The orchestrator resets `REVIEW_DIR` after your
+review.
 
 Your job is **read-only review**: never `git commit`, `git push`, `git apply`, `git cherry-pick`, or `patch`. Inspect, don't mutate.

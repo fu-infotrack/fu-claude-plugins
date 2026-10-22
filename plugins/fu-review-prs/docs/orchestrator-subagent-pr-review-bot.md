@@ -85,6 +85,8 @@ Ordered highest-leverage first.
 
 15. **A bot acting as you produces no notification — build the out-of-band signal yourself.** The bot authenticates as your own GitHub account, and GitHub deliberately never notifies you about your own actions, so a posted review is invisible: the only trace is a log file nobody reads at 2am. Fire an explicit notification from the *same* deterministic point as the side effect (`pr_review_finish`), and fire it on the **failure** paths too — a review that produced no body, or whose POST failed, is exactly the silent miss that #6's retry logic hides from you. Keep it opt-in and best-effort: channels come from config (no config = silent, preserving the old behaviour), every send is time-bounded, and a notifier that 403s or hangs is logged and stepped over rather than allowed to fail a tick. Treat the delivery URL as a credential — user-scoped config, never logged, with a test asserting it never reaches the log file.
 
+16. **Use only the API every runtime allows, and never borrow the launch checkout.** Claude Code cloud sessions answer every GitHub GraphQL request with HTTP 403, and `gh repo view`, `gh pr list`, `gh pr view`, `gh issue view` and `gh pr checkout` are all GraphQL underneath. Because `gh repo view` ran with `2>/dev/null || true`, the failure surfaced as an empty `REPO`, so every cloud tick reported `NO_WORK` while a PR sat waiting for review — the same invisible failure as a swallowed pull. The fix is REST everywhere (`gh api`, and `gh pr diff`, which is REST), with the repo parsed from `remote.origin.url`. The second cloud trap supersedes lessons 9 and 13: in a cloud session the cwd checkout is the session's own, holding the user's branch, so force-resetting it and pruning every non-`main` branch would destroy their work. Reviews now run in a detached worktree of that checkout (`~/.claude/pr-review/worktrees/<slug>`). Pre-flight checks out the PR head there via `refs/pull/<n>/head`, and the reset returns it to `origin/main`. The launch checkout is never written, and a detached worktree creates no branch to prune.
+
 ## Why This Matters
 
 - **Context bloat (thin orchestrator).** In a shared-session `/loop`, anything the orchestrator reads stays in context across every future tick. Pull diffs and findings into the orchestrator and you march toward compaction and rising per-tick cost on every iteration. Isolation that was free under cron must be deliberately rebuilt.
@@ -159,11 +161,11 @@ pr_review_finish "$PR"
 ### Auto-detect identity from cwd
 
 ```bash
-# Run from a dedicated throwaway clone; derive identity from the checkout.
-REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+# Run from any checkout; derive identity from its origin URL (REST-safe — see #16).
+SOURCE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+REPO="${PR_REVIEW_REPO:-$(repo_from_origin)}"   # owner/name from remote.origin.url
 if [ -z "$REPO" ]; then
-    log "ERROR: could not detect target repo from $PWD — run from inside the review clone"
+    log "ERROR: could not detect target repo from the origin of $SOURCE_DIR"
     pr_review_release_lock           # log + release, don't hang the loop
     return 0
 fi

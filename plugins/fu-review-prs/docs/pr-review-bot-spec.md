@@ -889,7 +889,7 @@ predates this spec and satisfies the Core profile with the deviations noted.
 | Content key (R19) | GitHub commit tree SHA |
 | Policy gate (R23) | `pr_review_finish` + `auto-approve` on disk; `test/auto-approve.test.sh` |
 | Notifier (R27) | `pr_review_notify` / `notify_teams`; `test/notify.test.sh` |
-| Workspace reset (R21) | `pr_review_reset_tree` (fetch → checkout -f → reset --hard → clean -fd → prune branches) |
+| Workspace reset (R21) | `pr_review_reset_tree` on a detached worktree of the launch checkout, `~/.claude/pr-review/worktrees/<slug>` (fetch main → checkout -f --detach origin/main → clean -fd); `pr_review_checkout_head` detaches it at the PR head. The launch checkout is never written |
 | Design rationale | `docs/orchestrator-subagent-pr-review-bot.md` |
 
 **Known deviations from this spec** (each is a portability gap, not a

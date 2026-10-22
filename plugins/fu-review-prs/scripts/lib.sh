@@ -1,14 +1,31 @@
 #!/bin/bash
 # Shared helpers for /review-prs slash command orchestrator.
 # Source this file at the top of each Bash tool call that needs it.
+#
+# Every GitHub read and write here is a REST `gh api` call, and the repo comes
+# from the origin URL. Claude Code cloud sessions answer every GraphQL request
+# with HTTP 403, and `gh repo view`, `gh pr list`, `gh pr view`,
+# `gh issue view` and `gh pr checkout` are all GraphQL underneath.
 
-# Target repo + checkout are auto-detected from the current working directory.
-# Run the /loop session from inside the dedicated review clone — a throwaway
-# checkout: each tick (and after each PR) force-resets it to match origin/main
-# exactly (see pr_review_reset_tree). gh detects the repo (owner/name) from the
-# clone's origin remote.
-REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+# The checkout the loop runs from. In a cloud session it is the session's own
+# checkout, holding the user's branch and work, so nothing here ever checks
+# out, resets, cleans or deletes a branch in it: reviews run in a separate
+# worktree, REVIEW_DIR, that shares its object store.
+SOURCE_DIR="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+
+# owner/name from the origin URL: https://github.com/o/r(.git),
+# git@github.com:o/r.git, or a session git proxy URL ending in /o/r. Read as
+# configured, before any url.<base>.insteadOf rewrite, which may point at a
+# mirror or proxy whose path does not end in owner/name.
+# PR_REVIEW_REPO overrides it.
+repo_from_origin() {
+    local url
+    url=$(git -C "$SOURCE_DIR" config --get remote.origin.url 2>/dev/null) || return 0
+    url=${url%/}
+    url=${url%.git}
+    sed -nE 's#^.*[:/]([^/:]+)/([^/:]+)$#\1/\2#p' <<< "$url"
+}
+REPO="${PR_REVIEW_REPO:-$(repo_from_origin)}"
 REVIEW_MARKER="<!-- claude-pr-review -->"
 # Code (this lib + review-task.md) ships in the plugin; mutable runtime state
 # (locks, logs, per-PR state) lives under BASE_DIR, OUTSIDE the plugin cache
@@ -39,6 +56,7 @@ STATE_DIR="$BASE_DIR/state/$REPO_SLUG"
 # step reads it back the same way it reads the findings — a mid-tick compaction
 # can never flip a COMMENT tick into an approving one.
 AUTO_APPROVE_FILE="$STATE_DIR/auto-approve"
+REVIEW_DIR="$BASE_DIR/worktrees/$REPO_SLUG"
 LOG_FILE="$BASE_DIR/review-$REPO_SLUG.log"
 LOCK_FILE="$BASE_DIR/review-prs-$REPO_SLUG.lock"
 HOLDER_FILE="$BASE_DIR/review-prs-$REPO_SLUG.lock.holder"
@@ -181,7 +199,7 @@ clear_looking_eyes() {
 get_pr_head_info() {
     local pr=$1
     local head_sha
-    head_sha=$(gh pr view "$pr" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null) || return 1
+    head_sha=$(gh api "repos/$REPO/pulls/$pr" --jq '.head.sha' 2>/dev/null) || return 1
     [ -z "$head_sha" ] && return 1
     local tree_sha
     tree_sha=$(gh api "repos/$REPO/commits/$head_sha" --jq '.commit.tree.sha' 2>/dev/null) || return 1
@@ -383,7 +401,7 @@ fu_cfg() {
 #   kind: clean | blockers | failed | nobody
 notify_event() {
     local kind=$1 pr=$2 blockers=$3 decision=$4 detail=$5 title
-    title=$(gh pr view "$pr" --repo "$REPO" --json title --jq '.title' 2>/dev/null || true)
+    title=$(gh api "repos/$REPO/pulls/$pr" --jq '.title' 2>/dev/null || true)
     jq -n --arg kind "$kind" --arg repo "$REPO" --arg pr "$pr" --arg title "$title" \
           --arg decision "$decision" --arg blockers "$blockers" --arg detail "$detail" \
           --arg url "https://github.com/$REPO/pull/$pr" \
@@ -570,9 +588,8 @@ detect_queued_prs() {
     [ -z "$gh_user" ] && return 1
 
     local requested_prs
-    requested_prs=$(gh pr list --repo "$REPO" --state open \
-        --json number,reviewRequests \
-        --jq "[.[] | select(.reviewRequests | map(.login) | index(\"$gh_user\")) | .number] | .[]" \
+    requested_prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+        --jq ".[] | select(any(.requested_reviewers[]?; .login == \"$gh_user\")) | .number" \
         2>/dev/null || true)
 
     [ -z "$requested_prs" ] && return 0
@@ -637,9 +654,14 @@ detect_queued_prs() {
 # Remove stale temp files and state files for closed PRs. Safe to call anytime.
 pr_review_purge_stale() {
     local open_prs name prefix suffix f pr kind
-    open_prs=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number' 2>/dev/null || true)
+    local listed=1
+    open_prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+        --jq '.[].number' 2>/dev/null) || listed=0
     # File names come from pr_path with a `*` PR, so this knows no names itself.
+    # A failed listing would read as "no PR is open" and wipe every review record.
+    [ "$listed" = 1 ] || log "WARNING: could not list open PRs — keeping durable state this tick"
     for kind in $DURABLE_KINDS; do
+        [ "$listed" = 1 ] || break
         name=$(basename "$(pr_path "$kind" '*')")
         prefix=${name%%\**} suffix=${name#*\*}
         for f in "$STATE_DIR"/$name; do
@@ -665,37 +687,68 @@ pr_review_release_lock() {
     fi
 }
 
-# Force the dedicated review clone back to a clean, up-to-date main. The clone
-# is a throwaway per-project checkout, so discarding working-tree changes — both
-# tracked mods AND untracked files — is safe and intended. A sub-agent's
-# `gh pr checkout <PR>` leaves the clone on the PR branch; switching back to main
-# strands any files the PR added as untracked, and a plain `git checkout main`
-# aborts on the resulting dirty tree. Force-reset so every tick / next PR starts
-# pristine. Called from pr_review_init (tick start) and pr_review_finish (per PR).
-pr_review_reset_tree() {
-    git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-    local git_err
-    # fetch + hard-reset (not pull): the working dir is made to match origin/main
-    # EXACTLY, immune to local divergence or a force-pushed/rewritten remote main.
-    git_err=$(git -C "$REPO_DIR" fetch origin main --quiet 2>&1) \
-        || log "WARNING: 'git fetch origin main' failed in $REPO_DIR: $git_err"
-    git_err=$(git -C "$REPO_DIR" checkout -f main --quiet 2>&1) \
-        || log "WARNING: 'git checkout -f main' failed in $REPO_DIR: $git_err"
-    git_err=$(git -C "$REPO_DIR" reset --hard origin/main --quiet 2>&1) \
-        || log "WARNING: 'git reset --hard origin/main' failed in $REPO_DIR: $git_err"
-    git_err=$(git -C "$REPO_DIR" clean -fd --quiet 2>&1) \
-        || log "WARNING: 'git clean -fd' failed in $REPO_DIR: $git_err"
-    # Prune stale local branches left by sub-agents' `gh pr checkout` (everything
-    # but main). Otherwise a re-checkout of the same PR after a force-push hits a
-    # diverged local ref and needs --force. Safe: this is a dedicated throwaway
-    # clone whose only durable branch is main.
-    local stale
-    stale=$(git -C "$REPO_DIR" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null \
-        | grep -vx main || true)
-    if [ -n "$stale" ]; then
-        printf '%s\n' "$stale" | xargs -r git -C "$REPO_DIR" branch -D >/dev/null 2>&1 || true
-        log "pruned $(printf '%s\n' "$stale" | grep -c .) stale local branch(es)"
+# The review worktree: a detached checkout of SOURCE_DIR's repository at
+# REVIEW_DIR, created on first use. Detached, so it never creates, moves or
+# needs a branch, and the session's branches are never touched.
+pr_review_ensure_worktree() {
+    if [ -e "$REVIEW_DIR/.git" ] &&
+       [ "$(git -C "$REVIEW_DIR" rev-parse --show-toplevel 2>/dev/null)" = "$REVIEW_DIR" ]; then
+        return 0
     fi
+    git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        log "WARNING: $SOURCE_DIR is not a git checkout — no review worktree"
+        return 1
+    }
+    local git_err
+    git -C "$SOURCE_DIR" worktree prune >/dev/null 2>&1
+    rm -rf "${REVIEW_DIR:?}"
+    mkdir -p "$(dirname "$REVIEW_DIR")"
+    fetch_main
+    git_err=$(git -C "$SOURCE_DIR" worktree add --detach --force "$REVIEW_DIR" origin/main 2>&1) || {
+        log "WARNING: could not add the review worktree at $REVIEW_DIR: $git_err"
+        return 1
+    }
+    log "created review worktree $REVIEW_DIR"
+}
+
+# Refresh origin/main only. An explicit refspec, so it works whatever fetch
+# refspec the session's checkout was given.
+fetch_main() {
+    local git_err
+    git_err=$(git -C "$SOURCE_DIR" fetch --quiet origin \
+        '+refs/heads/main:refs/remotes/origin/main' 2>&1) \
+        || log "WARNING: 'git fetch origin main' failed in $SOURCE_DIR: $git_err"
+}
+
+# Put the review worktree back on a clean, up-to-date origin/main. Called at
+# tick start and after each PR, so no PR's files leak into the next review.
+pr_review_reset_tree() {
+    pr_review_ensure_worktree || return 0
+    fetch_main
+    local git_err
+    git_err=$(git -C "$REVIEW_DIR" checkout -f --detach --quiet origin/main 2>&1) \
+        || log "WARNING: 'git checkout -f --detach origin/main' failed in $REVIEW_DIR: $git_err"
+    git_err=$(git -C "$REVIEW_DIR" clean -fd --quiet 2>&1) \
+        || log "WARNING: 'git clean -fd' failed in $REVIEW_DIR: $git_err"
+}
+
+# Detach the review worktree at the PR's head commit, so the sub-agent reads,
+# greps and blames the code it reviews. Fetched through refs/pull/<n>/head,
+# which also reaches fork PRs. Failing leaves the worktree on main and only
+# costs the sub-agent local context: the diff still comes from the API.
+# pr_review_checkout_head <pr> <commit>
+pr_review_checkout_head() {
+    local pr=$1 commit=$2 git_err
+    pr_review_ensure_worktree || return 1
+    git_err=$(git -C "$REVIEW_DIR" fetch --quiet origin "refs/pull/$pr/head" 2>&1) || {
+        log "WARNING: PR #$pr: could not fetch refs/pull/$pr/head: $git_err"
+        return 1
+    }
+    git_err=$(git -C "$REVIEW_DIR" checkout -f --detach --quiet "$commit" 2>&1) || {
+        log "WARNING: PR #$pr: could not check out $commit in $REVIEW_DIR: $git_err"
+        return 1
+    }
+    log "PR #$pr: review worktree at $commit"
 }
 
 # Acquire lock, setup, purge stale files, detect queued PRs. Pass the command's
@@ -717,20 +770,19 @@ pr_review_init() {
     log "=== PR review check started ==="
 
     if [ -z "$REPO" ]; then
-        log "ERROR: could not detect target repo from $PWD — run the loop from inside the review clone"
+        log "ERROR: could not detect target repo from the origin of $SOURCE_DIR — run the loop from inside a checkout of it, or set PR_REVIEW_REPO"
         log "=== PR review check complete ==="
         pr_review_release_lock
         echo "NO_WORK"
         return 0
     fi
-    log "Target repo: $REPO (checkout: $REPO_DIR)"
+    log "Target repo: $REPO (source: $SOURCE_DIR, review worktree: $REVIEW_DIR)"
     pr_review_heartbeat
     # After the REPO check, so the flag always lands in the right repo's state dir
     # (and an undetected-repo bail writes no flag at all).
     pr_review_set_mode "$@"
-    # Refresh the ambient-context baseline that /code-review's sub-agents read
-    # (CLAUDE.md, neighbouring code). Force-reset to clean main: a prior tick's
-    # sub-agent may have left the clone on a PR branch with stray untracked files.
+    # Create the review worktree on first use, and put it back on a clean main
+    # in case a prior tick stopped with it still at a PR's head.
     pr_review_reset_tree
 
     pr_review_purge_stale
@@ -814,7 +866,8 @@ pr_review_preflight() {
     log "Processing PR #$pr (reason: $reason)"
 
     local pr_info pr_author pr_state
-    pr_info=$(gh pr view "$pr" --repo "$REPO" --json author,state 2>/dev/null || echo '{}')
+    pr_info=$(gh api "repos/$REPO/pulls/$pr" \
+        --jq '{author: {login: .user.login}, state: (.state | ascii_upcase)}' 2>/dev/null || echo '{}')
     pr_author=$(jq -r '.author.login // empty' <<< "$pr_info")
     pr_state=$(jq -r '.state // empty' <<< "$pr_info")
 
@@ -863,6 +916,8 @@ pr_review_preflight() {
         echo "SKIP"; return 0
     }
 
+    pr_review_checkout_head "$pr" "$current_commit" || true
+
     # 👀 only once we know a review will run — a SKIP tick must not re-add it to
     # a PR whose posted review already cleared it (pr_review_finish).
     react_looking_eyes "$pr"
@@ -878,6 +933,7 @@ dispatch_prompt() {
     printf 'Read %s and follow it exactly. Review PR #%s.\n' "$REVIEW_TASK_FILE" "$pr"
     printf 'Use these absolute paths verbatim — do not construct your own:\n'
     pr_review_paths "$pr" | sed 's/^\([A-Z_]*\)=/  \1 = /'
+    printf '  REVIEW_DIR = %s\n' "$REVIEW_DIR"
 }
 
 # Post the sub-agent's review to GitHub, then save state. Takes ONLY the PR number
@@ -900,7 +956,7 @@ pr_review_finish() {
     if ! pend=$(record_read pending "$pr"); then
         log "PR #$pr: nothing pending (pre-flight did not PROCEED) — finish is a no-op"
         pr_clear "$pr"
-        pr_review_reset_tree   # still leave the clone on main for the next PR
+        pr_review_reset_tree   # still leave the worktree on main for the next PR
         echo "NOTHING_PENDING"
         return 0
     fi
@@ -992,8 +1048,8 @@ $footer"
     # Always clear this PR's transients; the next tick regenerates them.
     pr_clear "$pr"
 
-    # Return the dedicated clone to a clean main so the next PR's sub-agent
-    # (or the next tick) starts from a pristine tree, not this PR's branch.
+    # Return the review worktree to a clean main so the next PR's checkout
+    # (or the next tick) starts from a pristine tree, not this PR's head.
     pr_review_reset_tree
     echo "$status"
 }
