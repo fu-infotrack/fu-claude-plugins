@@ -31,12 +31,15 @@ new_sandbox() {
   #   PR_STATE   — the PR's REST state (default open); "none" makes the info fetch fail
   #   HEAD_FAIL  — non-empty makes the head-commit lookup fail
   #   HEAD_TREE  — the head's tree SHA (default cafef00d)
-  #   PR_FILES   — the PR's files, one per line; the stub serves them as TWO
-  #                pages and returns only the first page without --paginate
+  #   PR_FILES   — the PR's files, one per line (`new<TAB>old` for a rename),
+  #                served as raw JSON pages honouring per_page (default 30) and
+  #                page, as GitHub does. --paginate fails past page 1, as in a
+  #                cloud session (see the stub). Pages asked for go to $GH_PAGES
   #   FILES_FAIL — non-empty makes the PR file-list fetch fail
+  #   FILES_FAIL_PAGE — fail only that page of the file list
   #   COMPARE_FILES / COMPARE_FAIL — the compare's files, or make it fail;
   #                the compare's range is recorded in $GH_COMPARE
-  export GH_COMPARE="$SANDBOX/gh-compare.txt"
+  export GH_COMPARE="$SANDBOX/gh-compare.txt" GH_PAGES="$SANDBOX/gh-pages.txt"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # REST endpoints answer raw JSON and apply --jq with the real jq, as gh does, so
@@ -65,11 +68,24 @@ if [ "$1" = "api" ] && [[ "$2" =~ /pulls/[0-9]+$ ]]; then
   exit 0
 fi
 if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo "${HEAD_TREE:-cafef00d}"; exit 0; fi
-if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files" ]]; then
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files"* ]]; then
   [ -n "${FILES_FAIL:-}" ] && exit 1
   files=${PR_FILES-$'src/a.cs\nsrc/b.cs'}
-  if [[ "$*" == *"--paginate"* ]]; then printf '%s\n' "$files"
-  else printf '%s\n' "$files" | head -1; fi
+  per=30 page=1
+  [[ "&${2#*\?}&" =~ \&per_page=([0-9]+)\& ]] && per=${BASH_REMATCH[1]}
+  [[ "&${2#*\?}&" =~ \&page=([0-9]+)\& ]] && page=${BASH_REMATCH[1]}
+  echo "$page" >> "$GH_PAGES"
+  [ "$page" = "${FILES_FAIL_PAGE:-}" ] && exit 1
+  # gh --paginate follows GitHub's Link: rel="next", a repositories/{id}/... URL,
+  # which a cloud session's GitHub proxy rejects: page 1 lands, the call fails.
+  if [[ "$*" == *"--paginate"* ]] && [ "$(printf '%s\n' "$files" | grep -c .)" -gt "$per" ]; then
+    echo "HTTP 403: Numeric-ID repository paths (repositories/{id}/...) are not supported through this proxy." >&2
+    exit 1
+  fi
+  printf '%s\n' "$files" \
+    | jq -R 'select(length > 0) | split("\t")
+             | {filename: .[0]} + (if (.[1] // "") != "" then {previous_filename: .[1]} else {} end)' \
+    | jq -s --argjson p "$page" --argjson n "$per" '.[($p - 1) * $n : $p * $n]' | respond
   exit 0
 fi
 if [ "$1" = "api" ] && [[ "$2" == *"/compare/"* ]]; then
@@ -91,7 +107,7 @@ STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
   # Let lib.sh resolve review-task.md beside itself, not from an installed plugin.
-  unset PR_STATE HEAD_FAIL HEAD_TREE PR_FILES FILES_FAIL COMPARE_FILES COMPARE_FAIL \
+  unset PR_STATE HEAD_FAIL HEAD_TREE PR_FILES FILES_FAIL FILES_FAIL_PAGE COMPARE_FILES COMPARE_FAIL \
         CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
@@ -171,10 +187,38 @@ echo '{"review-prs":{"low_risk_paths":["src/*"]}}' > "$HOME/.claude/fu-tools/con
 eq "README.md no longer low-risk" "README.md" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
 cleanup
 
-echo "== the PR file list is paginated =="
+echo "== the PR file list is read page by page (EntityPlatform #3333, 252 files) =="
 new_sandbox
-PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs' preflight 7 review_requested
-eq "all pages read" "$(scope_file FULL '' src/a.cs src/b.cs src/c.cs)" "$(scope)"
+many=$(seq -f 'src/f%03g.cs' 152)
+PR_FILES=$many preflight 7 review_requested
+eq "stdout starts PROCEED" "PROCEED" "$(out | head -1)"
+eq "every file of both pages in scope" "$(scope_file FULL '' $many)" "$(scope)"
+eq "pages 1 and 2 asked for, by number" "1
+2" "$(cat "$GH_PAGES" 2>/dev/null)"
+cleanup
+
+echo "== a full last page: the empty page after it ends the list =="
+new_sandbox
+many=$(seq -f 'src/f%03g.cs' 100)
+PR_FILES=$many preflight 7 review_requested
+eq "stdout starts PROCEED" "PROCEED" "$(out | head -1)"
+eq "all 100 files in scope" "$(scope_file FULL '' $many)" "$(scope)"
+cleanup
+
+echo "== the page loop stops at GitHub's 3000-file cap =="
+new_sandbox
+PR_FILES=$(seq -f 'src/f%04g.cs' 3050) preflight 7 review_requested
+eq "stdout starts PROCEED" "PROCEED" "$(out | head -1)"
+eq "30 pages asked for" "30" "$(grep -c . "$GH_PAGES")"
+eq "3000 files in scope" "3000" "$(scope | tail -n +6 | grep -c .)"
+cleanup
+
+echo "== a later page fails: SKIP, never a partial scope =="
+new_sandbox
+PR_FILES=$(seq -f 'src/f%03g.cs' 152) FILES_FAIL_PAGE=2 preflight 7 review_requested
+eq "stdout is SKIP" "SKIP" "$(out)"
+eq "no pending file" "absent" "$([ -e "$STATE/pending-7" ] && echo present || echo absent)"
+eq "no scope file" "" "$(scope)"
 cleanup
 
 echo "== tree unchanged (a re-request): FULL, no compare =="

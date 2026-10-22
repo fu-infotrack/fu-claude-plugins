@@ -65,7 +65,9 @@ if [ "$1" = "api" ] && [[ "$2" =~ /pulls/[0-9]+$ ]]; then
   exit 0
 fi
 if [ "$1" = "api" ] && [[ "$2" == *"/commits/"* ]]; then echo cafef00d; exit 0; fi
-if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files" ]]; then echo src/a.cs; exit 0; fi
+if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/files"* ]]; then
+  echo '[{"filename": "src/a.cs"}]' | respond; exit 0
+fi
 if [ "$1" = "api" ] && [[ "$2" == *"/pulls/"*"/reviews" ]]; then
   if [[ "$*" == *"--method POST"* ]]; then
     [ -n "${GH_POST_FAILS:-}" ] && exit 1

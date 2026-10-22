@@ -65,14 +65,15 @@ if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then
   fi
   exit 0
 fi
-# Reactions: the eyes lookup answers with our reaction's id (the user filter is
-# gh's --jq, so the stub just returns it); a DELETE is recorded.
+# Reactions: the eyes lookup answers a raw page holding our reaction and someone
+# else's, so lib.sh's own user filter picks the id; a DELETE is recorded.
 if [ "$1" = "api" ] && [[ "$2" == *"/reactions/"* ]]; then
   [[ "$*" == *"--method DELETE"* ]] && echo "$2" >> "$GH_DEL"
   exit 0
 fi
-if [ "$1" = "api" ] && [[ "$2" == *"/reactions?content=eyes" ]]; then
-  echo 11; exit 0
+if [ "$1" = "api" ] && [[ "$2" == *"/reactions?content=eyes"* ]]; then
+  echo '[{"id": 11, "user": {"login": "bot"}}, {"id": 12, "user": {"login": "carol"}}]' | respond
+  exit 0
 fi
 exit 0
 STUB
