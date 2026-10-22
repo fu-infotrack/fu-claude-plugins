@@ -167,6 +167,34 @@ log() {
     printf '%s\n' "$line" >> "$LOG_FILE"
 }
 
+# GET every page of a REST list endpoint, printing <jq> (run with jq -r) over
+# each page. Pages by explicit page=N on the repos/<owner>/<name> path, never
+# `gh api --paginate`: that follows GitHub's Link: rel="next", which names the
+# repo by numeric ID (repositories/<id>/...), and a Claude Code cloud session's
+# GitHub proxy answers that with 403, so page 1 lands and the call fails whole.
+# A short page ends the list; items are counted on the raw page, since <jq> may
+# print any number of lines per item. Returns 1 if any page fails, after printing
+# the pages before it. Stops at GH_PAGES_MAX pages, GitHub's own 3000-file cap
+# on pulls/<n>/files. gh_api_pages <path[?query]> <jq>
+GH_PER_PAGE=100
+GH_PAGES_MAX=30
+gh_api_pages() {
+    local path=$1 filter=$2 sep='?' page=1 body n
+    [[ "$path" == *\?* ]] && sep='&'
+    while :; do
+        body=$(gh api "${path}${sep}per_page=$GH_PER_PAGE&page=$page") || return 1
+        n=$(jq 'if type == "array" then length else error("not a list") end' <<< "$body") \
+            && [ -n "$n" ] || return 1
+        jq -r "$filter" <<< "$body" || return 1
+        [ "$n" -lt "$GH_PER_PAGE" ] && return 0
+        if [ "$page" -ge "$GH_PAGES_MAX" ]; then
+            log "WARNING: $path: stopped at $GH_PAGES_MAX pages of $GH_PER_PAGE"
+            return 0
+        fi
+        page=$((page + 1))
+    done
+}
+
 GH_USER=""
 get_gh_user() {
     if [ -z "$GH_USER" ]; then
@@ -187,8 +215,8 @@ clear_looking_eyes() {
     local pr=$1 me id
     me=$(get_gh_user)
     [ -z "$me" ] && return 0
-    gh api "repos/$REPO/issues/$pr/reactions?content=eyes" --paginate \
-        --jq ".[] | select(.user.login == \"$me\") | .id" 2>/dev/null |
+    gh_api_pages "repos/$REPO/issues/$pr/reactions?content=eyes" \
+        ".[] | select(.user.login == \"$me\") | .id" 2>/dev/null |
     while read -r id; do
         [ -n "$id" ] && gh api "repos/$REPO/issues/$pr/reactions/$id" \
             --method DELETE >/dev/null 2>&1
@@ -588,8 +616,9 @@ detect_queued_prs() {
     [ -z "$gh_user" ] && return 1
 
     local requested_prs
-    requested_prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-        --jq ".[] | select(any(.requested_reviewers[]?; .login == \"$gh_user\")) | .number" \
+    # A failed later page still queues what the pages before it named.
+    requested_prs=$(gh_api_pages "repos/$REPO/pulls?state=open" \
+        ".[] | select(any(.requested_reviewers[]?; .login == \"$gh_user\")) | .number" \
         2>/dev/null || true)
 
     [ -z "$requested_prs" ] && return 0
@@ -655,8 +684,8 @@ detect_queued_prs() {
 pr_review_purge_stale() {
     local open_prs name prefix suffix f pr kind
     local listed=1
-    open_prs=$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-        --jq '.[].number' 2>/dev/null) || listed=0
+    open_prs=$(gh_api_pages "repos/$REPO/pulls?state=open" '.[].number' 2>/dev/null) \
+        || listed=0
     # File names come from pr_path with a `*` PR, so this knows no names itself.
     # A failed listing would read as "no PR is open" and wipe every review record.
     [ "$listed" = 1 ] || log "WARNING: could not list open PRs — keeping durable state this tick"
@@ -817,8 +846,8 @@ write_review_scope() {
     scope_file=$(pr_path scope "$pr")
     rm -f "$scope_file"
     local listing
-    listing=$(gh api "repos/$REPO/pulls/$pr/files" --paginate \
-        --jq '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) || return 1
+    listing=$(gh_api_pages "repos/$REPO/pulls/$pr/files" \
+        '.[] | [.filename, (.previous_filename // "")] | @tsv' 2>/dev/null) || return 1
     pr_files=$(printf '%s\n' "$listing" | cut -f1 | grep . | LC_ALL=C sort -u)
     [ -z "$pr_files" ] && return 2
     # The approval gate judges the WHOLE PR, never just a DELTA, and a rename's

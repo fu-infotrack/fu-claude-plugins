@@ -26,11 +26,17 @@ underneath, so **do not use them**, wherever you run. What works everywhere:
 | PR title, body, author, head | `gh api repos/<REPO>/pulls/<PR>` |
 | The diff | `gh pr diff <PR> --repo <REPO>` |
 | An issue | `gh api repos/<REPO>/issues/<N>` |
-| An issue's comments | `gh api repos/<REPO>/issues/<N>/comments --paginate` |
+| An issue's comments | `gh api "repos/<REPO>/issues/<N>/comments?per_page=100&page=1"` |
 | A file at a commit | `gh api repos/<REPO>/contents/<path>?ref=<sha>` |
 
 `/code-review` may reach for a GraphQL command; when one fails with
 "GraphQL is not available", use the REST equivalent above and carry on.
+
+**Never pass `--paginate` to `gh api`.** It follows GitHub's next-page link,
+which names the repo as `repositories/<id>/...`, and the cloud session's proxy
+rejects that with HTTP 403, failing the whole call. Ask for pages by number
+instead: `?per_page=100&page=1`, and when a page returns 100 items, ask for
+`page=2`, and so on.
 
 **The PR's head is already checked out** for you, detached, in the worktree at
 `REVIEW_DIR`. Read, grep and blame the code there. Every Bash call starts in the
@@ -59,7 +65,7 @@ absolute paths in your task prompt. Use them verbatim — do not construct your 
    excluded). Do not re-derive the mode or the list, and do not widen it.
 2. Read the PR's stated intent so you can judge whether the diff actually delivers it:
    - `gh api repos/<REPO>/pulls/<PR> --jq '{title, body}'`
-   - The REST API has no list of the issues a PR closes, so find them in the body: every `#<N>` after a closing keyword (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`, any case). Read each **including its comments**: `gh api repos/<REPO>/issues/<N> --jq '{title, body, labels: [.labels[].name]}'` and `gh api repos/<REPO>/issues/<N>/comments --paginate --jq '.[] | {author: .user.login, body}'`. Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
+   - The REST API has no list of the issues a PR closes, so find them in the body: every `#<N>` after a closing keyword (`close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves`, `resolved`, any case). Read each **including its comments**: `gh api repos/<REPO>/issues/<N> --jq '{title, body, labels: [.labels[].name]}'` and `gh api "repos/<REPO>/issues/<N>/comments?per_page=100&page=1" --jq '.[] | {author: .user.login, body}'` (the next `page` while one returns 100). Also scan the PR body for other `#<n>` mentions and read up to ~3 of them; ignore the rest (stay bounded).
    - **Read the issue comments, not just the body.** Product managers / maintainers often post the real detail there — clarifications, revised acceptance criteria, or scope cuts added after the issue was opened. Fold genuine requirement updates into the intent, and where a later clarifying comment conflicts with the original body, **the comment wins**. Ignore bot/status/CI chatter and side discussion; weight the issue author's and maintainers' clarifying comments.
    - Distil one line of **stated intent** (the issue's core ask, as refined by its clarifying comments, + the PR's own description). You compare the diff against it in Step 2. If there is no linked issue **and** the PR body is empty, record "no stated intent" and skip the scope check entirely (do not invent requirements). A body holding **only HTML comments** counts as empty — `fu-dev-guards` stamps `<!-- claude-session: <uuid> -->` into every PR body, so a genuinely description-less PR is no longer literally empty. Never distil intent from a marker comment.
 

@@ -2,6 +2,8 @@
 # Tests for what lets the plugin run in a Claude Code cloud session:
 #   - the repo comes from the origin URL, never `gh repo view` (GraphQL);
 #   - no GraphQL-backed gh command remains in lib.sh;
+#   - no `gh api --paginate` remains in lib.sh or review-task.md, and lists that
+#     span pages are read with explicit page numbers;
 #   - detection reads requested_reviewers from the REST pulls list;
 #   - a failed open-PR listing never purges review records;
 #   - reviews run in a separate worktree, and the session's own checkout —
@@ -35,8 +37,9 @@ new_sandbox() {
   SANDBOX=$(mktemp -d)
   export HOME="$SANDBOX/home"
   mkdir -p "$HOME" "$SANDBOX/bin"
-  # gh stub. PULLS is the raw REST open-PR list; --jq is applied with the real
-  # jq, as gh does. Every call is logged to GH_LOG.
+  # gh stub. PULLS is the raw REST open-PR list, served in pages honouring
+  # per_page (default 30) and page; --jq is applied with the real jq, as gh does.
+  # PULLS_FAIL_PAGE fails one page. Every call is logged to GH_LOG.
   export GH_LOG="$SANDBOX/gh-calls.txt"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -50,7 +53,17 @@ case "$1 $2" in
 esac
 if [ "$1" = "api" ] && [[ "$2" == *"/pulls?state=open"* ]]; then
   [ -n "${PULLS_FAIL:-}" ] && exit 1
-  printf '%s\n' "${PULLS-[]}" | respond
+  per=30 page=1
+  [[ "&${2#*\?}&" =~ \&per_page=([0-9]+)\& ]] && per=${BASH_REMATCH[1]}
+  [[ "&${2#*\?}&" =~ \&page=([0-9]+)\& ]] && page=${BASH_REMATCH[1]}
+  [ "$page" = "${PULLS_FAIL_PAGE:-}" ] && exit 1
+  # The cloud proxy rejects --paginate's numeric-ID next link.
+  if [[ "$*" == *"--paginate"* ]] && [ "$(printf '%s\n' "${PULLS-[]}" | jq length)" -gt "$per" ]; then
+    echo "HTTP 403: Numeric-ID repository paths (repositories/{id}/...) are not supported through this proxy." >&2
+    exit 1
+  fi
+  printf '%s\n' "${PULLS-[]}" \
+    | jq --argjson p "$page" --argjson n "$per" '.[($p - 1) * $n : $p * $n]' | respond
   exit 0
 fi
 if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then echo '[]'; exit 0; fi
@@ -58,7 +71,7 @@ exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh"
   export PATH="$SANDBOX/bin:$PATH"
-  unset PULLS PULLS_FAIL PR_REVIEW_REPO
+  unset PULLS PULLS_FAIL PULLS_FAIL_PAGE PR_REVIEW_REPO
 }
 cleanup() { [ -n "$SANDBOX" ] && [ -d "$SANDBOX" ] && rm -rf "$SANDBOX"; }
 trap cleanup EXIT
@@ -104,6 +117,44 @@ cleanup
 echo "== lib.sh calls no GraphQL-backed gh command =="
 eq "no gh pr/repo/issue/search outside comments" "" \
   "$(grep -nE '^[^#]*\bgh (pr|repo|issue|search)\b' "$LIB")"
+
+echo "== no gh api --paginate: the cloud proxy rejects its numeric-ID next page =="
+# --paginate follows GitHub's Link: rel="next", which names the repo as
+# repositories/{id}/...; a cloud session's GitHub proxy answers that with 403
+# ("Numeric-ID repository paths ... are not supported through this proxy"), so
+# any list past one page fails whole. Page explicitly instead (gh_api_pages).
+eq "no --paginate in lib.sh outside comments" "" "$(grep -nE '^[^#]*--paginate' "$LIB")"
+eq "no gh api --paginate in review-task.md" "" "$(grep -nE 'gh api[^`]*--paginate' "$ROOT/review-task.md")"
+
+echo "== detection reads every page of open PRs =="
+new_sandbox
+git init -q "$SANDBOX/r" && git -C "$SANDBOX/r" remote add origin https://github.com/acme/widgets
+export PULLS=$(jq -n '[range(1; 151) | {number: ., requested_reviewers:
+  (if . == 3 or . == 142 then [{login: "bot"}] else [] end)}]')
+eq "a PR on page 2 is queued" "3 review_requested
+142 review_requested" "$(lib "$SANDBOX/r" detect_queued_prs)"
+eq "pages asked for by number" "2" "$(grep -c 'pulls?state=open.*page=' "$GH_LOG")"
+cleanup
+
+echo "== purge: a failed later page keeps every record =="
+new_sandbox
+git init -q "$SANDBOX/r" && git -C "$SANDBOX/r" remote add origin https://github.com/acme/widgets
+STATE="$HOME/.claude/pr-review/state/acme-widgets"
+mkdir -p "$STATE"
+printf 'commit=c\ntree=t\n' > "$STATE/last-reviewed-142"
+printf 'commit=c\ntree=t\n' > "$STATE/last-reviewed-999"
+export PULLS=$(jq -n '[range(1; 151) | {number: ., requested_reviewers: []}]')
+PULLS_FAIL_PAGE=2 lib "$SANDBOX/r" pr_review_purge_stale
+eq "record of a PR on the unread page kept" "present" \
+  "$([ -e "$STATE/last-reviewed-142" ] && echo present || echo absent)"
+eq "closed PR's record kept too, until a full listing" "present" \
+  "$([ -e "$STATE/last-reviewed-999" ] && echo present || echo absent)"
+lib "$SANDBOX/r" pr_review_purge_stale
+eq "open PR on page 2 kept once the listing works" "present" \
+  "$([ -e "$STATE/last-reviewed-142" ] && echo present || echo absent)"
+eq "closed PR's record purged" "absent" \
+  "$([ -e "$STATE/last-reviewed-999" ] && echo present || echo absent)"
+cleanup
 
 echo "== detection queues only PRs that request review from us, by login =="
 new_sandbox
