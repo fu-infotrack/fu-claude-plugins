@@ -1,5 +1,4 @@
 ---
-disable-model-invocation: true
 description: One tick of the automated PR-review loop for the current repo (auto-detected from cwd) — locks, finds PRs needing review, dispatches a sub-agent per PR, posts the GitHub review as a COMMENT (pass --auto-approve to let clean docs/tests/UI-only PRs be approved). Run via /loop from inside the review clone.
 argument-hint: [--auto-approve]
 ---
