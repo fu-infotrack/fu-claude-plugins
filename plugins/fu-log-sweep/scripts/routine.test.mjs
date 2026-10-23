@@ -157,6 +157,13 @@ test('plan: nothing new is NO_WORK', () => {
   assert.match(t.run(['plan']), /^NO_WORK — buckets=2 below-threshold=1 already-open=1 candidates=0/);
 });
 
+test('prepare: a nested stackPath becomes its path under the event attributes', () => {
+  const t = setup();
+  const out = t.run(['prepare', '--live', JSON.stringify({ appNamespace: NS, errorFacet: '@error.kind', stackPath: 'attributes.attributes.error.stack' })]);
+  assert.equal(value(out, 'STACK_FIELD'), 'error.stack');
+  assert.equal(value(out, 'ERROR_FACET'), '@error.kind');
+});
+
 test('prepare: an unreadable issue list SKIPs, since nothing could be deduped', () => {
   const t = setup();
   assert.match(t.run(['prepare', '--live', CONFIG], { GH_FAIL_ISSUES: '1' }), /^SKIP — could not list acme\/widgets's datadog-logs issues/);

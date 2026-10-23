@@ -21,7 +21,8 @@ Your task prompt gives:
 - `ERROR_FACET` — the attribute holding the exception **type**, e.g.
   `@Properties.exception.type`.
 - `STACK_FIELD` — the attribute holding the full exception text (type, message
-  and `at …` frames), e.g. `Exception`.
+  and `at …` frames): a top-level attribute such as `Exception`, or a dotted
+  path into one such as `error.stack`.
 - `FROM`, `TO` — the time window, ISO 8601. Use them verbatim on every call.
 - `THRESHOLD`, `CAP` — drop buckets under `THRESHOLD` events; keep the `CAP`
   biggest.
@@ -60,10 +61,13 @@ For each kept bucket, call `search_datadog_logs` with:
   rows gave it; types can hold backticks and brackets
   (``ApiException`1[Foo.Bar]``).
 - `from` = `FROM`, `to` = `TO`, `limit` = `1`, `sort` = `-timestamp` (newest)
-- `extra_fields` = `["<STACK_FIELD>", "MessageTemplate"]`
+- `extra_fields` = `["<first segment of STACK_FIELD>", "MessageTemplate"]` —
+  `Exception` for `Exception`, `error` for `error.stack`. The connector returns
+  nothing for a dotted name.
 
-The response shows the stack under `attributes:` as `custom.<STACK_FIELD>` (or
-`attributes.<STACK_FIELD>`). Record:
+The response shows the attribute under `attributes:` as `custom.<first segment>`
+(or `attributes.<first segment>`); for a dotted `STACK_FIELD`, follow the rest of
+the path inside it (`custom.error` → its `stack` key). Record:
 
 - `timestamp` — the event's timestamp, ISO 8601.
 - `message` — the event's `message`; if it is empty, `MessageTemplate`.

@@ -44,8 +44,15 @@ model can call. That fixes the split:
   hashes the same as pup's JSON string. Checked 2026-10-23 on a live bucket: the
   MCP-shaped sample matched an issue the pup-based `/log-sweep` had filed. The collector
   brief insists on a verbatim, whole stack because a reworded frame files a duplicate.
-- **Unverified**: that a routine's sub-agents get the routine's MCP connectors. The
-  collector is the first thing a live run would show failing (`plan` → `FAILED`).
+- **A nested stack attribute needs its parent in `extra_fields`.** `search_datadog_logs`
+  returns nothing for `extra_fields: ["error.stack"]`; it takes `["error"]` and shows the
+  object as `custom.error`. So `prepare` passes `STACK_FIELD` as the path under the
+  event's attributes (`stackPath` minus `attributes.attributes.`) and the briefs ask for
+  its first segment. v0.2.0 passed the last segment (`stack`), which would have dropped
+  every `error.stack` service to message signatures and refiled its issues.
+- **Measured in the cloud** (2026-10-23, Compliance.Mono, observe): the routine's
+  sub-agents do get its MCP connectors, and all 4 buckets dedup'd against issues the
+  local sweep had filed.
 
 ## Tests
 

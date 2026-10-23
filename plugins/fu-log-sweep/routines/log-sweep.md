@@ -55,6 +55,13 @@ on the target repo.
   Also accepted: `services`, `env` (default `prod`), `count` (threshold, default
   1), `errorFacet`, `stackPath`, `statusQuery`.
 
+  The defaults fit the Serilog shape (`@Properties.exception.type`, stack in
+  `Exception`). A repo that logs `@error.kind` with the stack in `error.stack`
+  needs `"errorFacet": "@error.kind", "stackPath": "attributes.attributes.error.stack"`.
+  Copy them from the repo's `.claude/.fu-tools.json` if it has one: that file is
+  usually gitignored, so the routine's clone does not have it. A wrong
+  `errorFacet` is silent — the run reports `NO_WORK — buckets=0`.
+
 ## Prompt
 
 Paste everything between the two lines.
