@@ -14,8 +14,9 @@ a plugin command.
   changed lines gets one reviewer covering every dimension (`SINGLE`). Anything
   larger gets three reviewers — correctness, security & contracts, intent &
   rules & docs — and an Opus merger that dedupes, verifies blockers and
-  re-checks prior findings (`FANOUT`). A FANOUT with any reviewer's findings
-  missing posts nothing.
+  re-checks prior findings (`FANOUT`). An agent whose call errors (e.g. an
+  intermittent Opus safeguard refusal) is re-dispatched once on Sonnet. A
+  FANOUT still missing any reviewer's findings after that posts nothing.
 - **`--auto-approve` is on.** A review with zero blockers posts as an APPROVE
   only when every PR file is docs, tests or UI (`LOW_RISK_PATHS_DEFAULT`; the
   fu-tools override does not reach a cloud session). Everything else posts as a
@@ -90,12 +91,17 @@ line after its header, up to the next header or the end.
    call per block, with `subagent_type: general-purpose`, `model: opus`,
    `effort: medium`, and `prompt` set to the block's prompt, **verbatim** — do
    not edit, shorten or add to it.
-2. Wait for all of them. **Ignore their replies.**
+2. Wait for all of them. **Ignore their replies** — except an Agent call that
+   ends in an **error** (for example `Agent terminated early due to an API
+   error`). Dispatch that same block **once more** with `model: sonnet`, the
+   same `subagent_type`, `effort` and verbatim `prompt`, and wait for it. Do
+   this for every reviewer that errored, before the merger.
 3. If there is a merger block (FANOUT), dispatch it the same way, alone, and
-   wait for it. Ignore its reply.
+   wait for it. Ignore its reply; if it errors, re-dispatch it once with
+   `model: sonnet` in the same way.
 
-If an Agent call errors, do not retry it and do not do its work — go on to
-Step 3, which handles a missing review.
+Never retry a block a second time, and never do an agent's work yourself. If
+the Sonnet retry also errors, go on to Step 3, which handles a missing review.
 
 ### Step 3 — Post
 
