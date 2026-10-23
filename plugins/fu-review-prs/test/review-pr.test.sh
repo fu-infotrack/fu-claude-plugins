@@ -157,27 +157,40 @@ HEAD_PRS=9 one --auto-approve
 eq "resolved from HEAD" "PROCEED 9 acme/widgets" "$(first)"
 new_sandbox
 HEAD_PRS="" one
-eq "no PR at HEAD" "SKIP" "$(out)"
+eq "no PR at HEAD" "SKIP" "$(out | cut -d" " -f1)"
 new_sandbox
 HEAD_PRS=$'9\n10' one
-eq "two PRs at HEAD" "SKIP" "$(out)"
+eq "two PRs at HEAD" "SKIP" "$(out | cut -d" " -f1)"
 
 echo "== guard: only a request to us by name =="
 new_sandbox
 REQUESTED="" one 7
-eq "team-only request (we are not listed)" "SKIP" "$(out)"
+eq "team-only request (we are not listed)" "SKIP" "$(out | cut -d" " -f1)"
 eq "nothing left behind" "" "$(ls "$STATE" 2>/dev/null)"
 new_sandbox
 REQUESTED=carol one 7
-eq "someone else requested" "SKIP" "$(out)"
+eq "someone else requested" "SKIP" "$(out | cut -d" " -f1)"
 new_sandbox
 REQUESTED=$'carol\nbot' one 7
 eq "us among others" "PROCEED 7 acme/widgets" "$(first)"
 
+echo "== a SKIP names the PR and why, on its one line =="
+# A cloud run's log file dies with its sandbox: this line is the only record.
+new_sandbox
+HEAD_PRS="" one
+eq "no PR at HEAD" "SKIP — HEAD localhead is the head of 0 open PR(s) — need exactly one" "$(out)"
+new_sandbox
+REQUESTED=carol one 7
+eq "not requested" "SKIP — PR #7: review not requested from bot by name" "$(out)"
+new_sandbox
+PR_FILES="" one 7
+has "pre-flight's own reason" "SKIP — PR #7: changes no files" "$(out)"
+eq "still one line" "1" "$(out | wc -l | tr -d ' ')"
+
 echo "== a pre-flight SKIP clears the mode =="
 new_sandbox
 PR_FILES="" one 7 --auto-approve
-eq "empty PR skips" "SKIP" "$(out)"
+eq "empty PR skips" "SKIP" "$(out | cut -d" " -f1)"
 eq "no mode left for a later loop tick" "no" "$([ -e "$STATE/mode-7" ] && echo yes || echo no)"
 
 echo "== the per-PR mode wins over the loop's flag =="
@@ -347,11 +360,11 @@ eq "both briefs ship" "yes" \
 echo "== routine: the guard and pre-flight SKIPs are /review-pr's =="
 new_sandbox
 REQUESTED="" one 7 --routine
-eq "team-only request" "SKIP" "$(out)"
+eq "team-only request" "SKIP" "$(out | cut -d" " -f1)"
 eq "nothing left behind" "" "$(ls "$STATE" 2>/dev/null)"
 new_sandbox
 PR_FILES="" one 7 --routine
-eq "empty PR" "SKIP" "$(out)"
+eq "empty PR" "SKIP" "$(out | cut -d" " -f1)"
 
 # finish_parts <dims…>: seed a FANOUT dispatch of PR 7 with a merged findings
 # file and a valid part for each named dimension, then run finish.

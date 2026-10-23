@@ -1217,10 +1217,10 @@ pr_review_cleanup() {
 # starts its clone there. Exactly one, or nothing.
 pr_from_head() {
     local sha prs
-    sha=$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null) || return 1
+    sha=$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null) || { log "could not read HEAD of $SOURCE_DIR"; return 1; }
     prs=$(gh api "repos/$REPO/commits/$sha/pulls" \
         --jq ".[] | select(.state == \"open\" and .head.sha == \"$sha\") | .number" 2>/dev/null) \
-        || return 1
+        || { log "could not list the PRs of HEAD $sha"; return 1; }
     if [ "$(grep -c . <<< "$prs")" != 1 ]; then
         log "HEAD $sha is the head of $(grep -c . <<< "$prs") open PR(s) — need exactly one"
         return 1
@@ -1238,9 +1238,16 @@ requested_from_me() {
         --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>/dev/null | grep -qx true
 }
 
+# A /review-pr SKIP carries its reason on the same line — the last thing logged,
+# which every skip path writes just before it. A cloud run's log file dies with
+# its sandbox, so this line is the only record of why it skipped.
+one_skip() {
+    printf 'SKIP — %s\n' "$(tail -n 1 "$LOG_FILE" 2>/dev/null | sed 's/^\[[^]]*\] //')"
+}
+
 # Review one PR. Arguments: a PR as `123`, `#123` or a PR URL (whose repo then
 # overrides the checkout's), `--auto-approve`, and `--routine`; no PR means the
-# one whose head is HEAD. Outputs "SKIP", or "PROCEED <pr> <owner/name>" followed
+# one whose head is HEAD. Outputs "SKIP — <reason>", or "PROCEED <pr> <owner/name>" followed
 # by the Task prompt — with --routine, "SINGLE|FANOUT <pr> <owner/name>" followed
 # by the agent blocks (routine_prompts). The mode goes to disk per PR (`mode`),
 # never the loop's tick-wide flag.
@@ -1270,15 +1277,14 @@ pr_review_one() {
     log "=== /review-pr ${pr:-(PR from HEAD)} ==="
     if [ -z "$REPO" ]; then
         log "ERROR: could not detect the target repo — pass a PR URL, or set PR_REVIEW_REPO"
-        echo "SKIP"; return 0
+        one_skip; return 0
     fi
     if [ -z "$pr" ] && ! pr=$(pr_from_head); then
-        log "no PR given and none resolved from HEAD — skipping"
-        echo "SKIP"; return 0
+        one_skip; return 0
     fi
     if ! requested_from_me "$pr"; then
-        log "PR #$pr: review not requested from $(get_gh_user) by name — skipping"
-        echo "SKIP"; return 0
+        log "PR #$pr: review not requested from $(get_gh_user) by name"
+        one_skip; return 0
     fi
 
     { echo single; [ "$approve" = 1 ] && echo auto-approve; [ "$routine" = 1 ] && echo routine; } \
@@ -1290,7 +1296,7 @@ pr_review_one() {
     out=$(pr_review_preflight "$pr" review_requested)
     if [ "$(head -n 1 <<< "$out")" != PROCEED ]; then
         pr_clear "$pr"
-        echo "SKIP"; return 0
+        one_skip; return 0
     fi
     if [ "$routine" = 1 ]; then
         routine_prompts "$pr"
