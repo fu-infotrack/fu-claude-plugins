@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   windowStartMs, classify, buildTitle, buildSignature, releaseCheck,
   parseCollectorOutput, pruneBuckets, issueMatchesBySig, buildBucketQuery,
-  validateInvestigation, composeIssueBody,
+  validateInvestigation, composeIssueBody, STATE_LABEL, parseSweepState, buildStateBody,
 } from './log-sweep-lib.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +61,38 @@ function onPath(cmd) {
 // connector names the same value by its path under the event's attributes.
 const stackField = (stackPath) => String(stackPath).replace(/^attributes\.attributes\./, '');
 
+// The state issue: the lowest-numbered issue carrying STATE_LABEL, and the last
+// tick from the first of them holding a readable marker. `readable: false` when
+// the listing fails — then nothing writes, or a second state issue would appear.
+function readState(repo) {
+  try {
+    const found = ghPages(`repos/${repo}/issues?state=all&labels=${STATE_LABEL}`)
+      .filter((i) => !i.pull_request).sort((a, b) => a.number - b.number);
+    const withTick = found.find((i) => parseSweepState(i.body));
+    const issue = withTick || found[0];
+    return { readable: true, issue: issue?.number ?? null, lastTick: withTick ? parseSweepState(withTick.body).last_successful_tick : null };
+  } catch (e) { return { readable: false, issue: null, lastTick: null, error: firstLine(e) }; }
+}
+
+// Record a completed live sweep as ending at this run's window end. Returns the
+// note to print.
+function saveState(run) {
+  if (run.mode !== 'live') return null;
+  if (!run.state.readable) return 'state not saved: the state issue was unreadable at prepare';
+  const body = buildStateBody(Date.parse(run.nowIso));
+  try {
+    if (run.state.issue) {
+      gh([`repos/${run.repo}/issues/${run.state.issue}`, '--method', 'PATCH', '--input', '-'], JSON.stringify({ body }));
+      return `state saved to #${run.state.issue}`;
+    }
+    const issue = JSON.parse(gh([`repos/${run.repo}/issues`, '--method', 'POST', '--input', '-'], JSON.stringify({
+      title: 'log-sweep routine state', body, labels: [STATE_LABEL],
+    })));
+    gh([`repos/${run.repo}/issues/${issue.number}`, '--method', 'PATCH', '-f', 'state=closed']);
+    return `state saved to new issue #${issue.number}`;
+  } catch (e) { return `state not saved (${firstLine(e)}) — the next run sweeps the same window again`; }
+}
+
 function block(header, lines) {
   say(`--- ${header} ---`);
   for (const l of lines) say(l);
@@ -81,8 +113,13 @@ function prepare(args) {
   if (!cfg.query) return say(`SKIP — no services for ${cfg.repo} (no k8_settings app_name in the cwd and no "services" in the config)`);
 
   const nowMs = Date.now();
-  const startMs = windowStartMs(null, nowMs);
   const notes = [];
+  const state = readState(cfg.repo);
+  const startMs = windowStartMs(state.lastTick, nowMs);
+  notes.push(`window ${new Date(startMs).toISOString()} → ${new Date(nowMs).toISOString()} (${
+    state.lastTick ? `since the sweep recorded in #${state.issue}`
+      : state.readable ? 'no recorded sweep, so the last 24h'
+        : `state issue unreadable (${state.error}), so the last 24h`})`);
 
   let issues;
   try { issues = ghPages(`repos/${cfg.repo}/issues?state=all&labels=datadog-logs`); } catch (e) {
@@ -99,6 +136,7 @@ function prepare(args) {
     threshold: Number(cfg.count ?? cfg.count_threshold ?? cfg.countThreshold ?? 1),
     startIso: new Date(startMs).toISOString(), nowIso: new Date(nowMs).toISOString(),
     sourceDir: process.cwd(), matches: issueMatchesBySig(issues), releases, notes,
+    state: { readable: state.readable, issue: state.issue },
   });
 
   say(`PROCEED collector ${mode} ${cfg.repo}`);
@@ -170,7 +208,8 @@ function plan() {
   const summary = `buckets=${parsed.buckets.length} below-threshold=${belowThreshold} already-open=${alreadyOpen} candidates=${candidates.length}`;
   if (!candidates.length) {
     say(`NO_WORK — ${summary}`);
-    for (const n of notes) say(`  ${n}`);
+    const saved = saveState(run);
+    for (const n of [...notes, ...(saved ? [saved] : [])]) say(`  ${n}`);
     return;
   }
   say(`PROCEED ${candidates.length} — ${summary}`);
@@ -221,8 +260,13 @@ function finish() {
   }
   const verb = run.mode === 'live' ? 'filed' : 'would-file';
   say(`${run.mode === 'live' ? 'SWEPT' : 'OBSERVED'} ${run.repo} — ${verb}=${n.filed} dropped=${n.dropped} failed=${n.failed}`);
-  for (const l of [...lines, ...notes]) say(`  ${l}`);
   fs.rmSync(f('plan.json'));
+  // A failed candidate keeps the old state, so the next run sweeps this window
+  // again; what this run did file dedups as already open there.
+  const saved = n.failed && run.mode === 'live'
+    ? `state not saved: ${n.failed} failed — the next run sweeps this window again`
+    : saveState(run);
+  for (const l of [...lines, ...notes, ...(saved ? [saved] : [])]) say(`  ${l}`);
 }
 
 const [, , cmd, ...args] = process.argv;

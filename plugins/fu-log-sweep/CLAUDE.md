@@ -37,8 +37,19 @@ model can call. That fixes the split:
   no index lag, and `closed_at` comes with the listing, so the gate needs no extra call.
   `/log-sweep` searches all issues, so an issue that lost its label dedups locally but
   not in the routine.
-- **Stateless**: the window is the 24 h floor of `windowStartMs`, since a sandbox keeps
-  no state file. Daily schedule; no baseline mode (run `--baseline` locally once).
+- **State lives in a bot issue in the target repo.** A sandbox keeps no file between
+  runs, and a run is told nothing about earlier runs (the docs give it only the prompt,
+  a fire payload, the clones, env vars and connectors; the routines API that lists runs
+  needs the user's claude.ai login, which a run lacks). So the end of the last completed
+  sweep is a hidden `<!-- fu-log-sweep-state: {"last_successful_tick": ms} -->` marker in a
+  closed issue labelled `log-sweep-state` — the user's choice over one in this repo.
+  `prepare` feeds it to `windowStartMs` (the same 24 h floor / 30 d cap as the local state
+  file), so a weekday schedule's Monday run covers the weekend and a failed run's window
+  is swept again. It is saved only by a **live** run that completed with **no failed
+  candidate** (`plan`'s `NO_WORK`, or `finish`); a retried window is safe because what the
+  failed run did file dedups as already open. If the state listing fails, the run sweeps
+  24 h and writes nothing, since a write would create a second state issue. No baseline
+  mode in the routine (run `--baseline` locally once).
 - **Signature parity is measured, not assumed.** The connector returns the stack as an
   indented YAML block; `parseFrames` trims each line, so the collector's verbatim copy
   hashes the same as pup's JSON string. Checked 2026-10-23 on a live bucket: the
@@ -64,4 +75,6 @@ node --test plugins/fu-log-sweep/scripts/*.test.mjs
 `routine.test.mjs` runs `prepare` → `plan` → `finish` with a throwaway `$HOME`, a fake
 target clone, and a `gh` stub that serves REST fixtures and rejects GraphQL-backed commands
 and `--paginate`: NEW / already-open / held / reopened routing, the marker on created
-issues, observe mode making no write call, and strict verdict and bucket validation.
+issues, observe mode making no write call, strict verdict and bucket validation, and the
+state issue (window from it, create-then-close, update in place, not saved on observe, a
+failed collector, a failed candidate or an unreadable listing).

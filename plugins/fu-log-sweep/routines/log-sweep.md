@@ -19,9 +19,11 @@ from it. The signature, dedup and release gate are the same library code
 - **Filing is the script's**, over GitHub REST: create, or reopen + comment. An
   agent never touches GitHub's write API. An agent call that errors is
   re-dispatched once on Opus.
-- **Stateless.** Each run sweeps the last 24 h (the local command's floor), so
-  schedule it daily. Running more often only overlaps (dedup absorbs it); a
-  skipped day is a gap.
+- **State in a bot issue.** A run is not told when the last one ran, so the
+  routine keeps the end of its last completed sweep in a closed issue labelled
+  `log-sweep-state` in the target repo, created on the first live run. Each run
+  sweeps from there (at least 24 h, at most 30 d), so weekends and failed runs
+  are covered. Observe runs never write it; deleting it resets the window to 24 h.
 
 ## Setup (claude.ai/code → Routines → New)
 

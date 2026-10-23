@@ -282,3 +282,17 @@ test('composeIssueBody: our marker first, any drafted marker stripped', () => {
   assert.equal(extractSig(body), 'abc123');
   assert.ok(!body.includes('fff999'));
 });
+
+import { parseSweepState, buildStateBody } from './log-sweep-lib.mjs';
+
+test('buildStateBody/parseSweepState: round-trip the last tick, no dedup marker', () => {
+  const body = buildStateBody(1_792_576_819_201);
+  assert.deepEqual(parseSweepState(body), { last_successful_tick: 1_792_576_819_201 });
+  assert.equal(extractSig(body), null);
+});
+test('parseSweepState: no marker, bad JSON or no tick -> null', () => {
+  assert.equal(parseSweepState('just text'), null);
+  assert.equal(parseSweepState('<!-- fu-log-sweep-state: {nope} -->'), null);
+  assert.equal(parseSweepState('<!-- fu-log-sweep-state: {"last_successful_tick":"x"} -->'), null);
+  assert.equal(parseSweepState(null), null);
+});
