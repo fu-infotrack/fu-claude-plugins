@@ -16,7 +16,10 @@ a plugin command.
   rules & docs — and an Opus merger that dedupes, verifies blockers and
   re-checks prior findings (`FANOUT`). A FANOUT with any reviewer's findings
   missing posts nothing.
-- **Posts as a COMMENT, always** — no `--auto-approve`.
+- **`--auto-approve` is on.** A review with zero blockers posts as an APPROVE
+  only when every PR file is docs, tests or UI (`LOW_RISK_PATHS_DEFAULT`; the
+  fu-tools override does not reach a cloud session). Everything else posts as a
+  COMMENT.
 
 ## Setup (claude.ai/code → Routines → New)
 
@@ -68,7 +71,7 @@ else
   else
     mkdir -p ~/.claude/pr-review
     printf 'EP=%q\nLIB=%q\n' "$EP" "$LIB" > ~/.claude/pr-review/routine.env
-    cd "$EP" && source "$LIB" && pr_review_one --routine
+    cd "$EP" && source "$LIB" && pr_review_one --routine --auto-approve
   fi
 fi
 ```
