@@ -22,6 +22,7 @@ Your task prompt gives absolute paths. Use them verbatim:
   `service`, `env`, `count`, `frame` (the top application frame, or null),
   `confidence` (`app-frame`, `first-frame` or `message`), `errorMessage`,
   `lastSeenIso`, `windowStartIso`, `bucketQuery`, `logsUrl` (may be null),
+  `stackField` (the stack's attribute path, e.g. `Exception` or `error.stack`),
   `postFixCount` and `versions` (REGRESSION only).
 - `SAMPLE_FILE` — `[{timestamp, message, stack}]`, the newest event.
 - `SOURCE_DIR` — the repo's default branch, checked out. Read and grep it with
@@ -30,7 +31,9 @@ Your task prompt gives absolute paths. Use them verbatim:
 
 More samples, if one is not enough: the Datadog MCP connector's
 `search_datadog_logs` with `query` = `bucketQuery`, `from` = `windowStartIso`,
-`limit` ≤ 3, `extra_fields` = `["Exception", "MessageTemplate"]`. Keep it modest.
+`limit` ≤ 3, `extra_fields` = `["<first segment of stackField>", "MessageTemplate"]`
+(`error`, not `error.stack` — the connector returns nothing for a dotted name).
+Keep it modest.
 
 GitHub is REST only — `gh api repos/<repo>/…`. Never `gh issue …`/`gh pr …`
 (GraphQL, which answers 403 here) and never `--paginate`.

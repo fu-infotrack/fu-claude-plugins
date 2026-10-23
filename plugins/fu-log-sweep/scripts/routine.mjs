@@ -57,6 +57,10 @@ function onPath(cmd) {
   try { execFileSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }); return true; } catch { return false; }
 }
 
+// stackPath is a path on pup's raw event (`attributes.attributes.<attr>`); the
+// connector names the same value by its path under the event's attributes.
+const stackField = (stackPath) => String(stackPath).replace(/^attributes\.attributes\./, '');
+
 function block(header, lines) {
   say(`--- ${header} ---`);
   for (const l of lines) say(l);
@@ -91,7 +95,7 @@ function prepare(args) {
 
   writeJson(f('run.json'), {
     mode, repo: cfg.repo, env: cfg.env, query: cfg.query, statusQuery: cfg.statusQuery,
-    errorFacet: cfg.errorFacet, appNamespace: cfg.appNamespace, logsUrlBase: cfg.logsUrlBase,
+    errorFacet: cfg.errorFacet, stackField: stackField(cfg.stackPath), appNamespace: cfg.appNamespace, logsUrlBase: cfg.logsUrlBase,
     threshold: Number(cfg.count ?? cfg.count_threshold ?? cfg.countThreshold ?? 1),
     startIso: new Date(startMs).toISOString(), nowIso: new Date(nowMs).toISOString(),
     sourceDir: process.cwd(), matches: issueMatchesBySig(issues), releases, notes,
@@ -103,7 +107,7 @@ function prepare(args) {
     '',
     `QUERY=${cfg.query}`,
     `ERROR_FACET=${cfg.errorFacet}`,
-    `STACK_FIELD=${String(cfg.stackPath).split('.').pop()}`,
+    `STACK_FIELD=${stackField(cfg.stackPath)}`,
     `FROM=${new Date(startMs).toISOString()}`,
     `TO=${new Date(nowMs).toISOString()}`,
     `THRESHOLD=${Number(cfg.count ?? cfg.count_threshold ?? cfg.countThreshold ?? 1)}`,
@@ -152,7 +156,7 @@ function plan() {
       sig, repo: run.repo, mode: run.mode, classification: cls.kind, number: cls.number ?? null,
       errorKind: b.errorKind, service: b.service, env: run.env, count: b.count, frame, confidence,
       errorMessage, lastSeenIso: sample.timestamp || null, windowStartIso: run.startIso,
-      title: buildTitle(b.errorKind, frame || errorMessage), bucketQuery,
+      title: buildTitle(b.errorKind, frame || errorMessage), bucketQuery, stackField: run.stackField,
       logsUrl: run.logsUrlBase ? `${run.logsUrlBase}${encodeURIComponent(bucketQuery)}` : null,
       postFixCount: release?.postFixCount ?? null, versions: b.versions,
       candidateFile: f(`cand-${sig}.json`), sampleFile: f(`sample-${sig}.json`), outputFile: f(`inv-${sig}.json`),
