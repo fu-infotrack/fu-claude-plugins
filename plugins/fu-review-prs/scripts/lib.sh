@@ -84,11 +84,14 @@ mkdir -p "$STATE_DIR"
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
 #   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
-#                                       `auto-approve` when asked (pr_review_one)
+#                                       `auto-approve` when asked (pr_review_one), plus
+#                                       `routine` and `fanout` for a routine run
+#   part_<d>  findings-<pr>.<d>.json    a FANOUT reviewer's findings for dimension <d>
+#                                       (ROUTINE_DIMENSIONS), merged into `findings`
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings gate mode"
+TRANSIENT_KINDS="pending scope prior findings gate mode part_correctness part_security part_intent"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -102,6 +105,7 @@ pr_path() {
         gate)     printf '%s/gate-%s.txt\n'           "$STATE_DIR" "$pr" ;;
         empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
         mode)     printf '%s/mode-%s\n'               "$STATE_DIR" "$pr" ;;
+        part_*)   printf '%s/findings-%s.%s.json\n'   "$STATE_DIR" "$pr" "${kind#part_}" ;;
         *) return 1 ;;
     esac
 }
@@ -372,6 +376,8 @@ auto_approve_enabled() {
     [ -f "$AUTO_APPROVE_FILE" ]
 }
 single_run() { [ -f "$(pr_path mode "$1")" ]; }
+# Mode lines a routine run adds (pr_review_one --routine). mode_has <pr> <line>
+mode_has() { grep -qx "$2" "$(pr_path mode "$1")" 2>/dev/null; }
 
 # Even with --auto-approve, only a PR whose every file is docs, tests or UI may be
 # approved: a clean review of code that runs on a server is still posted as a
@@ -1077,7 +1083,13 @@ pr_review_finish() {
     IFS=$'\t' read -r commit tree started <<< "$pend"
 
     local findings why
-    if ! findings=$(findings_load "$(pr_path findings "$pr")"); then
+    # A FANOUT review is whole only when every dimension's reviewer left valid
+    # findings: a merged file missing one would read clean where nobody looked.
+    if mode_has "$pr" fanout && ! why=$(routine_parts_check "$pr"); then
+        log "PR #$pr: incomplete FANOUT review ($why) — NOT posting, NOT saving state"
+        pr_review_notify nobody "$pr" 0 "" "nothing posted"
+        status=NO_FINDINGS
+    elif ! findings=$(findings_load "$(pr_path findings "$pr")"); then
         why=$findings
         log "PR #$pr: no usable findings ($why) — NOT posting, NOT saving state (will retry next tick)"
         pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
@@ -1108,6 +1120,7 @@ pr_review_finish() {
         review_body=$(findings_body "$pr" <<< "$findings")
 
         local footer="*Automated review by Claude Code via /code-review*"
+        mode_has "$pr" routine && footer="*Automated review by a Claude Code routine*"
         if [ "$downgraded" = 1 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
@@ -1226,15 +1239,18 @@ requested_from_me() {
 }
 
 # Review one PR. Arguments: a PR as `123`, `#123` or a PR URL (whose repo then
-# overrides the checkout's), and `--auto-approve`; no PR means the one whose head
-# is HEAD. Outputs "SKIP", or "PROCEED <pr> <owner/name>" followed by the Task
-# prompt. The mode goes to disk per PR (`mode`), never the loop's tick-wide flag.
+# overrides the checkout's), `--auto-approve`, and `--routine`; no PR means the
+# one whose head is HEAD. Outputs "SKIP", or "PROCEED <pr> <owner/name>" followed
+# by the Task prompt — with --routine, "SINGLE|FANOUT <pr> <owner/name>" followed
+# by the agent blocks (routine_prompts). The mode goes to disk per PR (`mode`),
+# never the loop's tick-wide flag.
 pr_review_one() {
-    local a pr="" url_repo="" approve=0
+    local a pr="" url_repo="" approve=0 routine=0
     for a in "$@"; do
         case "$a" in
             "") ;;
             --auto-approve|--approve) approve=1 ;;
+            --routine) routine=1 ;;
             https://github.com/*/pull/*)
                 url_repo=$(sed -nE 's#^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+.*#\1#p' <<< "$a")
                 pr=$(sed -nE 's#^https://github\.com/[^/]+/[^/]+/pull/([0-9]+).*#\1#p' <<< "$a") ;;
@@ -1265,7 +1281,8 @@ pr_review_one() {
         echo "SKIP"; return 0
     fi
 
-    { echo single; [ "$approve" = 1 ] && echo auto-approve; } > "$(pr_path mode "$pr")"
+    { echo single; [ "$approve" = 1 ] && echo auto-approve; [ "$routine" = 1 ] && echo routine; } \
+        > "$(pr_path mode "$pr")"
     log "PR #$pr: auto-approve $([ "$approve" = 1 ] && echo ENABLED || echo off)"
     pr_review_reset_tree
 
@@ -1275,6 +1292,94 @@ pr_review_one() {
         pr_clear "$pr"
         echo "SKIP"; return 0
     fi
+    if [ "$routine" = 1 ]; then
+        routine_prompts "$pr"
+        return 0
+    fi
     printf 'PROCEED %s %s\n' "$pr" "$REPO"
     tail -n +2 <<< "$out"
+}
+
+# ── The review routine: /review-pr's flow with a self-contained review ─────────
+# A cloud routine loads no plugin, so neither /code-review nor review-task.md's
+# flow is available to it. pr_review_one --routine runs the same guard and
+# pre-flight, then prints prompts for briefs that carry their own review method
+# (routine-reviewer.md, routine-merger.md). A small scope gets one reviewer that
+# covers every dimension (SINGLE); anything larger gets one reviewer per
+# dimension plus a merger (FANOUT). The orchestrator only copies the blocks.
+ROUTINE_DIMENSIONS="correctness security intent"
+ROUTINE_SINGLE_MAX_FILES=5
+ROUTINE_SINGLE_MAX_LINES=200
+ROUTINE_REVIEWER_BRIEF="$(dirname "$REVIEW_TASK_FILE")/routine-reviewer.md"
+ROUTINE_MERGER_BRIEF="$(dirname "$REVIEW_TASK_FILE")/routine-merger.md"
+
+# Print "<files> <lines>" for the review scope: the files in scope-<pr>.txt and
+# their changed lines (additions + deletions, whole-PR per file, so a DELTA is
+# over-counted — toward FANOUT, the safe side). An unfetchable count prints a
+# line total past the threshold. routine_scope_size <pr>
+routine_scope_size() {
+    local pr=$1 files n lines
+    files=$(sed '1,/^$/d' "$(pr_path scope "$pr")" 2>/dev/null | grep .)
+    n=$(grep -c . <<< "$files")
+    if ! lines=$(gh_api_pages "repos/$REPO/pulls/$pr/files" \
+            '.[] | [.filename, ((.additions // 0) + (.deletions // 0))] | @tsv' 2>/dev/null); then
+        printf '%s %s\n' "$n" $((ROUTINE_SINGLE_MAX_LINES + 1)); return 0
+    fi
+    lines=$(awk -F'\t' 'NR == FNR { want[$0] = 1; next } ($1 in want) { s += $2 } END { print s + 0 }' \
+        <(printf '%s\n' "$files") <(printf '%s\n' "$lines"))
+    printf '%s %s\n' "$n" "$lines"
+}
+
+# One reviewer's block. routine_reviewer_block <pr> <dimension> <output-file>
+routine_reviewer_block() {
+    local pr=$1 dim=$2 out=$3
+    printf -- '--- reviewer %s ---\n' "$dim"
+    printf 'Read %s and follow it exactly. Review PR #%s, dimension: %s.\n' \
+        "$ROUTINE_REVIEWER_BRIEF" "$pr" "$dim"
+    printf 'Use these absolute paths verbatim — do not construct your own:\n'
+    printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
+    if [ "$dim" = all ]; then printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"; fi
+    printf '  OUTPUT_FILE = %s\n' "$out"
+    printf '  REVIEW_DIR = %s\n' "$REVIEW_DIR"
+}
+
+# After a PROCEEDing pre-flight: pick SINGLE or FANOUT from the scope's size,
+# record it in the mode, and print the token line, then one block per agent —
+# "--- reviewer <dimension> ---" blocks, dispatched together, and for FANOUT a
+# "--- merger ---" block, dispatched after them. routine_prompts <pr>
+routine_prompts() {
+    local pr=$1 size n lines d
+    size=$(routine_scope_size "$pr")
+    n=${size% *} lines=${size#* }
+    if [ "$n" -le "$ROUTINE_SINGLE_MAX_FILES" ] && [ "$lines" -le "$ROUTINE_SINGLE_MAX_LINES" ]; then
+        log "PR #$pr: SINGLE review ($n file(s), $lines line(s))"
+        printf 'SINGLE %s %s\n' "$pr" "$REPO"
+        routine_reviewer_block "$pr" all "$(pr_path findings "$pr")"
+        return 0
+    fi
+    log "PR #$pr: FANOUT review ($n file(s), $lines line(s))"
+    echo fanout >> "$(pr_path mode "$pr")"
+    printf 'FANOUT %s %s\n' "$pr" "$REPO"
+    for d in $ROUTINE_DIMENSIONS; do
+        routine_reviewer_block "$pr" "$d" "$(pr_path "part_$d" "$pr")"
+    done
+    printf -- '--- merger ---\n'
+    printf 'Read %s and follow it exactly. Merge the reviews of PR #%s.\n' "$ROUTINE_MERGER_BRIEF" "$pr"
+    printf 'Use these absolute paths verbatim — do not construct your own:\n'
+    printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
+    printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"
+    for d in $ROUTINE_DIMENSIONS; do
+        printf '  PART_FILE_%s = %s\n' "$(tr '[:lower:]' '[:upper:]' <<< "$d")" "$(pr_path "part_$d" "$pr")"
+    done
+    printf '  FINDINGS_FILE = %s\n' "$(pr_path findings "$pr")"
+    printf '  REVIEW_DIR = %s\n' "$REVIEW_DIR"
+}
+
+# Every dimension's part file loads (findings_load). Prints why not and returns 1.
+# routine_parts_check <pr>
+routine_parts_check() {
+    local pr=$1 d why
+    for d in $ROUTINE_DIMENSIONS; do
+        why=$(findings_load "$(pr_path "part_$d" "$pr")") || { printf '%s: %s' "$d" "$why"; return 1; }
+    done
 }

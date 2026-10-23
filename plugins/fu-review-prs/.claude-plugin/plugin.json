@@ -1,6 +1,6 @@
 {
   "name": "fu-review-prs",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Automated PR review orchestrator (/review-prs loop) and single-PR review for cloud scheduled tasks (/review-pr). Posts COMMENT reviews by default; --auto-approve opts into approving clean docs/tests/UI-only PRs.",
   "author": {
     "name": "fu-infotrack",
