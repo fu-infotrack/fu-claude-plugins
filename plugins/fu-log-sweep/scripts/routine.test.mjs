@@ -26,8 +26,9 @@ case "$*" in *--paginate*|*graphql*) echo "stub: rejected" >&2; exit 9 ;; esac
 case "$2" in
   'repos/acme/widgets/issues?state=all&labels=datadog-logs&per_page=100&page=1')
     [ -n "$GH_FAIL_ISSUES" ] && { echo "HTTP 500" >&2; exit 1; }; cat "$FX/issues.json" ;;
-  'repos/acme/widgets/issues?state=all&labels=log-sweep-state&per_page=100&page=1')
-    [ -n "$GH_FAIL_STATE" ] && { echo "HTTP 502" >&2; exit 1; }; cat "$FX/state.json" 2>/dev/null || echo '[]' ;;
+  user) echo '{"login":"me"}' ;;
+  'search/issues?q=repo%3Aacme%2Fwidgets%20is%3Aissue%20in%3Abody%20%22fu-log-sweep-state%22&per_page=100')
+    [ -n "$GH_FAIL_STATE" ] && { echo "HTTP 502" >&2; exit 1; }; cat "$FX/state.json" 2>/dev/null || echo '{"items":[]}' ;;
   'repos/acme/widgets/releases?per_page=30') cat "$FX/releases.json" ;;
   repos/acme/widgets/issues)
     in=$(cat)
@@ -174,14 +175,25 @@ test('prepare: a nested stackPath becomes its path under the event attributes', 
 });
 
 const DAY = 24 * 60 * 60 * 1000;
-const stateIssue = (number, tick) => ({ number, state: 'closed', labels: [{ name: 'log-sweep-state' }], body: `x\n<!-- fu-log-sweep-state: {"last_successful_tick":${tick}} -->` });
+const stateIssue = (number, tick, login = 'me') => ({ number, state: 'closed', user: { login }, body: `x\n<!-- fu-log-sweep-state: {"last_successful_tick":${tick}} -->` });
+const searchHits = (t, ...items) => fs.writeFileSync(path.join(t.fx, 'state.json'), JSON.stringify({ items }));
 const sweepNothing = (t) => fs.writeFileSync(path.join(t.dir, 'buckets.json'), JSON.stringify({ buckets: [OPEN] }));
 
 test('state: the window starts at the last completed sweep the state issue records', () => {
   const t = setup();
   const tick = Date.now() - 3 * DAY;
-  fs.writeFileSync(path.join(t.fx, 'state.json'), JSON.stringify([stateIssue(60, tick)]));
+  searchHits(t, stateIssue(60, tick));
   assert.equal(value(t.run(['prepare', '--live', CONFIG]), 'FROM'), new Date(tick).toISOString());
+});
+
+test("state: a marker in someone else's issue is ignored, and a new state issue is ours", () => {
+  const t = setup();
+  searchHits(t, stateIssue(50, Date.now() - 20 * DAY, 'mallory'));
+  const out = t.run(['prepare', '--live', CONFIG]);
+  assert.equal(Date.parse(value(out, 'TO')) - Date.parse(value(out, 'FROM')), DAY);
+  sweepNothing(t);
+  assert.match(t.run(['plan']), /state saved to new issue #77/);
+  assert.doesNotMatch(t.ghLog(), /issues\/50/);
 });
 
 test('state: a live NO_WORK creates the state issue, closed, at the window end', () => {
@@ -191,14 +203,14 @@ test('state: a live NO_WORK creates the state issue, closed, at the window end',
   const plan = t.run(['plan']);
   assert.match(plan, /state saved to new issue #77/);
   const created = JSON.parse(fs.readFileSync(path.join(t.fx, 'state-created.json'), 'utf8'));
-  assert.deepEqual(created.labels, ['log-sweep-state']);
+  assert.equal(created.labels, undefined, 'no label to depend on');
   assert.match(created.body, new RegExp(`"last_successful_tick":${Date.parse(value(out, 'TO'))}`));
   assert.match(t.ghLog(), /^api repos\/acme\/widgets\/issues\/77 --method PATCH -f state=closed$/m);
 });
 
 test('state: a live finish updates the existing state issue in place', () => {
   const t = setup();
-  fs.writeFileSync(path.join(t.fx, 'state.json'), JSON.stringify([stateIssue(60, Date.now() - DAY)]));
+  searchHits(t, stateIssue(60, Date.now() - DAY));
   throughPlan(t, '--live');
   for (const b of [NEW, BACK]) fs.writeFileSync(path.join(t.dir, `inv-${sigOf(b)}.json`), JSON.stringify({ actionable: false, reason: 'noise' }));
   assert.match(t.run(['finish']), /state saved to #60/);

@@ -42,7 +42,15 @@ model can call. That fixes the split:
   a fire payload, the clones, env vars and connectors; the routines API that lists runs
   needs the user's claude.ai login, which a run lacks). So the end of the last completed
   sweep is a hidden `<!-- fu-log-sweep-state: {"last_successful_tick": ms} -->` marker in a
-  closed issue labelled `log-sweep-state` — the user's choice over one in this repo.
+  closed issue in the target repo — the user's choice over one in this repo. It is found
+  by **REST search on the marker**, not a label: GitHub search indexes HTML-comment text
+  (measured: a `dd-log-sig` value that appears only inside the comment found its one
+  issue), whereas a label must exist first and `POST issues` documents only that labels
+  are "silently dropped" without push access — a dropped label would have orphaned the
+  state issue and created a new one every run. Since anyone can open an issue quoting the
+  marker, only issues **authored by the routine's own account** (`gh api user`) count.
+  Search's index lag is irrelevant at a daily cadence: a run writes at its end and the
+  next reads a day later.
   `prepare` feeds it to `windowStartMs` (the same 24 h floor / 30 d cap as the local state
   file), so a weekday schedule's Monday run covers the weekend and a failed run's window
   is swept again. It is saved only by a **live** run that completed with **no failed
@@ -76,5 +84,6 @@ node --test plugins/fu-log-sweep/scripts/*.test.mjs
 target clone, and a `gh` stub that serves REST fixtures and rejects GraphQL-backed commands
 and `--paginate`: NEW / already-open / held / reopened routing, the marker on created
 issues, observe mode making no write call, strict verdict and bucket validation, and the
-state issue (window from it, create-then-close, update in place, not saved on observe, a
-failed collector, a failed candidate or an unreadable listing).
+state issue (window from it, another author's marker ignored, create-then-close with no
+label, update in place, not saved on observe, a failed collector, a failed candidate or
+an unreadable search).
