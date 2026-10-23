@@ -27,6 +27,11 @@ repo_from_origin() {
 }
 REPO="${PR_REVIEW_REPO:-$(repo_from_origin)}"
 REVIEW_MARKER="<!-- claude-pr-review -->"
+# Each posted review also carries its own state as a hidden comment (see
+# state_comment), so a fresh environment with no ~/.claude/pr-review — a cloud
+# session — can still run a DELTA review with structured priors.
+STATE_TAG="fu-review-state"
+REVIEW_BODY_MAX=65536   # GitHub's limit on a review body, in characters
 # Code (this lib + review-task.md) ships in the plugin; mutable runtime state
 # (locks, logs, per-PR state) lives under BASE_DIR, OUTSIDE the plugin cache
 # (which is wiped on reinstall). REVIEW_TASK_FILE resolves next to this script.
@@ -78,10 +83,12 @@ mkdir -p "$STATE_DIR"
 #                                       or the first PR path that is not (classify_pr_files)
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
+#   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
+#                                       `auto-approve` when asked (pr_review_one)
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings gate"
+TRANSIENT_KINDS="pending scope prior findings gate mode"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -94,13 +101,14 @@ pr_path() {
         findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
         gate)     printf '%s/gate-%s.txt\n'           "$STATE_DIR" "$pr" ;;
         empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
+        mode)     printf '%s/mode-%s\n'               "$STATE_DIR" "$pr" ;;
         *) return 1 ;;
     esac
 }
 
 # A record (kinds `reviewed`, `pending` and `empty`) is key=value lines: commit, tree, and
-# for `reviewed` the time GitHub recorded the review. record_write <kind> <pr>
-# <commit> <tree> [reviewed_at]
+# for `reviewed` the time GitHub recorded the review, for `pending` the time
+# pre-flight dispatched it. record_write <kind> <pr> <commit> <tree> [reviewed_at]
 record_write() {
     local kind=$1 pr=$2 commit=$3 tree=$4 at=${5:-} f
     f=$(pr_path "$kind" "$pr") || return 1
@@ -353,7 +361,17 @@ pr_review_set_mode() {
     fi
 }
 
-auto_approve_enabled() { [ -f "$AUTO_APPROVE_FILE" ]; }
+# A /review-pr run records its mode per PR (pr_review_one), so it neither reads
+# nor flips a /review-prs loop's tick-wide flag. auto_approve_enabled [pr]
+auto_approve_enabled() {
+    local mode
+    if [ -n "${1:-}" ] && mode=$(pr_path mode "$1") && [ -f "$mode" ]; then
+        grep -qx auto-approve "$mode"
+        return
+    fi
+    [ -f "$AUTO_APPROVE_FILE" ]
+}
+single_run() { [ -f "$(pr_path mode "$1")" ]; }
 
 # Even with --auto-approve, only a PR whose every file is docs, tests or UI may be
 # approved: a clean review of code that runs on a server is still posted as a
@@ -604,7 +622,68 @@ fetch_prior_findings() {
             [.[] | select((.body // "") | contains($marker))]
             | sort_by(.submitted_at) | last | .body // ""' 2>/dev/null \
         | sed -e "s|$REVIEW_MARKER||" -e '/^\*Automated review by Claude Code/d' \
+              -e "/^<!-- $STATE_TAG:/d" \
         || true
+}
+
+# ── Review state on GitHub ─────────────────────────────────────────────────────
+# The hidden comment finish appends to every review body:
+#   <!-- fu-review-state:<base64 of {"v":1,"commit":…,"tree":…,"carried":{"findings":[…]}}> -->
+# `carried` is left out when it would push the body past REVIEW_BODY_MAX; the
+# next DELTA then re-checks the posted text instead. state_comment <commit> <tree> [carried]
+state_comment() {
+    local json
+    json=$(jq -cn --arg c "$1" --arg t "$2" --argjson f "${3:-null}" \
+        '{v: 1, commit: $c, tree: $t} + (if $f then {carried: $f} else {} end)') || return 1
+    printf '<!-- %s:%s -->' "$STATE_TAG" "$(printf '%s' "$json" | base64 | tr -d '\n')"
+}
+
+# Our own marked reviews of a PR, one JSON object per line: {submitted_at,
+# commit_id, body}. Only the authenticated user's: anyone can post a review
+# carrying the marker, and it must not be able to plant state. my_marked_reviews <pr>
+my_marked_reviews() {
+    local me
+    me=$(get_gh_user)
+    [ -n "$me" ] || return 1
+    gh_api_pages "repos/$REPO/pulls/$1/reviews" \
+        ".[] | select(.user.login == \"$me\" and ((.body // \"\") | contains(\"$REVIEW_MARKER\")))
+             | {submitted_at, commit_id, body} | @json"
+}
+
+# Rebuild the durable `reviewed` and `carried` records from the state comment on
+# our latest marked review. Only the latest: an older review's state is stale,
+# so a latest review without one restores nothing. Returns 1 when nothing was
+# restored. hydrate_from_github <pr>
+hydrate_from_github() {
+    local pr=$1 latest b64 st commit tree at carried
+    latest=$(my_marked_reviews "$pr" 2>/dev/null | jq -sc 'sort_by(.submitted_at) | last // empty')
+    [ -n "$latest" ] || return 1
+    b64=$(jq -r '.body' <<< "$latest" \
+        | sed -nE "s#^<!-- $STATE_TAG:([A-Za-z0-9+/=]+) -->\$#\\1#p" | tail -n 1)
+    [ -n "$b64" ] || { log "PR #$pr: our latest review carries no state"; return 1; }
+    st=$(printf '%s' "$b64" | base64 -d 2>/dev/null) || return 1
+    commit=$(jq -r '.commit // empty' <<< "$st" 2>/dev/null)
+    tree=$(jq -r '.tree // empty' <<< "$st" 2>/dev/null)
+    at=$(jq -r '.submitted_at // empty' <<< "$latest")
+    [ -n "$commit" ] && [ -n "$tree" ] || return 1
+    record_write reviewed "$pr" "$commit" "$tree" "$at" || return 1
+    carried=$(pr_path carried "$pr")
+    if jq -e '.carried.findings | type == "array"' <<< "$st" >/dev/null 2>&1; then
+        jq -c '.carried' <<< "$st" > "$carried" 2>/dev/null || rm -f "$carried"
+    else
+        rm -f "$carried"
+    fi
+    log "PR #$pr: review state restored from GitHub (commit $commit, reviewed $at)"
+}
+
+# Did one of our marked reviews land on <commit> at or after <since> — another
+# run, triggered by the same request, posting first? Fails open: no answer means
+# post. posted_since <pr> <commit> <since>
+posted_since() {
+    local pr=$1 commit=$2 since=$3
+    [ -n "$since" ] || return 1
+    my_marked_reviews "$pr" 2>/dev/null | jq -se --arg c "$commit" --arg s "$since" \
+        'any(.[]; .commit_id == $c and .submitted_at >= $s)' >/dev/null 2>&1
 }
 
 # Outputs "PR_NUM REASON" lines for PRs that need review.
@@ -917,6 +996,10 @@ pr_review_preflight() {
     current_commit=${head_info%%$'\t'*}
     current_tree=${head_info##*$'\t'}
 
+    # No local record (a fresh cloud session, or lost state): take the last
+    # review's state from GitHub, so scope and priors work as if it were local.
+    record_read reviewed "$pr" >/dev/null || hydrate_from_github "$pr" || true
+
     local scope_rc=0
     write_review_scope "$pr" "$current_commit" "$current_tree" || scope_rc=$?
     if [ "$scope_rc" -eq 2 ]; then
@@ -938,7 +1021,8 @@ pr_review_preflight() {
     # read by pr_review_finish. Then persist the reviewed commit/tree: the
     # pending record is the PROCEED token pr_review_finish requires.
     rm -f "$(pr_path findings "$pr")"
-    record_write pending "$pr" "$current_commit" "$current_tree" || {
+    record_write pending "$pr" "$current_commit" "$current_tree" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
         # No token, no dispatch: finish would drop the finished review as a no-op.
         log "PR #$pr: could not write the pending record, skipping"
         pr_clear "$pr"
@@ -973,15 +1057,16 @@ dispatch_prompt() {
 # failed post or a missing/invalid findings file retries next tick.
 # Prints ONE status token, so the orchestrator can tell the outcomes apart without
 # reading the log: POSTED <APPROVE|COMMENT>, FAILED (the POST failed),
-# NO_FINDINGS (missing or invalid findings file), or NOTHING_PENDING (no PROCEED
-# token). The reason for a non-POSTED outcome stays in the log only.
+# NO_FINDINGS (missing or invalid findings file), NOTHING_PENDING (no PROCEED
+# token), or DUPLICATE (another run posted on this head after pre-flight
+# dispatched this one). The reason for a non-POSTED outcome stays in the log only.
 pr_review_finish() {
     local pr=$1 status
 
     # pending-<pr> is the PROCEED token: without it no review was dispatched for
     # this head (the orchestrator ran finish after a SKIP, or out of order), so
     # there is nothing to post — and no reviewed commit to record.
-    local pend commit tree _at
+    local pend commit tree started
     if ! pend=$(record_read pending "$pr"); then
         log "PR #$pr: nothing pending (pre-flight did not PROCEED) — finish is a no-op"
         pr_clear "$pr"
@@ -989,7 +1074,7 @@ pr_review_finish() {
         echo "NOTHING_PENDING"
         return 0
     fi
-    IFS=$'\t' read -r commit tree _at <<< "$pend"
+    IFS=$'\t' read -r commit tree started <<< "$pend"
 
     local findings why
     if ! findings=$(findings_load "$(pr_path findings "$pr")"); then
@@ -1004,7 +1089,7 @@ pr_review_finish() {
         # Policy gate: zero BLOCKERs only makes the verdict APPROVE. Turning that
         # into a posted GitHub approval needs the opt-in flag (see
         # AUTO_APPROVE_FILE); without it the same findings post as a COMMENT.
-        if [ "$decision" = "APPROVE" ] && ! auto_approve_enabled; then
+        if [ "$decision" = "APPROVE" ] && ! auto_approve_enabled "$pr"; then
             log "PR #$pr: no blockers found, but auto-approve is off — posting COMMENT"
             decision="COMMENT"
             downgraded=1
@@ -1030,22 +1115,38 @@ pr_review_finish() {
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes are auto-approved.*"
         fi
+        # No badge on a /review-pr run: it has no loop behind it to keep one live.
         local hb_url
-        if [ "$(fu_cfg heartbeat_footer | head -n1)" = true ] && hb_url=$(heartbeat_url); then
+        if ! single_run "$pr" && [ "$(fu_cfg heartbeat_footer | head -n1)" = true ] &&
+                hb_url=$(heartbeat_url); then
             footer="$footer
 
 ![review bot status]($hb_url/badge/$REPO.svg)"
         fi
 
-        local body
+        local body carried_json state
         body="$REVIEW_MARKER
 $review_body
 
 ---
 $footer"
+        carried_json=$(findings_carried <<< "$findings" 2>/dev/null)
+        state=$(state_comment "$commit" "$tree" "${carried_json:-null}")
+        if [ $(( ${#body} + 1 + ${#state} )) -gt "$REVIEW_BODY_MAX" ]; then
+            log "PR #$pr: carried findings would overflow the review body — state comment holds commit/tree only"
+            state=$(state_comment "$commit" "$tree")
+        fi
+        [ -n "$state" ] && body="$body
+$state"
 
         local submitted_at
-        if submitted_at=$(gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
+        if posted_since "$pr" "$commit" "$started"; then
+            # Another run, for the same request, posted on this head while this
+            # one reviewed. It also notified and saved state; just tidy up.
+            log "PR #$pr: a review of $commit was posted after $started by another run — NOT posting"
+            clear_looking_eyes "$pr"
+            status=DUPLICATE
+        elif submitted_at=$(gh api "repos/$REPO/pulls/$pr/reviews" --method POST \
                 -f "event=$decision" -f "body=$body" --jq '.submitted_at // empty' 2>/dev/null); then
             log "PR #$pr: posted $decision review"
             status="POSTED $decision"
@@ -1059,7 +1160,7 @@ $footer"
             # pre-flight then falls back to this review's text on GitHub.
             local carried
             carried=$(pr_path carried "$pr")
-            findings_carried <<< "$findings" 2>/dev/null > "$carried" || {
+            { [ -n "$carried_json" ] && printf '%s\n' "$carried_json" 2>/dev/null > "$carried"; } || {
                 rm -f "$carried" 2>/dev/null
                 log "PR #$pr: could not save the carried findings — the next DELTA reads the posted text"
             }
@@ -1092,4 +1193,88 @@ pr_review_cleanup() {
     # re-declares the mode, so this is belt-and-braces.)
     rm -f "$AUTO_APPROVE_FILE"
     pr_review_release_lock
+}
+
+# ── /review-pr: one PR, one run ────────────────────────────────────────────────
+# Built for a cloud scheduled task fired by a GitHub pull_request.review_requested
+# event: a fresh session per event, so no lock, detection, purge or heartbeat.
+# Pre-flight, the sub-agent and finish are the loop's own.
+
+# The open PR whose head is the checkout's HEAD — a PR-triggered cloud session
+# starts its clone there. Exactly one, or nothing.
+pr_from_head() {
+    local sha prs
+    sha=$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null) || return 1
+    prs=$(gh api "repos/$REPO/commits/$sha/pulls" \
+        --jq ".[] | select(.state == \"open\" and .head.sha == \"$sha\") | .number" 2>/dev/null) \
+        || return 1
+    if [ "$(grep -c . <<< "$prs")" != 1 ]; then
+        log "HEAD $sha is the head of $(grep -c . <<< "$prs") open PR(s) — need exactly one"
+        return 1
+    fi
+    printf '%s\n' "$prs"
+}
+
+# Is the review requested from us by name? A team request does not count:
+# repos that auto-add a team would otherwise review every PR.
+requested_from_me() {
+    local me
+    me=$(get_gh_user)
+    [ -n "$me" ] || return 1
+    gh api "repos/$REPO/pulls/$1" \
+        --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>/dev/null | grep -qx true
+}
+
+# Review one PR. Arguments: a PR as `123`, `#123` or a PR URL (whose repo then
+# overrides the checkout's), and `--auto-approve`; no PR means the one whose head
+# is HEAD. Outputs "SKIP", or "PROCEED <pr> <owner/name>" followed by the Task
+# prompt. The mode goes to disk per PR (`mode`), never the loop's tick-wide flag.
+pr_review_one() {
+    local a pr="" url_repo="" approve=0
+    for a in "$@"; do
+        case "$a" in
+            "") ;;
+            --auto-approve|--approve) approve=1 ;;
+            https://github.com/*/pull/*)
+                url_repo=$(sed -nE 's#^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+.*#\1#p' <<< "$a")
+                pr=$(sed -nE 's#^https://github\.com/[^/]+/[^/]+/pull/([0-9]+).*#\1#p' <<< "$a") ;;
+            *)
+                if [[ "$a" =~ ^#?([0-9]+)$ ]]; then pr=${BASH_REMATCH[1]}
+                else log "WARNING: ignoring unrecognised argument '$a'"; fi ;;
+        esac
+    done
+    [ "${PR_REVIEW_AUTO_APPROVE:-0}" = 1 ] && approve=1
+    if [ -n "$url_repo" ] && [ "$url_repo" != "$REPO" ]; then
+        # Every path derives from REPO at source time.
+        export PR_REVIEW_REPO=$url_repo
+        source "$LIB_DIR/lib.sh"
+    fi
+
+    rotate_log "$LOG_FILE"
+    log "=== /review-pr ${pr:-(PR from HEAD)} ==="
+    if [ -z "$REPO" ]; then
+        log "ERROR: could not detect the target repo — pass a PR URL, or set PR_REVIEW_REPO"
+        echo "SKIP"; return 0
+    fi
+    if [ -z "$pr" ] && ! pr=$(pr_from_head); then
+        log "no PR given and none resolved from HEAD — skipping"
+        echo "SKIP"; return 0
+    fi
+    if ! requested_from_me "$pr"; then
+        log "PR #$pr: review not requested from $(get_gh_user) by name — skipping"
+        echo "SKIP"; return 0
+    fi
+
+    { echo single; [ "$approve" = 1 ] && echo auto-approve; } > "$(pr_path mode "$pr")"
+    log "PR #$pr: auto-approve $([ "$approve" = 1 ] && echo ENABLED || echo off)"
+    pr_review_reset_tree
+
+    local out
+    out=$(pr_review_preflight "$pr" review_requested)
+    if [ "$(head -n 1 <<< "$out")" != PROCEED ]; then
+        pr_clear "$pr"
+        echo "SKIP"; return 0
+    fi
+    printf 'PROCEED %s %s\n' "$pr" "$REPO"
+    tail -n +2 <<< "$out"
 }

@@ -30,6 +30,39 @@ checkout you started the loop from keeps its branch, its uncommitted work and
 its other branches, which matters in a cloud session, where that checkout is the
 session's own.
 
+## `/review-pr` — one PR, for a cloud scheduled task
+
+`/review-pr [<pr> | #<pr> | <pr-url>] [--auto-approve]` reviews a single PR with
+the same pre-flight, sub-agent and post step as a tick, but with no lock, no
+detection, no purge and no heartbeat. It is built for a Claude Code cloud
+scheduled task with a GitHub **Pull request → `review_requested`** trigger, where
+every event gets a fresh session:
+
+- **Task setup**: one task per repo (the PR's repo must be the task's *first*
+  repository, so the clone starts at the PR's head), trigger
+  `pull_request.review_requested` with Base branch = `main`, an environment whose
+  setup script installs this plugin and writes the fu-tools config, and the
+  prompt `/fu-review-prs:review-pr --auto-approve`. The Claude GitHub App must be
+  installed on the repo.
+- **Which PR**: an argument wins (a URL also sets the repo); with none, the one
+  open PR whose head is the checkout's `HEAD`. Zero or several → `SKIP`.
+- **Guard**: it reviews only when **you, by name**, are in the PR's
+  `requested_reviewers`. A team request (repos that auto-add a team) is a
+  `SKIP`. GitHub drops you from that list once you review, so a late duplicate
+  event skips too.
+- **State lives on GitHub.** Every posted review — from either command — ends
+  with a hidden `<!-- fu-review-state:… -->` comment holding the reviewed commit,
+  tree and the carried findings. With no local record, pre-flight restores them
+  from **your own latest** marked review, so a fresh session still runs a DELTA
+  with structured priors. The findings are dropped from the comment if they
+  would push the body past GitHub's 65,536-character limit.
+- **Duplicates**: just before posting, finish prints `DUPLICATE` and posts
+  nothing if another run already posted a review of the same head after this one
+  was dispatched.
+- **Output**: one token — `SKIP`, `POSTED APPROVE|COMMENT`, `FAILED`,
+  `NO_FINDINGS` or `DUPLICATE`. Nothing retries; a failure alerts through the
+  configured notifications.
+
 ## Posting policy — COMMENT by default
 
 Every review posts as a GitHub `COMMENT`, **including** reviews that found zero
@@ -335,6 +368,7 @@ orchestrator's context is just its token.
 ## Pieces
 
 - `commands/review-prs.md` — the per-tick orchestrator (context-thin).
+- `commands/review-pr.md` — one PR per run, for a cloud scheduled task (above).
 - `scripts/lib.sh` — lock/setup/detect/finish helpers; sourced per Bash call.
 - `review-task.md` — sub-agent spec: read the scope pre-flight decided, read PR/linked-issue intent,
   run `/code-review` with an explicit `low` or `medium` level picked from the
@@ -355,6 +389,9 @@ orchestrator's context is just its token.
   failed open-PR listing keeping every review record, and the review worktree
   leaving the checkout's branch, uncommitted work and other branches alone (real
   `git` against a local bare origin).
+- `test/review-pr.test.sh` — `/review-pr`: argument forms, the PR from `HEAD`, the
+  by-name request guard, the per-PR mode, the state comment and its restore, and
+  the duplicate check.
 
 ## Docs
 

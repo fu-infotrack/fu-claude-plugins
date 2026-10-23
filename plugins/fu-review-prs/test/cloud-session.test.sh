@@ -117,6 +117,11 @@ cleanup
 echo "== lib.sh calls no GraphQL-backed gh command =="
 eq "no gh pr/repo/issue/search outside comments" "" \
   "$(grep -nE '^[^#]*\bgh (pr|repo|issue|search)\b' "$LIB")"
+# Both commands run in cloud sessions — /review-pr only there, from a scheduled task.
+for cmd in "$ROOT"/commands/*.md; do
+  eq "no GraphQL-backed gh command in $(basename "$cmd")" "" \
+    "$(grep -nE '\bgh (pr|repo|issue|search)\b|--paginate' "$cmd")"
+done
 
 echo "== no gh api --paginate: the cloud proxy rejects its numeric-ID next page =="
 # --paginate follows GitHub's Link: rel="next", which names the repo as
