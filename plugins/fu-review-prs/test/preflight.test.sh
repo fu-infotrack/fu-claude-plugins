@@ -145,7 +145,9 @@ Use these absolute paths verbatim — do not construct your own:
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
 eq "stderr is empty" "" "$(err)"
 eq "pending written for finish" "commit=deadbeef
-tree=cafef00d" "$(cat "$STATE/pending-7" 2>/dev/null)"
+tree=cafef00d" "$(sed '/^reviewed_at=/d' "$STATE/pending-7" 2>/dev/null)"
+eq "pending stamps the dispatch time, for finish's duplicate check" "1" \
+  "$(grep -cE '^reviewed_at=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$' "$STATE/pending-7")"
 eq "log went to the file instead" "1" \
   "$(grep -c 'PR #7: FULL review (first review), 2 file(s)' "$HOME/.claude/pr-review/review-acme-widgets.log")"
 eq "first review: FULL scope, every PR file" "$(scope_file FULL '' src/a.cs src/b.cs)" "$(scope)"

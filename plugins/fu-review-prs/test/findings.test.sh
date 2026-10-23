@@ -123,7 +123,9 @@ finish() {
   lib "record_write pending 7 deadbeef cafef00d; pr_review_set_mode ${2:-}; pr_review_finish 7"
 }
 # The body field of the posted review, and its event.
-posted_body()  { sed -n '/^body=/,/^--jq$/p' "$GH_POST" 2>/dev/null | sed '1s/^body=//;$d'; }
+# The review text, without the trailing state comment (review-pr.test.sh owns that).
+posted_body()  { sed -n '/^body=/,/^--jq$/p' "$GH_POST" 2>/dev/null | sed '1s/^body=//;$d' \
+                   | sed '/^<!-- fu-review-state:/d'; }
 posted_event() { sed -n 's/^event=//p' "$GH_POST" 2>/dev/null; }
 posted()       { [ -e "$GH_POST" ] && echo yes || echo no; }
 notified()     { jq -r '.summary' "$CURL_PAYLOAD" 2>/dev/null; }
