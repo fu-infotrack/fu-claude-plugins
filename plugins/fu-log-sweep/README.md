@@ -30,8 +30,14 @@ git remote), `count_threshold` (1), `app_namespace` (stack-frame app prefix, e.g
 `["Acme"]`), `status_query` (`status:error`), `logs_url_base` (Logs Explorer URL
 prefix for the issue link), `version_tag` (Datadog tag with the deployed build, `version`; closed issues reopen only if the error recurs on a build released after the close).
 
+## Cloud routine
+
+The same sweep as a daily Claude Code routine, with no plugin and no `pup`: it
+reads Datadog through the Datadog MCP connector and files through GitHub REST.
+Setup and the prompt to paste are in [`routines/log-sweep.md`](routines/log-sweep.md).
+
 ## Tests
 
 ```
-node --test plugins/fu-log-sweep/scripts/log-sweep-lib.test.mjs
+node --test plugins/fu-log-sweep/scripts/*.test.mjs
 ```

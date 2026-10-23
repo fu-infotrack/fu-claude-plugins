@@ -193,3 +193,83 @@ export function extractSig(body) {
   const m = (body || '').match(LOG_MARKER_RE);
   return m ? m[1] : null;
 }
+
+// ---- Cloud routine helpers --------------------------------------------------
+// The routine has no pup and no plugin: a collector sub-agent reads Datadog via
+// MCP and writes a buckets file, an investigator per candidate writes a verdict
+// file, and routine.mjs does everything else. These validate those two files
+// strictly (one bad item rejects the file) and hold the dedup/filing rules.
+
+const isStr = (v) => typeof v === 'string';
+const isCount = (v) => Number.isInteger(v) && v >= 0;
+
+// Validate the collector's {buckets:[{errorKind, service, count, versions?, samples?}]}.
+// Returns {ok:true, buckets} or {ok:false, error}.
+export function parseCollectorOutput(obj) {
+  if (!obj || !Array.isArray(obj.buckets)) return { ok: false, error: 'no buckets array' };
+  const buckets = [];
+  for (const [i, b] of obj.buckets.entries()) {
+    if (!b || !isStr(b.errorKind) || !b.errorKind || !isStr(b.service) || !b.service || !isCount(b.count)) {
+      return { ok: false, error: `bucket ${i}: needs errorKind, service and an integer count` };
+    }
+    const versions = b.versions ?? [];
+    if (!Array.isArray(versions) || versions.some((v) => !v || !isStr(v.version) || !isCount(v.count))) {
+      return { ok: false, error: `bucket ${i}: versions must be [{version, count}]` };
+    }
+    const samples = b.samples ?? [];
+    if (!Array.isArray(samples) || samples.some((s) => !s || [s.timestamp, s.message, s.stack].some((v) => v != null && !isStr(v)))) {
+      return { ok: false, error: `bucket ${i}: samples must be [{timestamp, message, stack}] strings` };
+    }
+    buckets.push({ errorKind: b.errorKind, service: b.service, count: b.count, versions, samples });
+  }
+  return { ok: true, buckets };
+}
+
+// Drop buckets under the count threshold, then keep the top `cap` by count.
+export function pruneBuckets(buckets, threshold, cap) {
+  const over = buckets.filter((b) => b.count >= threshold);
+  const sorted = [...over].sort((a, b) => b.count - a.count);
+  return { kept: sorted.slice(0, cap), belowThreshold: buckets.length - over.length, overCap: Math.max(0, sorted.length - cap) };
+}
+
+// Index REST issues (repos/<r>/issues?state=all) by their dd-log-sig marker.
+// Pull requests are skipped. Returns {<sig>: [{number, state, closedAt}]}, the
+// shape classify() takes, with state mapped to OPEN/CLOSED.
+export function issueMatchesBySig(issues) {
+  const out = {};
+  for (const it of issues || []) {
+    if (it.pull_request) continue;
+    const sig = extractSig(it.body);
+    if (!sig) continue;
+    (out[sig] ||= []).push({ number: it.number, state: it.state === 'open' ? 'OPEN' : 'CLOSED', closedAt: it.closed_at || null });
+  }
+  return out;
+}
+
+// The per-bucket Logs query, the same string /log-sweep builds.
+export function buildBucketQuery(service, env, statusQuery, errorFacet, errorKind) {
+  return `service:${service} env:${env} ${statusQuery || 'status:error'} ${errorFacet}:"${errorKind}"`;
+}
+
+const SEVERITIES = ['low', 'med', 'high'];
+
+// Validate an investigator's verdict file. An actionable verdict needs a body;
+// an actionable REGRESSION also needs the regression comment.
+export function validateInvestigation(obj, classification) {
+  if (!obj || typeof obj.actionable !== 'boolean') return { ok: false, error: 'actionable must be true or false' };
+  if (!isStr(obj.reason) || !obj.reason.trim()) return { ok: false, error: 'reason is required' };
+  if (!obj.actionable) return { ok: true, value: { actionable: false, reason: obj.reason } };
+  if (!SEVERITIES.includes(obj.severity)) return { ok: false, error: 'severity must be low, med or high' };
+  if (!isStr(obj.body) || !obj.body.trim()) return { ok: false, error: 'an actionable verdict needs a body' };
+  if (classification === 'REGRESSION' && (!isStr(obj.comment) || !obj.comment.trim())) {
+    return { ok: false, error: 'an actionable REGRESSION needs a comment' };
+  }
+  return { ok: true, value: { actionable: true, reason: obj.reason, severity: obj.severity, body: obj.body, comment: obj.comment } };
+}
+
+// Issue body: our marker first, and no marker from the drafted text, so a
+// sample that quotes another signature can never redirect the dedup.
+export function composeIssueBody(sig, body) {
+  const clean = (body || '').replace(new RegExp(LOG_MARKER_RE.source, 'gi'), '').trim();
+  return `${buildMarker(sig)}\n\n${clean}`;
+}
