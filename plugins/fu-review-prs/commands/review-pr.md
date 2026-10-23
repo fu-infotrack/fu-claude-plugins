@@ -16,7 +16,7 @@ source "${CLAUDE_PLUGIN_ROOT}/scripts/lib.sh"
 pr_review_one $ARGUMENTS
 ```
 
-- `SKIP` → **stop**. Reply `SKIP` and nothing else.
+- `SKIP — <reason>` → **stop**. Reply with that line and nothing else.
 - `PROCEED <PR> <REPO>` on the first line → keep `<PR>` and `<REPO>`, go to Step 2.
 
 ## Step 2 — Spawn the review sub-agent
