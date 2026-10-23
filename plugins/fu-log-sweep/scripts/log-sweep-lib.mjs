@@ -273,3 +273,35 @@ export function composeIssueBody(sig, body) {
   const clean = (body || '').replace(new RegExp(LOG_MARKER_RE.source, 'gi'), '').trim();
   return `${buildMarker(sig)}\n\n${clean}`;
 }
+
+// ---- Routine state: one bot issue in the target repo -------------------------
+// A routine's sandbox keeps no file between runs and a run is not told when the
+// last one ran, so the end of the last completed sweep lives in a closed,
+// labelled issue's body as a hidden marker. It carries no dd-log-sig marker and
+// no datadog-logs label, so the dedup index never sees it.
+
+export const STATE_LABEL = 'log-sweep-state';
+const STATE_RE = /<!--\s*fu-log-sweep-state:\s*(\{.*?\})\s*-->/s;
+
+// The state in an issue body, or null when there is none or it is unreadable.
+export function parseSweepState(body) {
+  const m = (body || '').match(STATE_RE);
+  if (!m) return null;
+  try {
+    const s = JSON.parse(m[1]);
+    return Number.isFinite(s.last_successful_tick) ? { last_successful_tick: s.last_successful_tick } : null;
+  } catch { return null; }
+}
+
+// The state issue's whole body: a note for humans, then the marker.
+export function buildStateBody(lastTickMs) {
+  return [
+    'State for the log-sweep cloud routine: when its last completed sweep ended.',
+    'The next run sweeps Datadog from that point (at least 24h back, at most 30d).',
+    'The routine edits this; leave it closed. Deleting it resets the window to 24h.',
+    '',
+    `Last completed sweep: ${new Date(lastTickMs).toISOString()}`,
+    '',
+    `<!-- fu-log-sweep-state: ${JSON.stringify({ last_successful_tick: lastTickMs })} -->`,
+  ].join('\n');
+}
