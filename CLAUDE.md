@@ -79,7 +79,7 @@ Claude Code's plugin `userConfig` mechanism exists but is intentionally **not** 
 
 ## Code patterns
 
-- **Pure logic split from I/O.** `fu-log-sweep/scripts/log-sweep-lib.mjs` is dependency-free, side-effect-free, and `node:test`-covered; `sweep.mjs` is the thin CLI wrapper the command shells out to. Date/time and network stay out of the testable core. Preserve this split when extending.
+- **Pure logic split from I/O.** `fu-log-sweep/scripts/log-sweep-lib.mjs` is dependency-free, side-effect-free, and `node:test`-covered; `sweep.mjs` is the thin CLI wrapper the command shells out to, and `routine.mjs` the cloud routine's (the only one that calls `gh`). Date/time and network stay out of the testable core. Preserve this split when extending.
 - **Hooks** live in `src/hooks/` as bash, referenced via `${CLAUDE_PLUGIN_ROOT}/src/hooks/...`. To block an action a PreToolUse hook emits a `hookSpecificOutput` JSON object with `permissionDecision: "deny"` and exits non-zero (2). `jq` is a hard dependency.
 
 ## Per-plugin rules live with the plugin
@@ -99,7 +99,7 @@ open it explicitly.
 | fu-review-prs | `plugins/fu-review-prs/CLAUDE.md` | Which steps must stay deterministic bash, the disk-based (compaction-immune) handoff, approve-is-opt-in, the blocker-count rule, house rules, why every GitHub call is REST and reviews run in their own worktree |
 | fu-skills | `plugins/fu-skills/CLAUDE.md` | Per-skill designs: `fu-pg` (Vault, LDAP, the `--export` failure contract), `fu-mssql` (Windows auth, named hosts), `fu-k8` (GET-only proxy replay) |
 | fu-dev-guards | `plugins/fu-dev-guards/CLAUDE.md` | The command-matching rule (`cmd_invokes`, "data is not a command"), advisory-vs-enforcement, and the session-stamp marker wire format |
-| fu-log-sweep | `plugins/fu-log-sweep/CLAUDE.md` | The self-computed error signature it dedups on — a wire format |
+| fu-log-sweep | `plugins/fu-log-sweep/CLAUDE.md` | The self-computed error signature it dedups on — a wire format — and why the cloud routine splits Datadog (agents, via MCP) from filing (`routine.mjs`) |
 | fu-statusline | `plugins/fu-statusline/CLAUDE.md` | Why the renderer cannot run from the plugin cache, and the `fu-statusline` marker token you must not remove |
 
 When you add a plugin, give it a `CLAUDE.md` and a row here — alongside the three registries
@@ -115,6 +115,7 @@ plugin's `CLAUDE.md` says what its suites actually assert; the whole set is:
 ```bash
 bash plugins/fu-copilot/test/dispatch.test.sh
 bash plugins/fu-copilot/test/verify.test.sh
+node --test plugins/fu-log-sweep/scripts/*.test.mjs
 bash plugins/fu-dev-guards/test/git-guard.test.sh
 bash plugins/fu-dev-guards/test/stamp-session.test.sh
 bash plugins/fu-review-prs/test/auto-approve.test.sh
@@ -151,7 +152,7 @@ No package manager pulls these — they must be on PATH:
 - `node` — `fu-log-sweep` and its `node --test` suite, plus the `fu-review-prs` heartbeat Worker's badge tests. `npx wrangler` (Cloudflare) only to deploy that Worker, once, by hand.
 - `python3` — the `fu-ce` skill's frontmatter validator.
 - `curl` — the `fu-k8` skill (the only hard dep; `jq` optional, used for formatting); `fu-review-prs` only when a notification channel or the heartbeat is configured.
-- `pup` — the `fu-pup` skill (plus the bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-log-sweep`** (its sole Datadog access path). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
+- `pup` — the `fu-pup` skill (plus the bundled `scripts/install-pup.sh` that installs/updates the binary) **and `fu-log-sweep`'s `/log-sweep`** (the cloud routine reads Datadog through the Datadog MCP connector instead). The Datadog API CLI; authenticated via `pup auth login` or `DD_API_KEY`/`DD_APP_KEY`/`DD_SITE`.
 - `copilot` (GitHub Copilot CLI, authenticated) — `fu-copilot` only. Its test suites stub it on PATH, so they need nothing installed.
 - `wsl.exe`, PowerShell 7+, `winget` — the `fu-wsl` skill (Windows-host only; drives a Debian/Ubuntu WSL instance).
 
@@ -160,7 +161,7 @@ No package manager pulls these — they must be on PATH:
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups, deduping on a self-computed error signature (`type\|service\|top-app-frame` sha1) |
+| fu-log-sweep | command + agents + scripts | Datadog error-level Logs → de-duped GitHub issues with root-cause writeups, deduping on a self-computed error signature (`type\|service\|top-app-frame` sha1). A cloud routine (`routines/log-sweep.md`) runs the same sweep daily with no plugin and no `pup`: Datadog via the MCP connector in sub-agents, filing via REST from `routine.mjs` |
 | fu-review-prs | command + scripts | PR review orchestrator (self-contained: bundles `lib.sh` + `review-task.md`; runtime state stays in `~/.claude/pr-review`, namespaced per repo). REST-only GitHub calls and a separate review worktree, so it runs in Claude Code cloud sessions too. Comment-only by default — `--auto-approve` to approve clean docs/tests/UI-only PRs. `/review-pr` reviews one PR per run for a cloud scheduled task on a `review_requested` trigger, with its state carried in the review body |
 | fu-skills | skills + agents + scripts | **All scenario skills in one plugin.** `/fu-pg` (Postgres via HashiCorp Vault credentials) and `/fu-pup` (Datadog via the `pup` CLI) stay model-invocable — they're daily drivers and auto-trigger. The rest are `disable-model-invocation: true` (zero context until explicitly invoked): `/fu-mssql` (SQL Server via Windows integrated auth — `sqlcmd -E` native, or the Windows-host `sqlcmd.exe` under WSL; named hosts + default), `/fu-k8` (read-only K8s across clusters via the k8dash pass-through proxy, GET-only, user's OIDC token), `/fu-order` (Orders API inspection), `/fu-wsl` (provision a WSL work environment from Windows PowerShell 7+), `/fu-ce` (document solved problems; EveryInc fork, MIT — ships the ce-* review agents). `/ask-fu` (also hidden) is the catalogue/router for when the name escapes you. **fu-tools config keys are unchanged** (`pg-stage`, `mssql-stage`, `k8dash`, `inspecting-orders-api`) — the scripts kept their tool names, so no config migration |
 | fu-copilot | skill + agent + scripts | Delegate a coding task to GitHub Copilot CLI and verify the outcome from git. `dispatch.sh` stages the brief in `/tmp`, inlines it into `-p`, launches detached and confirms it reached the process; `verify.sh` waits on the PID and checks HEAD moved / empty commits / losslessness / log denials |

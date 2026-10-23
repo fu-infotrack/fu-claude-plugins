@@ -225,3 +225,60 @@ test('releaseCheck: no release data -> reopen as before', () => {
   assert.equal(releaseCheck([{ version: 'v1', count: 1 }], [], CLOSED).regressed, true);
   assert.equal(releaseCheck([], REL, CLOSED).regressed, true);
 });
+
+import {
+  parseCollectorOutput, pruneBuckets, issueMatchesBySig, buildBucketQuery,
+  validateInvestigation, composeIssueBody,
+} from './log-sweep-lib.mjs';
+
+test('parseCollectorOutput: accepts buckets, defaults versions/samples to []', () => {
+  const r = parseCollectorOutput({ buckets: [{ errorKind: 'E', service: 's', count: 3 }] });
+  assert.deepEqual(r, { ok: true, buckets: [{ errorKind: 'E', service: 's', count: 3, versions: [], samples: [] }] });
+});
+test('parseCollectorOutput: one bad bucket rejects the file', () => {
+  assert.equal(parseCollectorOutput({ buckets: [{ errorKind: 'E', service: 's', count: 1 }, { errorKind: 'E', service: 's', count: '2' }] }).ok, false);
+  assert.equal(parseCollectorOutput({ buckets: [{ errorKind: 'E', service: 's', count: 1, versions: [{ version: 'v1' }] }] }).ok, false);
+  assert.equal(parseCollectorOutput({ buckets: [{ errorKind: 'E', service: 's', count: 1, samples: [{ stack: 7 }] }] }).ok, false);
+  assert.equal(parseCollectorOutput({}).ok, false);
+});
+
+test('pruneBuckets: threshold, then the top cap by count', () => {
+  const b = [{ count: 1 }, { count: 9 }, { count: 5 }, { count: 7 }];
+  assert.deepEqual(pruneBuckets(b, 2, 2), { kept: [{ count: 9 }, { count: 7 }], belowThreshold: 1, overCap: 1 });
+});
+
+test('issueMatchesBySig: indexes markers, maps state, skips PRs and unmarked issues', () => {
+  const m = issueMatchesBySig([
+    { number: 1, state: 'open', body: '<!-- dd-log-sig: aaa111 -->\nx' },
+    { number: 2, state: 'closed', closed_at: '2026-01-01T00:00:00Z', body: '<!-- dd-log-sig: aaa111 -->' },
+    { number: 3, state: 'open', body: '<!-- dd-log-sig: bbb222 -->', pull_request: {} },
+    { number: 4, state: 'open', body: null },
+  ]);
+  assert.deepEqual(m, { aaa111: [
+    { number: 1, state: 'OPEN', closedAt: null },
+    { number: 2, state: 'CLOSED', closedAt: '2026-01-01T00:00:00Z' },
+  ] });
+});
+
+test('buildBucketQuery: quotes the error kind', () => {
+  assert.equal(buildBucketQuery('api', 'prod', 'status:error', '@x.type', 'Foo`1[Bar]'), 'service:api env:prod status:error @x.type:"Foo`1[Bar]"');
+});
+
+test('validateInvestigation: noise needs only a reason', () => {
+  assert.deepEqual(validateInvestigation({ actionable: false, reason: 'cancelled' }, 'NEW'), { ok: true, value: { actionable: false, reason: 'cancelled' } });
+});
+test('validateInvestigation: actionable needs severity and body; REGRESSION a comment', () => {
+  assert.equal(validateInvestigation({ actionable: true, reason: 'r', severity: 'med', body: 'b' }, 'NEW').ok, true);
+  assert.equal(validateInvestigation({ actionable: true, reason: 'r', severity: 'urgent', body: 'b' }, 'NEW').ok, false);
+  assert.equal(validateInvestigation({ actionable: true, reason: 'r', severity: 'med' }, 'NEW').ok, false);
+  assert.equal(validateInvestigation({ actionable: true, reason: 'r', severity: 'med', body: 'b' }, 'REGRESSION').ok, false);
+  assert.equal(validateInvestigation({ actionable: 'yes', reason: 'r' }, 'NEW').ok, false);
+  assert.equal(validateInvestigation({ actionable: false }, 'NEW').ok, false);
+});
+
+test('composeIssueBody: our marker first, any drafted marker stripped', () => {
+  const body = composeIssueBody('abc123', 'text <!-- dd-log-sig: fff999 --> more');
+  assert.ok(body.startsWith('<!-- dd-log-sig: abc123 -->\n\n'));
+  assert.equal(extractSig(body), 'abc123');
+  assert.ok(!body.includes('fff999'));
+});
