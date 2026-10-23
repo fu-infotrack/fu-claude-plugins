@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   windowStartMs, classify, buildTitle, buildSignature, releaseCheck,
   parseCollectorOutput, pruneBuckets, issueMatchesBySig, buildBucketQuery,
-  validateInvestigation, composeIssueBody, STATE_LABEL, parseSweepState, buildStateBody,
+  validateInvestigation, composeIssueBody, STATE_MARKER, parseSweepState, buildStateBody,
 } from './log-sweep-lib.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -61,16 +61,20 @@ function onPath(cmd) {
 // connector names the same value by its path under the event's attributes.
 const stackField = (stackPath) => String(stackPath).replace(/^attributes\.attributes\./, '');
 
-// The state issue: the lowest-numbered issue carrying STATE_LABEL, and the last
-// tick from the first of them holding a readable marker. `readable: false` when
-// the listing fails — then nothing writes, or a second state issue would appear.
+// The state issue: the lowest-numbered issue whose body holds a readable state
+// marker and whose author is the routine's own GitHub account — anyone can open
+// an issue quoting the marker, so the author check is what makes it trusted.
+// `readable: false` when the lookup fails — then nothing writes, or a second
+// state issue would appear.
 function readState(repo) {
   try {
-    const found = ghPages(`repos/${repo}/issues?state=all&labels=${STATE_LABEL}`)
-      .filter((i) => !i.pull_request).sort((a, b) => a.number - b.number);
-    const withTick = found.find((i) => parseSweepState(i.body));
-    const issue = withTick || found[0];
-    return { readable: true, issue: issue?.number ?? null, lastTick: withTick ? parseSweepState(withTick.body).last_successful_tick : null };
+    const me = JSON.parse(gh(['user'])).login;
+    const q = encodeURIComponent(`repo:${repo} is:issue in:body "${STATE_MARKER}"`);
+    const { items } = JSON.parse(gh([`search/issues?q=${q}&per_page=100`]));
+    const issue = items
+      .filter((i) => i.user?.login === me && parseSweepState(i.body))
+      .sort((a, b) => a.number - b.number)[0];
+    return { readable: true, issue: issue?.number ?? null, lastTick: issue ? parseSweepState(issue.body).last_successful_tick : null };
   } catch (e) { return { readable: false, issue: null, lastTick: null, error: firstLine(e) }; }
 }
 
@@ -86,7 +90,7 @@ function saveState(run) {
       return `state saved to #${run.state.issue}`;
     }
     const issue = JSON.parse(gh([`repos/${run.repo}/issues`, '--method', 'POST', '--input', '-'], JSON.stringify({
-      title: 'log-sweep routine state', body, labels: [STATE_LABEL],
+      title: 'log-sweep routine state', body,
     })));
     gh([`repos/${run.repo}/issues/${issue.number}`, '--method', 'PATCH', '-f', 'state=closed']);
     return `state saved to new issue #${issue.number}`;

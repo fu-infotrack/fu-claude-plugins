@@ -20,8 +20,9 @@ from it. The signature, dedup and release gate are the same library code
   agent never touches GitHub's write API. An agent call that errors is
   re-dispatched once on Opus.
 - **State in a bot issue.** A run is not told when the last one ran, so the
-  routine keeps the end of its last completed sweep in a closed issue labelled
-  `log-sweep-state` in the target repo, created on the first live run. Each run
+  routine keeps the end of its last completed sweep in a closed issue in the
+  target repo (`log-sweep routine state`, found by a hidden marker and authored by
+  you), created on the first live run. Each run
   sweeps from there (at least 24 h, at most 30 d), so weekends and failed runs
   are covered. Observe runs never write it; deleting it resets the window to 24 h.
 
