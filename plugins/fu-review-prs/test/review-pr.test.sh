@@ -54,7 +54,9 @@ case "$2" in
       | jq -s . | respond ;;
   */commits/*) echo "${HEAD_TREE:-cafef00d}" ;;
   */pulls/*/files*)
-    printf '%s\n' "${PR_FILES-src/a.cs}" | jq -R 'select(length > 0) | {filename: .}' \
+    printf '%s\n' "${PR_FILES-src/a.cs}" \
+      | jq -R --argjson n "${FILE_LINES:-10}" \
+          'select(length > 0) | {filename: ., additions: $n, deletions: 0}' \
       | jq -s . | respond ;;
   */pulls/*/reviews\?*) respond < "$REVIEWS" ;;
   */pulls/*/reviews)
@@ -86,7 +88,7 @@ exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
-  unset REQUESTED HEAD_PRS HEAD_SHA HEAD_TREE PR_FILES COMPARE_FILES PR_REVIEW_REPO \
+  unset REQUESTED HEAD_PRS HEAD_SHA HEAD_TREE PR_FILES FILE_LINES COMPARE_FILES PR_REVIEW_REPO \
         PR_REVIEW_AUTO_APPROVE CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
@@ -286,6 +288,101 @@ echo "== stdout carries tokens only =="
 new_sandbox
 one 7
 eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
+
+# ── --routine: the cloud routine's self-contained review ──────────────────────
+five_files=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs'
+headers() { grep '^--- ' "$SANDBOX/out"; }
+
+echo "== routine: a small scope gets one reviewer covering every dimension =="
+new_sandbox
+one 7 --routine
+eq "token line" "SINGLE 7 acme/widgets" "$(first)"
+eq "one reviewer block" "--- reviewer all ---" "$(headers)"
+has "the reviewer brief" "$ROOT/routine-reviewer.md and follow it exactly. Review PR #7, dimension: all." "$(out)"
+has "it re-checks the priors" "  PRIOR_FILE = $STATE/prior-7.json" "$(out)"
+has "it writes the findings file itself" "  OUTPUT_FILE = $STATE/findings-7.json" "$(out)"
+has "the review worktree" "  REVIEW_DIR = $HOME/.claude/pr-review/worktrees/acme-widgets" "$(out)"
+eq "mode" "single
+routine" "$(cat "$STATE/mode-7" 2>/dev/null)"
+eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
+
+echo "== routine: the SINGLE threshold is 5 files and 200 lines, inclusive =="
+new_sandbox
+PR_FILES=$five_files FILE_LINES=40 one 7 --routine
+eq "5 files, 200 lines" "SINGLE 7 acme/widgets" "$(first)"
+new_sandbox
+PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs\nsrc/f.cs' FILE_LINES=1 one 7 --routine
+eq "6 files" "FANOUT 7 acme/widgets" "$(first)"
+new_sandbox
+FILE_LINES=201 one 7 --routine
+eq "201 lines in one file" "FANOUT 7 acme/widgets" "$(first)"
+
+echo "== routine: DELTA counts only the files in scope =="
+new_sandbox
+state=$(jq -cn '{v:1, commit:"0ldc0mm1t", tree:"01dtree"}' | base64 | tr -d '\n')
+serve_review bot $'<!-- claude-pr-review -->\n<!-- fu-review-state:'"$state"' -->' \
+  2026-10-20T00:00:00Z 0ldc0mm1t
+PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs\nsrc/f.cs' COMPARE_FILES=src/a.cs \
+  FILE_LINES=50 one 7 --routine
+eq "one file of six in scope" "SINGLE 7 acme/widgets" "$(first)"
+
+echo "== routine: a large scope fans out to three reviewers and a merger =="
+new_sandbox
+FILE_LINES=500 one 7 --routine
+eq "headers, in dispatch order" "--- reviewer correctness ---
+--- reviewer security ---
+--- reviewer intent ---
+--- merger ---" "$(headers)"
+has "a reviewer writes its part" "  OUTPUT_FILE = $STATE/findings-7.security.json" "$(out)"
+eq "only the merger re-checks priors" "1" "$(grep -c 'PRIOR_FILE' "$SANDBOX/out")"
+has "the merger brief" "$ROOT/routine-merger.md and follow it exactly. Merge the reviews of PR #7." "$(out)"
+has "the merger reads every part" "  PART_FILE_INTENT = $STATE/findings-7.intent.json" "$(out)"
+has "the merger writes the findings file" "  FINDINGS_FILE = $STATE/findings-7.json" "$(out)"
+eq "mode" "single
+routine
+fanout" "$(cat "$STATE/mode-7" 2>/dev/null)"
+eq "both briefs ship" "yes" \
+  "$([ -f "$ROOT/routine-reviewer.md" ] && [ -f "$ROOT/routine-merger.md" ] && echo yes)"
+
+echo "== routine: the guard and pre-flight SKIPs are /review-pr's =="
+new_sandbox
+REQUESTED="" one 7 --routine
+eq "team-only request" "SKIP" "$(out)"
+eq "nothing left behind" "" "$(ls "$STATE" 2>/dev/null)"
+new_sandbox
+PR_FILES="" one 7 --routine
+eq "empty PR" "SKIP" "$(out)"
+
+# finish_parts <dims…>: seed a FANOUT dispatch of PR 7 with a merged findings
+# file and a valid part for each named dimension, then run finish.
+finish_parts() {
+  bash -c '
+    source "$1"; shift
+    for d in "$@"; do echo "{\"findings\":[]}" > "$(pr_path "part_$d" 7)"; done
+    echo "{\"findings\":[]}" > "$(pr_path findings 7)"
+    record_write pending 7 deadbeef cafef00d 2026-10-23T04:00:00Z
+    printf "single\nroutine\nfanout\n" > "$(pr_path mode 7)"
+    pr_review_finish 7
+  ' _ "$LIB" "$@" > "$SANDBOX/out" 2> "$SANDBOX/err"
+}
+
+echo "== routine: a FANOUT missing any reviewer's findings posts nothing =="
+new_sandbox
+finish_parts correctness security
+eq "status" "NO_FINDINGS" "$(out)"
+eq "not posted" "no" "$([ -e "$GH_POST" ] && echo yes || echo no)"
+eq "parts cleared" "" "$(ls "$STATE"/findings-7.* 2>/dev/null)"
+new_sandbox
+bash -c 'source "$1"; echo "{\"findings\":[{\"severity\":\"HIGH\",\"text\":\"x\"}]}" > "$(pr_path part_intent 7)"' _ "$LIB"
+finish_parts correctness security
+eq "an invalid part counts as missing" "NO_FINDINGS" "$(out)"
+
+echo "== routine: a complete FANOUT posts, with the routine's footer =="
+new_sandbox
+finish_parts correctness security intent
+eq "status" "POSTED COMMENT" "$(out)"
+has "footer" "*Automated review by a Claude Code routine*" "$(posted_body)"
+has_no "not /code-review's footer" "via /code-review" "$(posted_body)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

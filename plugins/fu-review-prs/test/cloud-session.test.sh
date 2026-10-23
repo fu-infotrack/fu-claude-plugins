@@ -129,7 +129,12 @@ echo "== no gh api --paginate: the cloud proxy rejects its numeric-ID next page 
 # ("Numeric-ID repository paths ... are not supported through this proxy"), so
 # any list past one page fails whole. Page explicitly instead (gh_api_pages).
 eq "no --paginate in lib.sh outside comments" "" "$(grep -nE '^[^#]*--paginate' "$LIB")"
-eq "no gh api --paginate in review-task.md" "" "$(grep -nE 'gh api[^`]*--paginate' "$ROOT/review-task.md")"
+for brief in review-task.md routine-reviewer.md routine-merger.md routines/review-pr.md; do
+  eq "no gh api --paginate in $brief" "" "$(grep -nE 'gh api[^`]*--paginate' "$ROOT/$brief")"
+done
+# The routine's prompt runs only in a cloud session.
+eq "no GraphQL-backed gh command in routines/review-pr.md" "" \
+  "$(grep -nE '\bgh (pr|repo|issue|search)\b' "$ROOT/routines/review-pr.md")"
 
 echo "== detection reads every page of open PRs =="
 new_sandbox
