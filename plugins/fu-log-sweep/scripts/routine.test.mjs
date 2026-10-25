@@ -1,6 +1,7 @@
 // routine.mjs end to end, hermetic: a throwaway $HOME, a fake target clone, and
 // a `gh` stub on PATH that serves REST fixtures, records every call, and
-// rejects GraphQL-backed commands and --paginate as a cloud session does.
+// rejects what a cloud session's proxy does: GraphQL-backed commands,
+// --paginate, and any API path outside repos/{owner}/{repo}/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -23,12 +24,10 @@ const GH_STUB = `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$FX/gh.log"
 [ "$1" = api ] || { echo "stub: only gh api (GraphQL is 403 here)" >&2; exit 9; }
 case "$*" in *--paginate*|*graphql*) echo "stub: rejected" >&2; exit 9 ;; esac
+case "$2" in repos/*) ;; *) echo "stub: sessions are bound to their configured repositories (HTTP 403)" >&2; exit 9 ;; esac
 case "$2" in
   'repos/acme/widgets/issues?state=all&labels=datadog-logs&per_page=100&page=1')
     [ -n "$GH_FAIL_ISSUES" ] && { echo "HTTP 500" >&2; exit 1; }; cat "$FX/issues.json" ;;
-  user) echo '{"login":"me"}' ;;
-  'search/issues?q=repo%3Aacme%2Fwidgets%20is%3Aissue%20in%3Abody%20%22fu-log-sweep-state%22&per_page=100')
-    [ -n "$GH_FAIL_STATE" ] && { echo "HTTP 502" >&2; exit 1; }; cat "$FX/state.json" 2>/dev/null || echo '{"items":[]}' ;;
   'repos/acme/widgets/releases?per_page=30') cat "$FX/releases.json" ;;
   repos/acme/widgets/issues)
     in=$(cat)
@@ -38,7 +37,11 @@ case "$2" in
     esac ;;
   repos/acme/widgets/issues/*/comments) cat > "$FX/comment.json"; echo '{}' ;;
   repos/acme/widgets/issues/*)
-    case "$*" in *--input*) cat > "$FX/patch-\${2##*/}.json" ;; esac; echo '{}' ;;
+    case "$*" in
+      *--method*) case "$*" in *--input*) cat > "$FX/patch-\${2##*/}.json" ;; esac; echo '{}' ;;
+      *) [ -n "$GH_FAIL_STATE" ] && { echo "HTTP 502" >&2; exit 1; }
+         cat "$FX/issue-\${2##*/}.json" 2>/dev/null || { echo "HTTP 404" >&2; exit 1; } ;;
+    esac ;;
   *) echo "stub: unexpected $2" >&2; exit 9 ;;
 esac
 `;
@@ -175,47 +178,79 @@ test('prepare: a nested stackPath becomes its path under the event attributes', 
 });
 
 const DAY = 24 * 60 * 60 * 1000;
-const stateIssue = (number, tick, login = 'me') => ({ number, state: 'closed', user: { login }, body: `x\n<!-- fu-log-sweep-state: {"last_successful_tick":${tick}} -->` });
-const searchHits = (t, ...items) => fs.writeFileSync(path.join(t.fx, 'state.json'), JSON.stringify({ items }));
+const withState = (number) => JSON.stringify({ appNamespace: NS, count: 2, stateIssue: number });
+const stateIssue = (t, number, body) => fs.writeFileSync(path.join(t.fx, `issue-${number}.json`), JSON.stringify({ number, state: 'closed', body }));
+const stateBody = (tick) => `x\n<!-- fu-log-sweep-state: {"last_successful_tick":${tick}} -->`;
 const sweepNothing = (t) => fs.writeFileSync(path.join(t.dir, 'buckets.json'), JSON.stringify({ buckets: [OPEN] }));
+const span = (out) => Date.parse(value(out, 'TO')) - Date.parse(value(out, 'FROM'));
 
-test('state: the window starts at the last completed sweep the state issue records', () => {
+test('state: the window starts at the last completed sweep the configured state issue records', () => {
   const t = setup();
   const tick = Date.now() - 3 * DAY;
-  searchHits(t, stateIssue(60, tick));
-  assert.equal(value(t.run(['prepare', '--live', CONFIG]), 'FROM'), new Date(tick).toISOString());
-});
-
-test("state: a marker in someone else's issue is ignored, and a new state issue is ours", () => {
-  const t = setup();
-  searchHits(t, stateIssue(50, Date.now() - 20 * DAY, 'mallory'));
-  const out = t.run(['prepare', '--live', CONFIG]);
-  assert.equal(Date.parse(value(out, 'TO')) - Date.parse(value(out, 'FROM')), DAY);
+  stateIssue(t, 60, stateBody(tick));
+  const out = t.run(['prepare', '--live', withState(60)]);
+  assert.equal(value(out, 'FROM'), new Date(tick).toISOString());
+  assert.match(t.ghLog(), /^api repos\/acme\/widgets\/issues\/60$/m);
   sweepNothing(t);
-  assert.match(t.run(['plan']), /state saved to new issue #77/);
-  assert.doesNotMatch(t.ghLog(), /issues\/50/);
+  assert.match(t.run(['plan']), /since the sweep recorded in #60/);
 });
 
-test('state: a live NO_WORK creates the state issue, closed, at the window end', () => {
+test('state: every GitHub call is repo-scoped, as the cloud proxy requires', () => {
+  const t = setup();
+  stateIssue(t, 60, stateBody(Date.now() - DAY));
+  t.run(['prepare', '--live', withState(60)]);
+  sweepNothing(t);
+  assert.match(t.run(['plan']), /state saved to #60/);
+  for (const call of t.ghLog().trim().split('\n')) assert.match(call, /^api repos\/acme\/widgets\//);
+});
+
+test('state: with no stateIssue configured, a live run creates one, closed, and says to configure it', () => {
   const t = setup();
   const out = t.run(['prepare', '--live', CONFIG]);
+  assert.equal(span(out), DAY);
   sweepNothing(t);
   const plan = t.run(['plan']);
-  assert.match(plan, /state saved to new issue #77/);
+  assert.match(plan, /no stateIssue in the config, so the last 24h/);
+  assert.match(plan, /state saved to new issue #77 — add "stateIssue": 77 to the routine's CONFIG/);
   const created = JSON.parse(fs.readFileSync(path.join(t.fx, 'state-created.json'), 'utf8'));
-  assert.equal(created.labels, undefined, 'no label to depend on');
+  assert.equal(created.labels, undefined, 'no label, so the dedup index never sees it');
   assert.match(created.body, new RegExp(`"last_successful_tick":${Date.parse(value(out, 'TO'))}`));
   assert.match(t.ghLog(), /^api repos\/acme\/widgets\/issues\/77 --method PATCH -f state=closed$/m);
 });
 
-test('state: a live finish updates the existing state issue in place', () => {
+test('state: a live finish updates the configured state issue in place', () => {
   const t = setup();
-  searchHits(t, stateIssue(60, Date.now() - DAY));
-  throughPlan(t, '--live');
-  for (const b of [NEW, BACK]) fs.writeFileSync(path.join(t.dir, `inv-${sigOf(b)}.json`), JSON.stringify({ actionable: false, reason: 'noise' }));
+  stateIssue(t, 60, stateBody(Date.now() - DAY));
+  const out = t.run(['prepare', '--live', withState(60)]);
+  fs.writeFileSync(value(out, 'OUTPUT_FILE'), JSON.stringify({ buckets: [NEW] }));
+  t.run(['plan']);
+  fs.writeFileSync(path.join(t.dir, `inv-${sigOf(NEW)}.json`), JSON.stringify({ actionable: false, reason: 'noise' }));
   assert.match(t.run(['finish']), /state saved to #60/);
   assert.match(fs.readFileSync(path.join(t.fx, 'patch-60.json'), 'utf8'), /fu-log-sweep-state/);
   assert.ok(!fs.existsSync(path.join(t.fx, 'state-created.json')), 'no second state issue');
+});
+
+test('state: a configured issue with no state marker is never overwritten', () => {
+  const t = setup();
+  stateIssue(t, 61, 'an unrelated issue, from a mistyped number');
+  const out = t.run(['prepare', '--live', withState(61)]);
+  assert.equal(span(out), DAY);
+  sweepNothing(t);
+  const plan = t.run(['plan']);
+  assert.match(plan, /state issue unreadable \(#61 holds no state marker\)/);
+  assert.match(plan, /state not saved: the state issue was unreadable/);
+  assert.doesNotMatch(t.ghLog(), /--method/);
+});
+
+test('state: a stateIssue that is not an issue number reads nothing and writes nothing', () => {
+  const t = setup();
+  const out = t.run(['prepare', '--live', withState('60')]);
+  assert.equal(span(out), DAY);
+  sweepNothing(t);
+  const plan = t.run(['plan']);
+  assert.match(plan, /stateIssue must be an issue number, not "60"/);
+  assert.match(plan, /state not saved: the state issue was unreadable/);
+  assert.doesNotMatch(t.ghLog(), /issues\/60|--method/);
 });
 
 test('state: observe and a failed collector save nothing', () => {
@@ -230,8 +265,8 @@ test('state: observe and a failed collector save nothing', () => {
 
 test('state: an unreadable state issue falls back to 24h and is never overwritten', () => {
   const t = setup();
-  const out = t.run(['prepare', '--live', CONFIG], { GH_FAIL_STATE: '1' });
-  assert.equal(Date.parse(value(out, 'TO')) - Date.parse(value(out, 'FROM')), DAY);
+  const out = t.run(['prepare', '--live', withState(60)], { GH_FAIL_STATE: '1' });
+  assert.equal(span(out), DAY);
   sweepNothing(t);
   assert.match(t.run(['plan']), /state not saved: the state issue was unreadable/);
   assert.doesNotMatch(t.ghLog(), /--method/);

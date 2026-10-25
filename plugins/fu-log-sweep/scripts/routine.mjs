@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import {
   windowStartMs, classify, buildTitle, buildSignature, releaseCheck,
   parseCollectorOutput, pruneBuckets, issueMatchesBySig, buildBucketQuery,
-  validateInvestigation, composeIssueBody, STATE_MARKER, parseSweepState, buildStateBody,
+  validateInvestigation, composeIssueBody, parseSweepState, buildStateBody,
 } from './log-sweep-lib.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -61,21 +61,21 @@ function onPath(cmd) {
 // connector names the same value by its path under the event's attributes.
 const stackField = (stackPath) => String(stackPath).replace(/^attributes\.attributes\./, '');
 
-// The state issue: the lowest-numbered issue whose body holds a readable state
-// marker and whose author is the routine's own GitHub account — anyone can open
-// an issue quoting the marker, so the author check is what makes it trusted.
-// `readable: false` when the lookup fails — then nothing writes, or a second
-// state issue would appear.
-function readState(repo) {
+// The state issue is the config's `stateIssue` number, read by one repo-scoped
+// GET: the cloud proxy refuses every path outside repos/{owner}/{repo}/, so it
+// cannot be searched for. Only its author or a maintainer can edit its body, so
+// the configured number is what makes it trusted. `readable: false` when the
+// read fails or the issue holds no state marker (a mistyped number) — then
+// nothing writes, so an unrelated issue's body is never overwritten.
+function readState(repo, number) {
+  if (number === undefined) return { readable: true, issue: null, lastTick: null };
+  const unreadable = (error) => ({ readable: false, issue: null, lastTick: null, error });
+  if (!Number.isInteger(number) || number < 1) return unreadable(`stateIssue must be an issue number, not ${JSON.stringify(number)}`);
   try {
-    const me = JSON.parse(gh(['user'])).login;
-    const q = encodeURIComponent(`repo:${repo} is:issue in:body "${STATE_MARKER}"`);
-    const { items } = JSON.parse(gh([`search/issues?q=${q}&per_page=100`]));
-    const issue = items
-      .filter((i) => i.user?.login === me && parseSweepState(i.body))
-      .sort((a, b) => a.number - b.number)[0];
-    return { readable: true, issue: issue?.number ?? null, lastTick: issue ? parseSweepState(issue.body).last_successful_tick : null };
-  } catch (e) { return { readable: false, issue: null, lastTick: null, error: firstLine(e) }; }
+    const state = parseSweepState(JSON.parse(gh([`repos/${repo}/issues/${number}`])).body);
+    if (!state) return unreadable(`#${number} holds no state marker`);
+    return { readable: true, issue: number, lastTick: state.last_successful_tick };
+  } catch (e) { return unreadable(firstLine(e)); }
 }
 
 // Record a completed live sweep as ending at this run's window end. Returns the
@@ -93,7 +93,7 @@ function saveState(run) {
       title: 'log-sweep routine state', body,
     })));
     gh([`repos/${run.repo}/issues/${issue.number}`, '--method', 'PATCH', '-f', 'state=closed']);
-    return `state saved to new issue #${issue.number}`;
+    return `state saved to new issue #${issue.number} — add "stateIssue": ${issue.number} to the routine's CONFIG, or every live run creates another`;
   } catch (e) { return `state not saved (${firstLine(e)}) — the next run sweeps the same window again`; }
 }
 
@@ -118,11 +118,11 @@ function prepare(args) {
 
   const nowMs = Date.now();
   const notes = [];
-  const state = readState(cfg.repo);
+  const state = readState(cfg.repo, cfg.stateIssue);
   const startMs = windowStartMs(state.lastTick, nowMs);
   notes.push(`window ${new Date(startMs).toISOString()} → ${new Date(nowMs).toISOString()} (${
     state.lastTick ? `since the sweep recorded in #${state.issue}`
-      : state.readable ? 'no recorded sweep, so the last 24h'
+      : state.readable ? 'no stateIssue in the config, so the last 24h'
         : `state issue unreadable (${state.error}), so the last 24h`})`);
 
   let issues;
