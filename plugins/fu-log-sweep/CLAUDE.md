@@ -42,21 +42,25 @@ model can call. That fixes the split:
   a fire payload, the clones, env vars and connectors; the routines API that lists runs
   needs the user's claude.ai login, which a run lacks). So the end of the last completed
   sweep is a hidden `<!-- fu-log-sweep-state: {"last_successful_tick": ms} -->` marker in a
-  closed issue in the target repo — the user's choice over one in this repo. It is found
-  by **REST search on the marker**, not a label: GitHub search indexes HTML-comment text
-  (measured: a `dd-log-sig` value that appears only inside the comment found its one
-  issue), whereas a label must exist first and `POST issues` documents only that labels
-  are "silently dropped" without push access — a dropped label would have orphaned the
-  state issue and created a new one every run. Since anyone can open an issue quoting the
-  marker, only issues **authored by the routine's own account** (`gh api user`) count.
-  Search's index lag is irrelevant at a daily cadence: a run writes at its end and the
-  next reads a day later.
+  closed issue in the target repo — the user's choice over one in this repo. The
+  routine's `CONFIG` names it by number (**`stateIssue`**), and `prepare` reads it with
+  one `GET repos/{repo}/issues/{n}`. It cannot be searched for: the cloud proxy refuses
+  every API path outside `repos/{owner}/{repo}/` (measured 2026-10-25: v0.2.3's
+  `gh api user` got HTTP 403 "sessions are bound to their configured repositories", so
+  every run swept 24 h and saved nothing), which rules out `user` and `search/issues`. A
+  label was rejected in v0.2.3 because `POST issues` silently drops labels without push
+  access. The number needs no author check: only the issue's author or a maintainer can
+  edit its body. **Bootstrap is loud:** with no `stateIssue`, a live run creates the
+  issue (POST, then close) and prints `add "stateIssue": N to the routine's CONFIG` —
+  until that is done, every live run creates another. A configured issue whose body holds
+  no state marker (a mistyped number) counts as unreadable, so its body is never
+  overwritten.
   `prepare` feeds it to `windowStartMs` (the same 24 h floor / 30 d cap as the local state
   file), so a weekday schedule's Monday run covers the weekend and a failed run's window
   is swept again. It is saved only by a **live** run that completed with **no failed
   candidate** (`plan`'s `NO_WORK`, or `finish`); a retried window is safe because what the
-  failed run did file dedups as already open. If the state listing fails, the run sweeps
-  24 h and writes nothing, since a write would create a second state issue. No baseline
+  failed run did file dedups as already open. If the state issue is unreadable, the run
+  sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 - **Signature parity is measured, not assumed.** The connector returns the stack as an
   indented YAML block; `parseFrames` trims each line, so the collector's verbatim copy
@@ -81,9 +85,11 @@ node --test plugins/fu-log-sweep/scripts/*.test.mjs
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `plan` → `finish` with a throwaway `$HOME`, a fake
-target clone, and a `gh` stub that serves REST fixtures and rejects GraphQL-backed commands
-and `--paginate`: NEW / already-open / held / reopened routing, the marker on created
-issues, observe mode making no write call, strict verdict and bucket validation, and the
-state issue (window from it, another author's marker ignored, create-then-close with no
-label, update in place, not saved on observe, a failed collector, a failed candidate or
-an unreadable search).
+target clone, and a `gh` stub that serves REST fixtures and rejects what the cloud proxy
+does — GraphQL-backed commands, `--paginate`, and any path outside `repos/` (the gap that
+let v0.2.3's `gh api user` pass locally): NEW / already-open / held / reopened routing,
+the marker on created issues, observe mode making no write call, strict verdict and
+bucket validation, and the state issue (window from the configured issue, every call
+repo-scoped, create-then-close with the "add `stateIssue`" hint and no label, update in
+place, a markerless or non-numeric `stateIssue` never written, not saved on observe, a
+failed collector, a failed candidate or an unreadable issue).

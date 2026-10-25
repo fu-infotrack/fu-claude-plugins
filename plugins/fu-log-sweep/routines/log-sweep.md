@@ -21,8 +21,9 @@ from it. The signature, dedup and release gate are the same library code
   re-dispatched once on Opus.
 - **State in a bot issue.** A run is not told when the last one ran, so the
   routine keeps the end of its last completed sweep in a closed issue in the
-  target repo (`log-sweep routine state`, found by a hidden marker and authored by
-  you), created on the first live run. Each run
+  target repo (`log-sweep routine state`), created on the first live run. Its
+  number then goes in `CONFIG` as `stateIssue` (the run's result line says so).
+  Each run
   sweeps from there (at least 24 h, at most 30 d), so weekends and failed runs
   are covered. Observe runs never write it; deleting it resets the window to 24 h.
 
@@ -54,6 +55,11 @@ on the target repo.
   ```json
   {"appNamespace": ["<App.Namespace>"], "logsUrlBase": "https://<site>/logs?query="}
   ```
+
+  After the first `--live` run, add `"stateIssue": N`. That run's result says
+  `state saved to new issue #N — add "stateIssue": N to the routine's CONFIG`.
+  Until you add it, every live run creates another state issue and sweeps only
+  the last 24 h. The number must be a JSON number, not a string.
 
   Also accepted: `services`, `env` (default `prod`), `count` (threshold, default
   1), `errorFacet`, `stackPath`, `statusQuery`.

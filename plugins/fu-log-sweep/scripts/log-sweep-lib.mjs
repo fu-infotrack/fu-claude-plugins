@@ -277,11 +277,10 @@ export function composeIssueBody(sig, body) {
 // ---- Routine state: one bot issue in the target repo -------------------------
 // A routine's sandbox keeps no file between runs and a run is not told when the
 // last one ran, so the end of the last completed sweep lives in a closed issue's
-// body as a hidden marker, found by searching for STATE_MARKER (GitHub search
-// indexes HTML-comment text). It carries no dd-log-sig marker and no
+// body as a hidden marker; the routine's config names the issue by number
+// (`stateIssue`). It carries no dd-log-sig marker and no
 // datadog-logs label, so the dedup index never sees it.
 
-export const STATE_MARKER = 'fu-log-sweep-state';
 const STATE_RE = /<!--\s*fu-log-sweep-state:\s*(\{.*?\})\s*-->/s;
 
 // The state in an issue body, or null when there is none or it is unreadable.
