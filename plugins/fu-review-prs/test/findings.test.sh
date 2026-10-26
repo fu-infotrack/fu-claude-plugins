@@ -234,13 +234,23 @@ rejected "bad status"       '{"findings":[],"prior":[{"status":"FIXED","severity
   "prior[0]: status must be RESOLVED, STILL OPEN or REINTRODUCED"
 rejected "one bad of two"   '{"findings":[{"severity":"NIT","text":"ok"},{"severity":"NIT"}]}' \
   "findings[1]: text must be a non-empty string"
-rejected "danger not object" '{"findings":[],"merge_danger":"two-way"}'        "merge_danger must be an object"
-rejected "bad door"         '{"findings":[],"merge_danger":{"door":"revolving","blast_radius":"local","why":"x"}}' \
-  "merge_danger.door must be one-way or two-way"
-rejected "bad blast radius" '{"findings":[],"merge_danger":{"door":"two-way","blast_radius":"small","why":"x"}}' \
-  "merge_danger.blast_radius must be contained, local, wide or external"
-rejected "blank why"        '{"findings":[],"merge_danger":{"door":"two-way","blast_radius":"local","why":" "}}' \
-  "merge_danger.why must be a non-empty string"
+
+# A bad merge_danger label is NOT a rejected review: it can only grant an
+# approval, so it degrades to "not judged" and the findings still post.
+# not_judged <desc> <merge_danger-json> <reason>
+not_judged() {
+  new_sandbox
+  finish "{\"findings\":[{\"severity\":\"NIT\",\"text\":\"kept\"}],\"merge_danger\":$2}"
+  eq "$1: still posted" "COMMENT" "$(posted_event)"
+  has "$1: finding kept" "1. [NIT] kept" "$(posted_body)"
+  has "$1: reason in the body" "not judged (invalid: $3)" "$(posted_body)"
+  cleanup
+}
+echo "== a bad merge_danger label degrades to not judged, never drops the review =="
+not_judged "not an object"    '"two-way"'                                               "merge_danger must be an object"
+not_judged "bad door"         '{"door":"revolving","blast_radius":"local","why":"x"}'   "door must be one-way or two-way"
+not_judged "bad blast radius" '{"door":"two-way","blast_radius":"medium","why":"x"}'    "blast_radius must be contained, local, wide or external"
+not_judged "blank why"        '{"door":"two-way","blast_radius":"local","why":" "}'     "why must be a non-empty string"
 
 echo "== merge danger is rendered, flattened, and not carried =="
 new_sandbox

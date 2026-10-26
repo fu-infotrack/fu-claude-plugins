@@ -258,9 +258,7 @@ get_pr_head_info() {
 #    "merge_danger": {"door": "one-way"|"two-way",
 #                     "blast_radius": "contained"|"local"|"wide"|"external",
 #                     "why": "…"}}
-# `where` is optional; `prior` is present only in DELTA mode. `merge_danger` is
-# optional (only the routine's merger and SINGLE reviewer write it); without it
-# the PR can be approved only through the docs/tests/UI file gate. Everything derived
+# `where` is optional; `prior` is present only in DELTA mode. Everything derived
 # from it is bash: the posted body, the verdict, and the blocker count. So the
 # count can no longer disagree with the body it links to, which it did when both
 # were parsed back out of sub-agent prose (EntityPlatform #2172: a RESOLVED prior
@@ -268,6 +266,13 @@ get_pr_head_info() {
 #
 # A current blocker is a BLOCKER in `findings`, or a prior BLOCKER that is not
 # RESOLVED. The verdict is APPROVE exactly when there are none.
+#
+# `merge_danger` is optional (only the routine's merger and SINGLE reviewer write
+# it) and is NOT held to the strict rule: it can only grant an approval, never
+# hide a finding, so a bad label makes the PR "not judged" — approvable only
+# through the docs/tests/UI file gate — instead of dropping the whole review,
+# which a cloud routine never retries. normalize keeps a bad one's reason as
+# `merge_danger_invalid`, for the log and the body.
 FINDINGS_JQ='
 def item_errors:
     if type != "object" then ["not an object"] else
@@ -288,15 +293,15 @@ def errors:
     + (if (.prior // [] | type) != "array" then ["prior must be an array"]
        else [.prior // [] | to_entries[] | .key as $i
              | .value | (item_errors + status_errors)[] | "prior[\($i)]: \(.)"] end)
-    + (if has("merge_danger") | not then []
-       elif (.merge_danger | type) != "object" then ["merge_danger must be an object"]
-       else .merge_danger
-            | (if .door | IN("one-way", "two-way") then []
-               else ["merge_danger.door must be one-way or two-way"] end)
-            + (if .blast_radius | IN("contained", "local", "wide", "external") then []
-               else ["merge_danger.blast_radius must be contained, local, wide or external"] end)
-            + (if (.why | type) == "string" and (.why | test("\\S")) then []
-               else ["merge_danger.why must be a non-empty string"] end) end)
+    end;
+def danger_errors:
+    if type != "object" then ["merge_danger must be an object"] else
+      (if .door | IN("one-way", "two-way") then []
+       else ["door must be one-way or two-way"] end)
+    + (if .blast_radius | IN("contained", "local", "wide", "external") then []
+       else ["blast_radius must be contained, local, wide or external"] end)
+    + (if (.why | type) == "string" and (.why | test("\\S")) then []
+       else ["why must be a non-empty string"] end)
     end;
 def flat: gsub("[\\r\\n]+"; " ") | sub("^\\s+"; "") | sub("\\s+$"; "");
 def clean: {severity, text: (.text | flat)}
@@ -304,8 +309,10 @@ def clean: {severity, text: (.text | flat)}
 def normalize:
     {findings: [.findings[] | clean],
      prior: [.prior // [] | .[] | {status} + clean]}
-    + (if .merge_danger then {merge_danger: (.merge_danger
-         | {door, blast_radius, why: (.why | flat)})} else {} end);
+    + (if has("merge_danger") | not then {}
+       elif (.merge_danger | danger_errors | length) > 0
+       then {merge_danger_invalid: (.merge_danger | danger_errors | join("; "))}
+       else {merge_danger: (.merge_danger | {door, blast_radius, why: (.why | flat)})} end);
 def live_prior: [.prior[] | select(.status != "RESOLVED")];
 def blockers: [(.findings + live_prior)[] | select(.severity == "BLOCKER")] | length;
 def carried: {findings: (.findings + [live_prior[] | del(.status)])};
@@ -320,9 +327,12 @@ def body($pr):
     + (if (.findings | length) > 0 then "\n" + ([.findings[] | line] | numbered) else "" end)
     + (if .merge_danger then .merge_danger
          | "\n\n**Door:** \(.door) · **Blast radius:** \(.blast_radius) — \(.why)"
+       elif .merge_danger_invalid then "\n\n**Door / blast radius:** not judged (invalid: \(.merge_danger_invalid))"
        else "" end);
-# "<door> <blast_radius>", or nothing when the review did not judge them.
-def danger: .merge_danger // empty | "\(.door) \(.blast_radius)";
+# "<door> <blast_radius>"; "invalid: <why>" for a bad label; nothing when unjudged.
+def danger: if .merge_danger then .merge_danger | "\(.door) \(.blast_radius)"
+            elif .merge_danger_invalid then "invalid: \(.merge_danger_invalid)"
+            else empty end;
 '
 
 # Validate and normalize a findings file. Prints the normalized JSON, or returns

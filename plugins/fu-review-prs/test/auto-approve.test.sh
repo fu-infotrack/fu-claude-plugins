@@ -253,6 +253,14 @@ for d in '{"door":"one-way","blast_radius":"local","why":"Drops a column"}' \
   cleanup
 done
 
+echo "== --auto-approve: a bad label posts the review as COMMENT, not nothing =="
+new_sandbox
+out=$(GATE=src/a.cs DANGER='{"door":"two-way","blast_radius":"medium","why":"x"}' \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7; cat "$LOG_FILE"')
+has "posted" "POSTED COMMENT" "$out"
+has "reason logged" "invalid: blast_radius must be contained, local, wide or external" "$out"
+cleanup
+
 echo "== --auto-approve: a one-way path vetoes a two-way judgement =="
 new_sandbox
 GATE=src/Migrations/1_drop.cs ONEWAY=src/Migrations/1_drop.cs DANGER=$two_local \
