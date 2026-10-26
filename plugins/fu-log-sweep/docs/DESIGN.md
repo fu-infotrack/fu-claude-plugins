@@ -38,6 +38,10 @@ adds `log-baseline`.
 **Suspected root cause** *(drafted, verify before acting)*
 <LLM writeup — 1-3 short paras: what throws, why, the traced code path>
 
+**Upstream cause** *(from the APM trace; omitted when there is no trace)*
+- Trace: <Datadog trace URL>
+- <service> `<resource>` → <status> — <error.message> (<version>)
+
 **Suspected code location**
 - `<path>:<line>` (codegraph trace, when source is indexed this session)
 
