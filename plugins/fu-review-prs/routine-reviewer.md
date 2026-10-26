@@ -34,6 +34,7 @@ Your task prompt gives absolute paths. Use them verbatim — never build your ow
   your **review scope**: every PR file in FULL mode; in DELTA mode, only the PR's
   files that changed since `DELTA_BASE`. Do not widen it, and do not re-derive it.
 - `PRIOR_FILE` — dimension `all` only: findings still open from the last review.
+- `<PR>` — the PR number, from your task prompt ("Review PR #N").
 - `OUTPUT_FILE` — where you write your findings.
 - `REVIEW_DIR` — the PR's head, checked out (detached). Read, grep and blame the
   code there. Every Bash call starts somewhere else, so always use absolute
@@ -144,7 +145,7 @@ Look for, by dimension:
    changed.
 
 ### `all`
-Do all three dimensions above, then Step 3.
+Do all three dimensions above, then Step 3, then Step 3b.
 
 ## Step 3 — Prior findings (dimension `all`, DELTA mode only)
 
@@ -156,6 +157,46 @@ delta brings it back). Keep its original `severity`, `text` and `where` — do n
 re-grade it — and do not repeat it in `findings`. If `PRIOR_FILE` carries a
 `legacy_body` instead, extract the numbered findings from that text and re-check
 each the same way. In FULL mode, or with no prior findings, leave `prior` out.
+
+## Step 3b — Merge danger (dimension `all` only)
+
+You are the only reviewer of this PR, so you also judge its merge danger: the
+`merge_danger` object in Step 4. Other dimensions leave it out.
+
+Judge the **whole PR**, not just the review scope: in DELTA mode the scope is
+only what changed since the last review, but a merge ships every file. List
+them with `gh api "repos/<REPO>/pulls/<PR>/files?per_page=100&page=N"` (stop on
+a short page) and read the diff with `gh pr diff <PR> -R <REPO>`. The PR body
+may state its own Door or Blast Radius; that is the author's claim — judge from
+the code, never copy it.
+
+- **`door`** — ask: *if this PR is reverted, does the system go back to the
+  state it was in before the merge?* Yes → `two-way`. No, or only with real
+  work → `one-way`. A revert undoes code, not what the code **did** while it
+  was live, so these are `one-way` even when the diff looks small: data
+  deleted or rewritten, a schema or migration change, messages or emails sent
+  to customers or other systems, a public API or event contract changed,
+  state written in a new format that the old code cannot read, infrastructure
+  provisioned or removed, a credential rotated.
+- **`blast_radius`** — if this PR is wrong, who notices? Size it by what
+  depends on the changed code (count callers of what it changes; grep under
+  `REVIEW_DIR`), whether the effect leaves the repo, how much live traffic
+  runs it, and whether a failure would be loud or silent:
+  - `contained` — new code, or code behind a switch that is off; nothing
+    existing calls it.
+  - `local` — one feature, screen or endpoint; a failure stays inside it.
+  - `wide` — shared code in this system (base classes, middleware, auth,
+    serialization, DI setup, shared config); many features can break at once.
+  - `external` — the effect crosses the repo boundary: other services or
+    teams, customers, or stored data.
+
+  Go **one step wider** when a failure would be silent (wrong data, no error,
+  no test covering it).
+- **`why`** — one line naming the deciding fact for both, e.g. "Reverting
+  restores it; only the new export endpoint calls the changed builder."
+
+When unsure between two values, pick the more dangerous one: a wrong
+`two-way`/`local` can approve a PR nobody else reads.
 
 ## Step 4 — Write `OUTPUT_FILE`
 
@@ -176,11 +217,14 @@ Use the `Write` tool:
   ],
   "prior": [
     {"status": "RESOLVED", "severity": "BLOCKER", "text": "Unconditional write", "where": "src/Store.cs:266"}
-  ]
+  ],
+  "merge_danger": {"door": "two-way", "blast_radius": "local", "why": "Reverting restores it; only the cart page calls the changed code"}
 }
 ```
 
 - `findings` is required — `[]` when you found nothing. `prior` only per Step 3.
+- `merge_danger` only per Step 3b (dimension `all`): `door` is exactly `one-way` or `two-way`; `blast_radius` is exactly
+  `contained`, `local`, `wide` or `external`; `why` is one non-empty line.
 - `severity` is exactly `BLOCKER` or `NIT`; `status` is exactly `RESOLVED`,
   `STILL OPEN` or `REINTRODUCED`.
 - `text` is one line: what is wrong and why it matters, with its prefix

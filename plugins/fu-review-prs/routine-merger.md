@@ -61,6 +61,50 @@ reported again goes in `prior` only — remove it from `findings`, or it counts
 twice. If `PRIOR_FILE` carries a `legacy_body`, extract its numbered findings
 and re-check each the same way. In FULL mode, leave `prior` out.
 
+## Step 3b — Merge danger
+
+You are the one agent that sees every reviewer's findings, so you judge the
+PR's merge danger: the `merge_danger` object in Step 4. `<REPO>` is from
+`SCOPE_FILE`'s header; `<PR>` is the PR number in your task prompt ("Merge the
+reviews of PR #N"). This is a judgement about the PR, not a finding, so Step
+2's "no findings of your own" does not apply to it. Use the part files as
+evidence: a `Contract:` or `Security:` finding often decides the door.
+
+Judge the **whole PR**, not just the review scope: in DELTA mode the scope is
+only what changed since the last review, but a merge ships every file. List
+them with `gh api "repos/<REPO>/pulls/<PR>/files?per_page=100&page=N"` (stop on
+a short page) and read the diff with `gh pr diff <PR> -R <REPO>`. The PR body
+may state its own Door or Blast Radius; that is the author's claim — judge from
+the code, never copy it.
+
+- **`door`** — ask: *if this PR is reverted, does the system go back to the
+  state it was in before the merge?* Yes → `two-way`. No, or only with real
+  work → `one-way`. A revert undoes code, not what the code **did** while it
+  was live, so these are `one-way` even when the diff looks small: data
+  deleted or rewritten, a schema or migration change, messages or emails sent
+  to customers or other systems, a public API or event contract changed,
+  state written in a new format that the old code cannot read, infrastructure
+  provisioned or removed, a credential rotated.
+- **`blast_radius`** — if this PR is wrong, who notices? Size it by what
+  depends on the changed code (count callers of what it changes; grep under
+  `REVIEW_DIR`), whether the effect leaves the repo, how much live traffic
+  runs it, and whether a failure would be loud or silent:
+  - `contained` — new code, or code behind a switch that is off; nothing
+    existing calls it.
+  - `local` — one feature, screen or endpoint; a failure stays inside it.
+  - `wide` — shared code in this system (base classes, middleware, auth,
+    serialization, DI setup, shared config); many features can break at once.
+  - `external` — the effect crosses the repo boundary: other services or
+    teams, customers, or stored data.
+
+  Go **one step wider** when a failure would be silent (wrong data, no error,
+  no test covering it).
+- **`why`** — one line naming the deciding fact for both, e.g. "Reverting
+  restores it; only the new export endpoint calls the changed builder."
+
+When unsure between two values, pick the more dangerous one: a wrong
+`two-way`/`local` can approve a PR nobody else reads.
+
 ## Step 4 — Write `FINDINGS_FILE`
 
 Use the `Write` tool:
@@ -72,11 +116,14 @@ Use the `Write` tool:
   ],
   "prior": [
     {"status": "STILL OPEN", "severity": "NIT", "text": "Rename `x`", "where": "src/Store.cs:88"}
-  ]
+  ],
+  "merge_danger": {"door": "one-way", "blast_radius": "external", "why": "Drops the Orders.Notes column; a revert cannot restore the data"}
 }
 ```
 
 - `findings` is required — `[]` when nothing survived. `prior` only per Step 3.
+- `merge_danger` is required: `door` is exactly `one-way` or `two-way`; `blast_radius` is exactly
+  `contained`, `local`, `wide` or `external`; `why` is one non-empty line.
 - `severity` is exactly `BLOCKER` or `NIT`; `status` is exactly `RESOLVED`,
   `STILL OPEN` or `REINTRODUCED`.
 - `text` is one line, keeping the reviewer's prefix (`Correctness:`, `Scope:`,
