@@ -195,6 +195,12 @@ PR_FILES=$'README.md\ndocs/guide/setup.png\nsrc/Api.Tests/OrderTests.cs\nweb/src
 eq "low-risk" "low-risk" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
 cleanup
 
+echo "== approval gate: a lowercase *-tests/ project is low-risk (EntityPlatform api-dotnet-tests/) =="
+new_sandbox
+PR_FILES=$'api-dotnet-tests/Consumers/BackfillConsumerTests.cs\nsrc/web-tests/smoke.cs' preflight 7 review_requested
+eq "low-risk" "low-risk" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+cleanup
+
 echo "== approval gate: judges every PR file, not just a DELTA =="
 new_sandbox
 reviewed 01dtree

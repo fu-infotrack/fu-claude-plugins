@@ -89,7 +89,7 @@ is an equivalent env seam (used by the tests).
 zero-BLOCKER PR posts as `COMMENT` unless **every** file it touches — the whole
 PR, not just a DELTA scope, and a rename's old path too — matches a low-risk
 pattern (`LOW_RISK_PATHS_DEFAULT` in `scripts/lib.sh`: Markdown/docs dirs, test
-dirs and `*.test.*`/`*.spec.*`/`*Tests/`, and `*.UI/`/`ui/`/`frontend/` dirs plus
+dirs and `*.test.*`/`*.spec.*`/`*Tests/`/`*-tests/`, and `*.UI/`/`ui/`/`frontend/` dirs plus
 markup, TypeScript, style and image extensions). Pre-flight writes the verdict to
 `gate-<PR>.txt` (`low-risk`, or the first path that isn't); a missing record fails
 closed. Patterns are bash globs on the full path where `*` also crosses `/`;

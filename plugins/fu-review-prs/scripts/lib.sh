@@ -427,7 +427,7 @@ LOW_RISK_PATHS_DEFAULT=(
     # tests
     'test/*' '*/test/*' 'tests/*' '*/tests/*' '__tests__/*' '*/__tests__/*'
     '__snapshots__/*' '*/__snapshots__/*' 'e2e/*' '*/e2e/*'
-    '*Tests/*' '*Test/*' '*.test.*' '*.spec.*' '*_test.*' 'test_*.py' '*/test_*.py'
+    '*Tests/*' '*Test/*' '*-tests/*' '*.test.*' '*.spec.*' '*_test.*' 'test_*.py' '*/test_*.py'
     # ui
     '*.UI/*' 'ui/*' '*/ui/*' 'frontend/*' '*/frontend/*'
     '*.ts' '*.tsx' '*.jsx' '*.vue' '*.svelte' '*.html' '*.cshtml' '*.razor'
