@@ -437,9 +437,10 @@ LOW_RISK_PATHS_DEFAULT=(
 
 # A PR outside the low-risk paths can still be approved when the review judged
 # it a two-way door with a contained or local blast radius (merge_danger). These
-# paths are one-way whatever the review says — a revert does not undo a schema
-# change, a published contract or provisioned infrastructure — so bash, not the
-# model, keeps them out. Same pattern rules as above; override the whole list
+# paths are never approved that way, whatever the review says: a revert does not
+# undo a schema change, a published contract or provisioned infrastructure, and
+# a pipeline or image definition runs with deploy rights and secrets, so its
+# real reach is wider than its diff. Bash, not the model, keeps them out. Same pattern rules as above; override the whole list
 # with the fu-tools array `review-prs.one_way_paths`.
 ONE_WAY_PATHS_DEFAULT=(
     # schema and data migrations
@@ -448,6 +449,10 @@ ONE_WAY_PATHS_DEFAULT=(
     '*.proto' '*.avsc' '*openapi*' '*swagger*' 'Contracts/*' '*/Contracts/*' '*.Contracts/*'
     # infrastructure
     '*.tf' '*.tfvars' '*.bicep' 'helm/*' '*/helm/*' 'charts/*' '*/charts/*'
+    # CI/CD pipelines and container images
+    '.github/*' 'azure-pipelines*' '*/azure-pipelines*' '.azure-pipelines/*' '*/.azure-pipelines/*'
+    'pipelines/*' '*/pipelines/*' '.gitlab-ci*' 'Jenkinsfile*' '*/Jenkinsfile*'
+    'Dockerfile*' '*/Dockerfile*' '*.Dockerfile' '*.dockerfile' 'docker-compose*' '*/docker-compose*'
 )
 
 # path_in <path> <pattern...>: whether the path matches any pattern.

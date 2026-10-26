@@ -21,7 +21,8 @@ a plugin command.
   only when every PR file is docs, tests or UI (`LOW_RISK_PATHS_DEFAULT`), or
   when the merger (SINGLE: the reviewer) judges it a two-way door with a
   `contained` or `local` blast radius and no PR file is on the one-way list
-  (`ONE_WAY_PATHS_DEFAULT`: migrations, contracts, infrastructure). The fu-tools
+  (`ONE_WAY_PATHS_DEFAULT`: migrations, contracts, infrastructure, CI/CD
+  pipelines and Docker files). The fu-tools
   overrides of both lists do not reach a cloud session. Everything else posts
   as a COMMENT.
 

@@ -102,7 +102,8 @@ and `blast_radius` (`contained`/`local`/`wide`/`external`) — which the review
 body shows. A code PR outside the low-risk paths is approved when it is judged
 `two-way` with a `contained` or `local` blast radius, **and** no PR file is on
 the one-way list (`ONE_WAY_PATHS_DEFAULT`: migrations and `*.sql`, contracts —
-`*.proto`, `*.avsc`, OpenAPI/Swagger, `Contracts/` — and Terraform/Bicep/Helm),
+`*.proto`, `*.avsc`, OpenAPI/Swagger, `Contracts/` — Terraform/Bicep/Helm, and
+CI/CD pipelines and Docker files, which run with deploy rights and secrets),
 which pre-flight records in `oneway-<PR>.txt`. That list is bash's, so a PR
 cannot argue its way past it; replace it with the fu-tools array
 `review-prs.one_way_paths`. A missing judgement or record fails closed. The

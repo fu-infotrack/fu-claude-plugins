@@ -166,6 +166,14 @@ PR_FILES=$'src/a.cs\nsrc/Data/Migrations/20261026_DropNotes.cs' preflight 7 revi
 eq "first one-way path" "src/Data/Migrations/20261026_DropNotes.cs" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
 cleanup
 
+for f in azure-pipelines-api.yml .github/workflows/ci.yml api-dotnet/Dockerfile ops/azure-pipelines/release.yml; do
+  echo "== one-way list: $f (runs with deploy rights) is recorded =="
+  new_sandbox
+  PR_FILES="src/a.cs"$'\n'"$f" preflight 7 review_requested
+  eq "flagged" "$f" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
+  cleanup
+done
+
 echo "== one-way list: a rename's old path counts (a contract moved away) =="
 new_sandbox
 PR_FILES=$'src/a.proto.bak\tapi/orders.proto' preflight 7 review_requested
