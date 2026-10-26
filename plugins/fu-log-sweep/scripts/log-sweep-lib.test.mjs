@@ -41,6 +41,11 @@ test('classify: open wins over closed', () => {
 test('buildTitle: short message kept, dotted type shortened', () => {
   assert.equal(buildTitle('System.NullReferenceException', 'boom'), '[Datadog] NullReferenceException: boom');
 });
+test('buildTitle: a generic type is shortened before its type arguments', () => {
+  const qualified = 'Acme.OrdersClientException`1[[Acme.ProblemDetails, Acme.Api, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]';
+  assert.equal(buildTitle(qualified, 'boom'), '[Datadog] OrdersClientException`1: boom');
+  assert.equal(buildTitle('Acme.OrdersClientException`1[Acme.ProblemDetails]', 'boom'), '[Datadog] OrdersClientException`1: boom');
+});
 test('buildTitle: long message truncated, title <= 80 chars', () => {
   const t = buildTitle('System.Exception', 'x'.repeat(200));
   assert.ok(t.length <= 80, `len ${t.length}`);

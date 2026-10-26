@@ -50,8 +50,11 @@ export function releaseCheck(versions, releases, closedAtMs) {
 }
 
 // GitHub issue title; truncates the message so the title stays around 80 chars.
+// A generic type's arguments are dropped first: an assembly-qualified one ends
+// in `Version=1.0.0.0, ...]]`, whose last dot would otherwise be the split point.
 export function buildTitle(errorType, message) {
-  const shortType = errorType.includes('.') ? errorType.split('.').pop() : errorType;
+  const bare = errorType.split('[')[0];
+  const shortType = bare.includes('.') ? bare.split('.').pop() : bare;
   const prefix = `[Datadog] ${shortType}: `;
   const budget = Math.max(20, 80 - prefix.length);
   const oneLine = (message || '').replace(/\s+/g, ' ').trim();
