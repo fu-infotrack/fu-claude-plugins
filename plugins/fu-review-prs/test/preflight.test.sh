@@ -157,6 +157,27 @@ echo "== approval gate: a code file anywhere in the PR is recorded =="
 new_sandbox
 preflight 7 review_requested
 eq "first non-low-risk path" "src/a.cs" "$(cat "$STATE/gate-7.txt" 2>/dev/null)"
+eq "nothing on the one-way list" "clear" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== one-way list: a migration anywhere in the PR is recorded =="
+new_sandbox
+PR_FILES=$'src/a.cs\nsrc/Data/Migrations/20261026_DropNotes.cs' preflight 7 review_requested
+eq "first one-way path" "src/Data/Migrations/20261026_DropNotes.cs" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== one-way list: a rename's old path counts (a contract moved away) =="
+new_sandbox
+PR_FILES=$'src/a.proto.bak\tapi/orders.proto' preflight 7 review_requested
+eq "old path flagged" "api/orders.proto" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
+cleanup
+
+echo "== one-way list: fu-tools one_way_paths replaces the defaults =="
+new_sandbox
+mkdir -p "$HOME/.claude/fu-tools"
+echo '{"review-prs":{"one_way_paths":["src/Billing/*"]}}' > "$HOME/.claude/fu-tools/config.json"
+(cd "$SANDBOX" && PR_FILES=$'db/Migrations/1.sql\nsrc/Billing/Charge.cs' preflight 7 review_requested)
+eq "only the configured list applies" "src/Billing/Charge.cs" "$(cat "$STATE/oneway-7.txt" 2>/dev/null)"
 cleanup
 
 echo "== approval gate: docs + tests + UI only is low-risk =="

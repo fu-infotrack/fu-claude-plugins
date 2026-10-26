@@ -100,11 +100,14 @@ trap cleanup EXIT
 # Source lib.sh in a fresh shell per case (it computes its paths at source time),
 # seed one PR's sub-agent findings on disk, then run the requested commands. The
 # verdict is derived from the findings: APPROVE seeds none, COMMENT one BLOCKER.
-# GATE is pre-flight's file check (default `low-risk`; `none` seeds no file).
+# GATE is pre-flight's file check (default `low-risk`; `none` seeds no file), and
+# ONEWAY its one-way-list check (default `clear`; `none` seeds no file). DANGER
+# adds a merge_danger object to the findings.
 # run <pr> <APPROVE|COMMENT> <shell-snippet>
 run() {
   local pr=$1 findings='{"findings":[]}' snippet=$3
   [ "$2" = COMMENT ] && findings='{"findings":[{"severity":"BLOCKER","text":"Boom"}]}'
+  [ -n "${DANGER:-}" ] && findings=$(jq -c --argjson d "$DANGER" '. + {merge_danger: $d}' <<< "$findings")
   bash -c '
     set -uo pipefail
     source "$1"
@@ -112,8 +115,9 @@ run() {
     printf "%s\n" "$3" > "$(pr_path findings "$pr")"
     record_write pending "$pr" deadbeef cafef00d
     [ "$5" = none ] || printf "%s\n" "$5" > "$(pr_path gate "$pr")"
+    [ "$6" = none ] || printf "%s\n" "$6" > "$(pr_path oneway "$pr")"
     eval "$4"
-  ' _ "$LIB" "$pr" "$findings" "$snippet" "${GATE-low-risk}" 2>/dev/null
+  ' _ "$LIB" "$pr" "$findings" "$snippet" "${GATE-low-risk}" "${ONEWAY-clear}" 2>/dev/null
 }
 
 # Drive pr_review_init end-to-end (real flock holder, stubbed gh/git) and report
@@ -200,7 +204,7 @@ new_sandbox
 out=$(GATE=src/a.cs run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
 eq "status token" "POSTED COMMENT" "$out"
 eq "posted event" "COMMENT" "$(posted_event)"
-has "body explains the downgrade" "only docs, tests and UI changes are auto-approved" "$(posted_body)"
+has "body explains the downgrade" "or two-way doors with a contained or local blast radius" "$(posted_body)"
 has_no "not blamed on the flag" "auto-approve is off" "$(posted_body)"
 cleanup
 
@@ -210,11 +214,80 @@ GATE=none run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' 
 eq "posted event" "COMMENT" "$(posted_event)"
 cleanup
 
-echo "== finish clears the gate record =="
+two_local='{"door":"two-way","blast_radius":"local","why":"Only the cart page calls it"}'
+
+echo "== --auto-approve: code PR judged two-way + local posts as APPROVE =="
+new_sandbox
+out=$(GATE=src/a.cs DANGER=$two_local run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED APPROVE" "$out"
+has "body shows the judgement" "**Door:** two-way · **Blast radius:** local — Only the cart page calls it" "$(posted_body)"
+cleanup
+
+echo "== --auto-approve: two-way + contained also approves =="
+new_sandbox
+GATE=src/a.cs DANGER='{"door":"two-way","blast_radius":"contained","why":"New code"}' \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "APPROVE" "$(posted_event)"
+cleanup
+
+echo "== merge danger never upgrades without the flag =="
+new_sandbox
+GATE=src/a.cs DANGER=$two_local run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+cleanup
+
+echo "== merge danger never overrides a blocker =="
+new_sandbox
+GATE=src/a.cs DANGER=$two_local run 7 COMMENT 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+cleanup
+
+for d in '{"door":"one-way","blast_radius":"local","why":"Drops a column"}' \
+         '{"door":"two-way","blast_radius":"wide","why":"Base class"}' \
+         '{"door":"two-way","blast_radius":"external","why":"Public API"}'; do
+  echo "== --auto-approve: code PR judged $(jq -r '"\(.door) + \(.blast_radius)"' <<< "$d") posts as COMMENT =="
+  new_sandbox
+  GATE=src/a.cs DANGER=$d run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+  eq "posted event" "COMMENT" "$(posted_event)"
+  has "generic downgrade note" "or two-way doors with a contained or local blast radius" "$(posted_body)"
+  cleanup
+done
+
+echo "== --auto-approve: a one-way path vetoes a two-way judgement =="
+new_sandbox
+GATE=src/Migrations/1_drop.cs ONEWAY=src/Migrations/1_drop.cs DANGER=$two_local \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+has "names the one-way path" '`src/Migrations/1_drop.cs` is on the one-way list' "$(posted_body)"
+cleanup
+
+echo "== --auto-approve: no one-way record fails closed =="
+new_sandbox
+GATE=src/a.cs ONEWAY=none DANGER=$two_local run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+cleanup
+
+echo "== --auto-approve: code PR with no merge danger judged posts as COMMENT =="
+new_sandbox
+GATE=src/a.cs run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+has_no "no judgement line" "**Door:**" "$(posted_body)"
+cleanup
+
+echo "== a low-risk PR approves whatever the merge danger says =="
+new_sandbox
+DANGER='{"door":"one-way","blast_radius":"external","why":"Edits the published API docs"}' \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "APPROVE" "$(posted_event)"
+cleanup
+
+echo "== finish clears the gate records =="
 new_sandbox
 out=$(run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7 >/dev/null
-  [ -e "$(pr_path gate 7)" ] && echo gate=present || echo gate=absent')
-eq "gate cleared" "gate=absent" "$out"
+  [ -e "$(pr_path gate 7)" ] && echo gate=present || echo gate=absent
+  [ -e "$(pr_path oneway 7)" ] && echo oneway=present || echo oneway=absent')
+has "gate cleared" "gate=absent" "$out"
+has "oneway cleared" "oneway=absent" "$out"
 cleanup
 
 echo "== pr_review_init records the mode from its arguments =="

@@ -95,6 +95,20 @@ markup, TypeScript, style and image extensions). Pre-flight writes the verdict t
 closed. Patterns are bash globs on the full path where `*` also crosses `/`;
 replace the list per repo with the fu-tools array `review-prs.low_risk_paths`.
 
+**…or a two-way door with a small blast radius (review routine only).** The
+routine's merger (FANOUT) or single reviewer (SINGLE) also writes
+`merge_danger` — `door` (`one-way`/`two-way`: does a revert restore the system?)
+and `blast_radius` (`contained`/`local`/`wide`/`external`) — which the review
+body shows. A code PR outside the low-risk paths is approved when it is judged
+`two-way` with a `contained` or `local` blast radius, **and** no PR file is on
+the one-way list (`ONE_WAY_PATHS_DEFAULT`: migrations and `*.sql`, contracts —
+`*.proto`, `*.avsc`, OpenAPI/Swagger, `Contracts/` — and Terraform/Bicep/Helm),
+which pre-flight records in `oneway-<PR>.txt`. That list is bash's, so a PR
+cannot argue its way past it; replace it with the fu-tools array
+`review-prs.one_way_paths`. A missing judgement or record fails closed. The
+`/review-prs` loop and the plugin's `/review-pr` don't judge merge danger yet,
+so for them only the file gate approves.
+
 ## Findings — the sub-agent classifies, bash does the rest
 
 The sub-agent's whole deliverable is `findings-<PR>.json`, and its reply is `DONE`:

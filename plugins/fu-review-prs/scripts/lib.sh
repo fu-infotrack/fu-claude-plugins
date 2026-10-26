@@ -81,6 +81,8 @@ mkdir -p "$STATE_DIR"
 #   findings  findings-<pr>.json        the sub-agent's findings
 #   gate      gate-<pr>.txt             the approval gate's file check: `low-risk`,
 #                                       or the first PR path that is not (classify_pr_files)
+#   oneway    oneway-<pr>.txt           `clear`, or the first PR path on the one-way
+#                                       list (classify_one_way_files)
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
 #   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
@@ -91,7 +93,7 @@ mkdir -p "$STATE_DIR"
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings gate mode part_correctness part_security part_intent"
+TRANSIENT_KINDS="pending scope prior findings gate oneway mode part_correctness part_security part_intent"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -103,6 +105,7 @@ pr_path() {
         prior)    printf '%s/prior-%s.json\n'         "$STATE_DIR" "$pr" ;;
         findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
         gate)     printf '%s/gate-%s.txt\n'           "$STATE_DIR" "$pr" ;;
+        oneway)   printf '%s/oneway-%s.txt\n'         "$STATE_DIR" "$pr" ;;
         empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
         mode)     printf '%s/mode-%s\n'               "$STATE_DIR" "$pr" ;;
         part_*)   printf '%s/findings-%s.%s.json\n'   "$STATE_DIR" "$pr" "${kind#part_}" ;;
@@ -251,8 +254,13 @@ get_pr_head_info() {
 # The sub-agent's whole deliverable is findings-<pr>.json:
 #   {"findings": [{"severity": "BLOCKER"|"NIT", "text": "…", "where": "path:line"}],
 #    "prior":    [{"status": "RESOLVED"|"STILL OPEN"|"REINTRODUCED",
-#                  "severity": …, "text": …, "where": …}]}
-# `where` is optional; `prior` is present only in DELTA mode. Everything derived
+#                  "severity": …, "text": …, "where": …}],
+#    "merge_danger": {"door": "one-way"|"two-way",
+#                     "blast_radius": "contained"|"local"|"wide"|"external",
+#                     "why": "…"}}
+# `where` is optional; `prior` is present only in DELTA mode. `merge_danger` is
+# optional (only the routine's merger and SINGLE reviewer write it); without it
+# the PR can be approved only through the docs/tests/UI file gate. Everything derived
 # from it is bash: the posted body, the verdict, and the blocker count. So the
 # count can no longer disagree with the body it links to, which it did when both
 # were parsed back out of sub-agent prose (EntityPlatform #2172: a RESOLVED prior
@@ -280,13 +288,24 @@ def errors:
     + (if (.prior // [] | type) != "array" then ["prior must be an array"]
        else [.prior // [] | to_entries[] | .key as $i
              | .value | (item_errors + status_errors)[] | "prior[\($i)]: \(.)"] end)
+    + (if has("merge_danger") | not then []
+       elif (.merge_danger | type) != "object" then ["merge_danger must be an object"]
+       else .merge_danger
+            | (if .door | IN("one-way", "two-way") then []
+               else ["merge_danger.door must be one-way or two-way"] end)
+            + (if .blast_radius | IN("contained", "local", "wide", "external") then []
+               else ["merge_danger.blast_radius must be contained, local, wide or external"] end)
+            + (if (.why | type) == "string" and (.why | test("\\S")) then []
+               else ["merge_danger.why must be a non-empty string"] end) end)
     end;
 def flat: gsub("[\\r\\n]+"; " ") | sub("^\\s+"; "") | sub("\\s+$"; "");
 def clean: {severity, text: (.text | flat)}
          + ((.where // "" | flat) as $w | if $w != "" then {where: $w} else {} end);
 def normalize:
     {findings: [.findings[] | clean],
-     prior: [.prior // [] | .[] | {status} + clean]};
+     prior: [.prior // [] | .[] | {status} + clean]}
+    + (if .merge_danger then {merge_danger: (.merge_danger
+         | {door, blast_radius, why: (.why | flat)})} else {} end);
 def live_prior: [.prior[] | select(.status != "RESOLVED")];
 def blockers: [(.findings + live_prior)[] | select(.severity == "BLOCKER")] | length;
 def carried: {findings: (.findings + [live_prior[] | del(.status)])};
@@ -298,7 +317,12 @@ def body($pr):
        then "Prior findings:\n" + ([.prior[] | "\(.status) — \(line)"] | numbered) + "\n\n"
        else "" end)
     + "Found \(.findings | length) issues:"
-    + (if (.findings | length) > 0 then "\n" + ([.findings[] | line] | numbered) else "" end);
+    + (if (.findings | length) > 0 then "\n" + ([.findings[] | line] | numbered) else "" end)
+    + (if .merge_danger then .merge_danger
+         | "\n\n**Door:** \(.door) · **Blast radius:** \(.blast_radius) — \(.why)"
+       else "" end);
+# "<door> <blast_radius>", or nothing when the review did not judge them.
+def danger: .merge_danger // empty | "\(.door) \(.blast_radius)";
 '
 
 # Validate and normalize a findings file. Prints the normalized JSON, or returns
@@ -323,6 +347,7 @@ findings_body()     { jq -r --arg pr "$1" "$FINDINGS_JQ"'body($pr)'; }   # findi
 # What the next DELTA review re-checks: this review's findings plus the prior
 # ones still open or reintroduced. A RESOLVED finding is done with.
 findings_carried()  { jq -c "$FINDINGS_JQ"'carried'; }
+findings_danger()   { jq -r "$FINDINGS_JQ"'danger'; }
 
 # Write prior-<pr>.json for the sub-agent: {"findings": [...]}, from the findings
 # carried by our last posted review. A review posted before findings were carried
@@ -400,24 +425,60 @@ LOW_RISK_PATHS_DEFAULT=(
     '*.svg' '*.png' '*.jpg' '*.jpeg' '*.gif' '*.webp' '*.ico' '*.woff' '*.woff2'
 )
 
+# A PR outside the low-risk paths can still be approved when the review judged
+# it a two-way door with a contained or local blast radius (merge_danger). These
+# paths are one-way whatever the review says — a revert does not undo a schema
+# change, a published contract or provisioned infrastructure — so bash, not the
+# model, keeps them out. Same pattern rules as above; override the whole list
+# with the fu-tools array `review-prs.one_way_paths`.
+ONE_WAY_PATHS_DEFAULT=(
+    # schema and data migrations
+    'Migrations/*' '*/Migrations/*' 'migrations/*' '*/migrations/*' '*.sql'
+    # contracts other systems consume
+    '*.proto' '*.avsc' '*openapi*' '*swagger*' 'Contracts/*' '*/Contracts/*' '*.Contracts/*'
+    # infrastructure
+    '*.tf' '*.tfvars' '*.bicep' 'helm/*' '*/helm/*' 'charts/*' '*/charts/*'
+)
+
+# path_in <path> <pattern...>: whether the path matches any pattern.
+path_in() {
+    local f=$1 p; shift
+    for p in "$@"; do
+        # shellcheck disable=SC2053  # $p is a pattern on purpose
+        [[ $f == $p ]] && return 0
+    done
+    return 1
+}
+
 # Read paths on stdin, one per line. Print `low-risk` when every path matches a
 # low-risk pattern, else the first path that matches none. An empty list is not
 # low-risk: there is nothing to vouch for.
 classify_pr_files() {
     local -a pats=()
-    local f p hit n=0
+    local f n=0
     mapfile -t pats < <(fu_cfg low_risk_paths | grep .)
     [ "${#pats[@]}" -gt 0 ] || pats=("${LOW_RISK_PATHS_DEFAULT[@]}")
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        n=$((n + 1)) hit=0
-        for p in "${pats[@]}"; do
-            # shellcheck disable=SC2053  # $p is a pattern on purpose
-            [[ $f == $p ]] && { hit=1; break; }
-        done
-        [ "$hit" = 1 ] || { printf '%s\n' "$f"; return 0; }
+        n=$((n + 1))
+        path_in "$f" "${pats[@]}" || { printf '%s\n' "$f"; return 0; }
     done
     [ "$n" -gt 0 ] && echo low-risk || echo "(no files)"
+}
+
+# Read paths on stdin, one per line. Print the first path on the one-way list,
+# else `clear`. An empty list is not clear.
+classify_one_way_files() {
+    local -a pats=()
+    local f n=0
+    mapfile -t pats < <(fu_cfg one_way_paths | grep .)
+    [ "${#pats[@]}" -gt 0 ] || pats=("${ONE_WAY_PATHS_DEFAULT[@]}")
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        n=$((n + 1))
+        path_in "$f" "${pats[@]}" && { printf '%s\n' "$f"; return 0; }
+    done
+    [ "$n" -gt 0 ] && echo clear || echo "(no files)"
 }
 
 # ---------------------------------------------------------------------------
@@ -938,6 +999,7 @@ write_review_scope() {
     # The approval gate judges the WHOLE PR, never just a DELTA, and a rename's
     # old path too — moving code into docs/ still deletes code.
     tr '\t' '\n' <<< "$listing" | grep . | classify_pr_files > "$(pr_path gate "$pr")"
+    tr '\t' '\n' <<< "$listing" | grep . | classify_one_way_files > "$(pr_path oneway "$pr")"
 
     local rec last_commit last_tree _at
     if rec=$(record_read reviewed "$pr"); then
@@ -1106,15 +1168,24 @@ pr_review_finish() {
             decision="COMMENT"
             downgraded=1
         fi
-        # Second gate: only docs/tests/UI-only PRs are approved (see
-        # LOW_RISK_PATHS_DEFAULT). A missing gate file fails closed.
-        local gate=""
+        # Second gate: a docs/tests/UI-only PR (LOW_RISK_PATHS_DEFAULT), or one
+        # the review judged a two-way door with a contained or local blast
+        # radius and that touches nothing on the one-way list
+        # (ONE_WAY_PATHS_DEFAULT). A missing record or judgement fails closed.
+        local gate="" oneway="" danger=""
         if [ "$decision" = "APPROVE" ]; then
             gate=$(head -n 1 "$(pr_path gate "$pr")" 2>/dev/null)
             if [ "$gate" != low-risk ]; then
-                log "PR #$pr: no blockers found, but not docs/tests/UI only (${gate:-no gate record}) — posting COMMENT"
-                decision="COMMENT"
-                downgraded=2
+                danger=$(findings_danger <<< "$findings")
+                oneway=$(head -n 1 "$(pr_path oneway "$pr")" 2>/dev/null)
+                if { [ "$danger" = "two-way contained" ] || [ "$danger" = "two-way local" ]; } && [ "$oneway" = clear ]; then
+                    log "PR #$pr: no blockers found, not docs/tests/UI only (${gate:-no gate record}), but $danger — approving"
+                else
+                    log "PR #$pr: no blockers found, but not docs/tests/UI only (${gate:-no gate record}) and not approvable by merge danger (${danger:-not judged}; one-way list: ${oneway:-no record}) — posting COMMENT"
+                    decision="COMMENT"
+                    downgraded=2
+                    [ -n "$oneway" ] && [ "$oneway" != clear ] && downgraded=3
+                fi
             fi
         fi
         review_body=$(findings_body "$pr" <<< "$findings")
@@ -1126,7 +1197,10 @@ pr_review_finish() {
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
         elif [ "$downgraded" = 2 ]; then
             footer="$footer
-*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes are auto-approved.*"
+*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes, or two-way doors with a contained or local blast radius, are auto-approved.*"
+        elif [ "$downgraded" = 3 ]; then
+            footer="$footer
+*No blockers found. Posted as a comment, not an approval — \`$oneway\` is on the one-way list, so this PR is never auto-approved.*"
         fi
         # No badge on a /review-pr run: it has no loop behind it to keep one live.
         local hb_url

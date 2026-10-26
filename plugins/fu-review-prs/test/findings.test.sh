@@ -234,6 +234,20 @@ rejected "bad status"       '{"findings":[],"prior":[{"status":"FIXED","severity
   "prior[0]: status must be RESOLVED, STILL OPEN or REINTRODUCED"
 rejected "one bad of two"   '{"findings":[{"severity":"NIT","text":"ok"},{"severity":"NIT"}]}' \
   "findings[1]: text must be a non-empty string"
+rejected "danger not object" '{"findings":[],"merge_danger":"two-way"}'        "merge_danger must be an object"
+rejected "bad door"         '{"findings":[],"merge_danger":{"door":"revolving","blast_radius":"local","why":"x"}}' \
+  "merge_danger.door must be one-way or two-way"
+rejected "bad blast radius" '{"findings":[],"merge_danger":{"door":"two-way","blast_radius":"small","why":"x"}}' \
+  "merge_danger.blast_radius must be contained, local, wide or external"
+rejected "blank why"        '{"findings":[],"merge_danger":{"door":"two-way","blast_radius":"local","why":" "}}' \
+  "merge_danger.why must be a non-empty string"
+
+echo "== merge danger is rendered, flattened, and not carried =="
+new_sandbox
+finish '{"findings":[],"merge_danger":{"door":"two-way","blast_radius":"local","why":"Only\nthe cart page","extra":1}}'
+has "rendered on one line" "**Door:** two-way · **Blast radius:** local — Only the cart page" "$(posted_body)"
+eq "not carried" '{"findings":[]}' "$(jq -c . "$STATE/last-findings-7.json")"
+cleanup
 
 echo "== no findings file at all: the same retry path =="
 new_sandbox
