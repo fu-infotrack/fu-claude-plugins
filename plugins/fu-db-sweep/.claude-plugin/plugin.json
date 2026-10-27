@@ -1,0 +1,16 @@
+{
+  "name": "fu-db-sweep",
+  "version": "0.1.0",
+  "description": "A weekly cloud routine that sweeps Datadog Database Monitoring for (repo, db) pairs and files de-duped, report-only GitHub issues for prod query and instance problems.",
+  "author": {
+    "name": "fu-infotrack",
+    "url": "https://github.com/fu-infotrack"
+  },
+  "keywords": [
+    "datadog",
+    "dbm",
+    "postgres",
+    "github",
+    "routine"
+  ]
+}
