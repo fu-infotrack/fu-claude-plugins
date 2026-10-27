@@ -2,7 +2,7 @@
 
 A weekly cloud routine: Datadog **Database Monitoring** for a list of
 `(repo, db)` pairs → de-duped, report-only GitHub issues for prod query and
-instance problems, plus one summary comment per run.
+instance problems, plus a weekly summary comment in each repo.
 
 It contributes nothing to a local session — no command, skill or hook. It
 exists to be cloned by a Claude Code routine; set that up from

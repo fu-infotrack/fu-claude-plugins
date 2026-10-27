@@ -201,14 +201,18 @@ test('verdicts: shape per kind, and no @mentions outside code', () => {
   assert.ok(!validateVerdict({ actionable: true, reason: 'r', title: 't', body, deployedSha: 'main' }, 'NEW').ok);
 });
 
-test('config: pairs are repo+db, overrides validated, duplicates rejected', () => {
-  const c = parseConfig('{"stateRepo":"a/b","pairs":[{"repo":"a/b","db":"compliance_mono","overrides":{"heavyBlocksPerCall":5}}]}');
+test('config: pairs are repo+db, one state issue per repo, overrides validated', () => {
+  const c = parseConfig('{"stateIssues":{"a/B":7},"pairs":[{"repo":"a/B","db":"compliance_mono","overrides":{"heavyBlocksPerCall":5}},{"repo":"c/d","db":"x"}]}');
   assert.equal(c.pairs[0].thresholds.heavyBlocksPerCall, 5);
+  assert.deepEqual(c.stateIssues, { 'a/B': 7 });
   assert.equal(c.ddSite, 'https://ap2.datadoghq.com');
-  assert.throws(() => parseConfig('{"stateRepo":"a/b","pairs":[]}'), /at least one/);
-  assert.throws(() => parseConfig('{"stateRepo":"a/b","pairs":[{"repo":"a/b","db":"x"},{"repo":"A/b","db":"x"}]}'), /repeats/);
-  assert.throws(() => parseConfig('{"stateRepo":"a/b","stateIssue":"7","pairs":[{"repo":"a/b","db":"x"}]}'), /issue number/);
-  assert.throws(() => parseConfig('{"stateRepo":"a/b","pairs":[{"repo":"a/b","db":"x; drop"}]}'), /database name/);
+  assert.deepEqual(parseConfig('{"stateIssues":{"A/b":7},"pairs":[{"repo":"a/B","db":"x"}]}').stateIssues, { 'a/B': 7 });
+  assert.throws(() => parseConfig('{"pairs":[]}'), /at least one/);
+  assert.throws(() => parseConfig('{"pairs":[{"repo":"a/b","db":"x"},{"repo":"A/b","db":"x"}]}'), /spells|repeats/);
+  assert.throws(() => parseConfig('{"stateIssues":{"a/b":"7"},"pairs":[{"repo":"a/b","db":"x"}]}'), /issue number/);
+  assert.throws(() => parseConfig('{"stateIssues":{"z/z":7},"pairs":[{"repo":"a/b","db":"x"}]}'), /no pair uses/);
+  assert.throws(() => parseConfig('{"stateRepo":"a/b","pairs":[{"repo":"a/b","db":"x"}]}'), /replaced by stateIssues/);
+  assert.throws(() => parseConfig('{"pairs":[{"repo":"a/b","db":"x; drop"}]}'), /database name/);
 });
 
 test('rank: severity first, then total time', () => {

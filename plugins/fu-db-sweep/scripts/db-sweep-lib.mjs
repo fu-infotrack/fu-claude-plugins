@@ -365,23 +365,35 @@ export function buildStateBody(lastTickMs) {
 }
 
 // ---- Config -----------------------------------------------------------------------
-// {stateRepo, stateIssue?, ddSite?, pairs: [{repo, db, overrides?}]}
+// {stateIssues?: {"<owner>/<repo>": N}, ddSite?, pairs: [{repo, db, overrides?}]}.
+// Each repo keeps its own state issue (window + weekly summary); repo keys are
+// matched case-insensitively and normalised to the spelling the pairs use.
 export function parseConfig(raw) {
   let c;
   try { c = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { throw new Error(`CONFIG is not JSON: ${e.message}`); }
   const repoRe = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
   if (!c || typeof c !== 'object') throw new Error('CONFIG must be an object');
-  if (!repoRe.test(c.stateRepo || '')) throw new Error('CONFIG.stateRepo must be "<owner>/<repo>"');
-  if (c.stateIssue !== undefined && (!Number.isInteger(c.stateIssue) || c.stateIssue < 1)) throw new Error('CONFIG.stateIssue must be an issue number');
+  if ('stateRepo' in c || 'stateIssue' in c) throw new Error('CONFIG.stateRepo/stateIssue were replaced by stateIssues: {"<owner>/<repo>": N} — one state issue per repo');
   if (!Array.isArray(c.pairs) || !c.pairs.length) throw new Error('CONFIG.pairs must list at least one {repo, db}');
   const seen = new Set();
+  const spelling = new Map();
   const pairs = c.pairs.map((p, n) => {
     if (!repoRe.test(p?.repo || '')) throw new Error(`pairs[${n}].repo must be "<owner>/<repo>"`);
     if (!/^[A-Za-z0-9_]+$/.test(p.db || '')) throw new Error(`pairs[${n}].db must be a database name`);
-    const key = `${p.repo.toLowerCase()}|${p.db}`;
+    const lower = p.repo.toLowerCase();
+    if (spelling.has(lower) && spelling.get(lower) !== p.repo) throw new Error(`pairs[${n}].repo spells ${p.repo} differently from an earlier pair`);
+    spelling.set(lower, p.repo);
+    const key = `${lower}|${p.db}`;
     if (seen.has(key)) throw new Error(`pairs[${n}] repeats ${p.repo} ${p.db}`);
     seen.add(key);
     return { repo: p.repo, db: p.db, thresholds: thresholdsFor(p.overrides) };
   });
-  return { stateRepo: c.stateRepo, stateIssue: c.stateIssue, ddSite: (c.ddSite || 'https://ap2.datadoghq.com').replace(/\/$/, ''), pairs };
+  const stateIssues = {};
+  for (const [repo, n] of Object.entries(c.stateIssues || {})) {
+    const canonical = spelling.get(repo.toLowerCase());
+    if (!canonical) throw new Error(`CONFIG.stateIssues names ${repo}, which no pair uses`);
+    if (!Number.isInteger(n) || n < 1) throw new Error(`CONFIG.stateIssues["${repo}"] must be an issue number`);
+    stateIssues[canonical] = n;
+  }
+  return { stateIssues, ddSite: (c.ddSite || 'https://ap2.datadoghq.com').replace(/\/$/, ''), pairs };
 }

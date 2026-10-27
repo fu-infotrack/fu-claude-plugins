@@ -22,8 +22,11 @@ orchestrator copying printed prompts) are explained in
   as med, the `text_resource` blocking incident must stay a summary line, the
   inbox cleanup must not file — including the week it averaged 54 ms because the
   neighbour was blocking the instance.
-- **Any collector failing fails the whole run** — a failed summary, nothing
-  filed, state kept — because a finding from half the data is worse than none.
+- **Each repo is swept on its own**: its own state issue, window, summary and
+  cap of 5. Any of its collectors failing fails that repo — a failed summary in
+  it, nothing filed, its state kept — because a finding from half the data is
+  worse than none; the other repos carry on. A repo with nothing to file gets its
+  summary (and state advance) from `plan`; the rest from `finish`.
 - **The fingerprint is a wire format**: `sha1(rule|instance|db|query_signature)`
   (or `|table`, or no key for instance pressure), carried with the measured
   value in a `<!-- dd-dbm: {...} -->` marker. The value is what *not planned*
@@ -44,5 +47,7 @@ parsing, the marker, classify, the gate and the verdict validator.
 `routine.test.mjs` runs `prepare` → `plan` → `finish` with a throwaway `$HOME`,
 fake clones under `DB_SWEEP_SEARCH_ROOT`, and the same proxy-faithful `gh` stub
 as fu-log-sweep: live filing, held vs reopened, accepted and already-open,
-observe (summary with drafts, no filing, no state), a failed collector, a bad
-verdict, the cap, NO_WORK, state-issue bootstrap, skipped pairs, two instances.
+observe (summary with drafts, no filing, no state), per-repo summaries and
+state, a failed collector failing only its repo, every repo failing, a bad
+verdict, the per-repo cap, NO_WORK, state-issue bootstrap, skipped pairs, two
+instances. The stub serves two repos, with fixtures under `$FX/<repo name>/`.
