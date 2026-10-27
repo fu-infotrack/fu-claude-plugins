@@ -11,11 +11,33 @@ orchestrator copying printed prompts) are explained in
 - **`collector-query.js` is the whole Datadog read.** `prepare` substitutes the
   `PARAMS` line per pair and the collector agent sends the file verbatim through
   the connector's `execute_code`, so the numbers the rules see do not depend on
-  a model's query writing. It was run live against `compliance_mono` on
-  2026-10-27 (27 API calls, ~2.4 s, 2 instances, 108 signatures). Change a query
+  a model's query writing. It was last run live on 2026-10-27, across the three
+  routine databases together: 104 API calls in about 7 s. The query lists came
+  out at 23 KB for compliance_mono, 68 KB for entityplatform and 12 KB for
+  infotrackcredit. Only queries a rule could fire on are kept: at least 1 ms
+  avg, at least 1,000 pages per call, or among the 50 most called. That pre-filter
+  dropped 739 of entityplatform's ~930 signatures; without it the result was
+  236 KB from 287 calls, too big for the agent to copy. Change a query
   in it and re-run it live before merging; the hermetic tests cannot reach
   Datadog. Values are rounded and the per-instance database list trimmed to the
   top 10 so the agent can copy the result into its file faithfully.
+- **DBM tags most query rows `db:_other`.** On our shared RDS cluster a `db:X`
+  filter sees a small slice of a database's rows, and the slice's size swings
+  about 10× from day to day. Risk's `9b67…` had ~4,000 calls/day under `_other`
+  vs 3–289/day under `db:compliance_mono`. Per-call ratios survive that; counts,
+  totals and shares do not. So the collector finds the signatures under `db:X`
+  and then checks which databases each one appears under. A signature seen only
+  under `X` (and `_other`) is summed over `db IN (X,_other)`. One shared with
+  another database stays the db-tagged slice, marked `sampled: true`, and gets
+  only the pages-per-call rule.
+  - `query_signature` has an `_other` bucket of its own; it is dropped.
+  - Every query excludes `user:datadog`. The agent's own monitoring query
+    (`2afe7f44…`) runs in every database and looks like 97–99% of the time of an
+    idle reader.
+  - Metric filters use `AND`/`NOT` syntax, because Datadog rejects `IN (...)`
+    mixed with comma filters.
+  - The acceptance fixtures below are db-tagged slices from before attribution:
+    they still test the rules, not today's prod numbers.
 - **The rules are pure** (`db-sweep-lib.mjs` `evaluate`) and the acceptance
   fixtures in `db-sweep-lib.test.mjs` are real prod numbers from the hand
   analysis that designed them: the Risk `monitoring_event` window scan must file

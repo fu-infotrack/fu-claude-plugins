@@ -23,6 +23,10 @@ instance under neighbour pressure the time-based findings (regressions, share
 of time) become summary lines too — contention inflates them. Thresholds are
 `DEFAULT_THRESHOLDS` in `scripts/db-sweep-lib.mjs`, overridable per pair.
 
+Queries the Datadog agent runs (`user:datadog`) are never counted. A query
+signature that also runs in another database is only partly attributable, so it
+is judged on pages per call alone (see `CLAUDE.md`).
+
 ## Tests
 
 ```bash

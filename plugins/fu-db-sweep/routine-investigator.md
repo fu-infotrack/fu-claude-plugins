@@ -41,15 +41,31 @@ carry the text as `db.statement`. Use the Datadog connector's
   it, both in **nanoseconds**). For a `step` finding (a fast query called far
   more often) skip the duration filter and look for the statement whose call
   volume rose.
-- `from` / `to` = `window`, `limit` = `50`,
-  `custom_attributes` = `["db.*", "git.*"]`.
+- `from` / `to` = `window`, `limit` = `25`, `max_tokens` = `12000`,
+  `custom_attributes` = `["db.statement", "db.instance", "git.commit.sha"]`.
+  Wider attribute sets (`db.*`) overflow the tool's output limit.
+
+`metrics.sampled: true` means DBM only tagged a slice of this signature's rows
+to `<db>` (it also runs in other databases), so its `callsPerDay` is a floor,
+not a count.
 
 Group the returned `db.statement` texts. The finding's statement is the one
 whose shape fits the numbers: per-call duration near `avgMs`, and for `heavy`
 a statement that plausibly reads `blocksPerCall` pages (a scan, a window
-function over a whole table, a join without a selective filter). If two
-statements fit equally, or none does, say so — set `sqlConfidence` to `low`
-and still draft the issue around the signature. Never invent SQL.
+function over a whole table, a join without a selective filter).
+
+A duration band holds many statements, so fitting the band is not a match.
+Before you choose one, count its spans over `window` with `aggregate_spans`
+(the span query plus a filter on a distinctive fragment of its text, e.g.
+`@db.statement:*risk_order_requests_v*`) and compare with `callsPerDay` × the
+window's days: within about 3× (or above it, when `sampled`) supports the
+match; far below it rules the statement out.
+
+If two statements fit equally, or none survives that check, set `sql` to
+`null` and `sqlConfidence` to `low`, and draft the issue around the
+signature: the title says `statement not recovered`, and nothing in the title
+or body names a statement, table, job or code path you did not see in a span
+that passed the check. Never invent or guess SQL.
 
 Note `git.commit.sha` from the newest span carrying the chosen statement: that
 is the commit serving the query in prod (`deployedSha`).
