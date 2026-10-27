@@ -330,7 +330,7 @@ function gate(c, deployedSha) {
   } catch (e) { return { reopen: false, reason: `cannot tell whether the fix is deployed (${firstLine(e)})` }; }
 }
 
-function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite, c.window); }
+function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite); }
 
 function labels(c) { return [LABEL, 'auto-filed', `sev:${c.finding.severity}`]; }
 
