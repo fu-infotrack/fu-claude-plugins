@@ -283,19 +283,27 @@ export function composeIssueBody(finding, body) {
 }
 
 // A query finding's body ends with a link that opens its DBM query panel, so a
-// person lands on the statement and its plans in one click. No time range: DBM
-// rejects a week-long one as "Invalid Query", and its default view works.
-export function withDbmPointer(finding, body, ddSite) {
+// person lands on the statement and its plans in one click. DBM rejects a
+// week-long range as "Invalid Query", so it shows the window's last two days.
+export function withDbmPointer(finding, body, ddSite, span) {
   if (!finding.querySignature) return body;
-  return `${body.trimEnd()}\n\nDBM: [query ${finding.querySignature}](${dbmQueryUrl(finding, ddSite)})`;
+  return `${body.trimEnd()}\n\nDBM: [query ${finding.querySignature}](${dbmQueryUrl(finding, ddSite, span)})`;
 }
 
-export function dbmQueryUrl({ querySignature: qs, instance }, ddSite) {
+const DBM_RANGE_MS = 2 * 86400e3;
+
+export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
   const p = new URLSearchParams({
     query: `database_instance:${instance} query_signature:${qs}`,
     dbPanels: JSON.stringify([{ t: 'dbQueryPanel', qs, dbType: 'PostgreSQL', h: instance }]),
     dbType: 'PostgreSQL',
   });
+  if (span) {
+    const end = Date.parse(span.to);
+    p.set('start', String(Math.max(Date.parse(span.from), end - DBM_RANGE_MS)));
+    p.set('end', String(end));
+    p.set('paused', 'true');
+  }
   return `${ddSite}/databases/queries?${p.toString().replace(/\+/g, '%20')}`;
 }
 
