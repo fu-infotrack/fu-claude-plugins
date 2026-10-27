@@ -116,9 +116,9 @@ e.g. `perf(compliance_mono): latest-monitoring-event lookup scans all of risk.mo
 3. `## Where` — the code locations, as repo-relative `path:line`.
 4. `## Why it costs this` — Step 3.
 5. `## Recent changes` — the commit list (sha, date, subject, author name).
-6. `## Links` — the APM spans search from Step 1, when one matched:
-   `<ddSite>/apm/traces?query=<url-encoded span query>`.
-7. A last line: `Filed by the fu-db-sweep routine; the marker above dedups it. Close as "not planned" to accept the cost.`
+6. A last line: `Filed by the fu-db-sweep routine; the marker above dedups it. Close as "not planned" to accept the cost.`
+
+The script appends the DBM query link after the body; add no other Datadog links.
 
 **`REOPEN_ACCEPTED` or `REGRESSION_CHECK` → `comment`**: the numbers now vs
 `recordedValue` (what the issue was filed or accepted at), the window, the

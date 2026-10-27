@@ -282,11 +282,21 @@ export function composeIssueBody(finding, body) {
   return `${buildMarker(finding)}\n\n${clean}`;
 }
 
-// The statement text lives in DBM, which the routine's Datadog connector cannot
-// read, so a query finding's body ends with where a person finds it.
-export function withDbmPointer(finding, body, ddSite) {
+// A query finding's body ends with a link that opens its DBM query panel over the
+// sweep window, so a person lands on the statement and its plans in one click.
+export function withDbmPointer(finding, body, ddSite, span) {
   if (!finding.querySignature) return body;
-  return `${body.trimEnd()}\n\nSQL text: open [DBM Query Metrics](${ddSite}/databases/queries) and search \`query_signature:${finding.querySignature}\`.`;
+  return `${body.trimEnd()}\n\nDBM: [query ${finding.querySignature}](${dbmQueryUrl(finding, ddSite, span)})`;
+}
+
+export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
+  const p = new URLSearchParams({
+    query: `database_instance:${instance} query_signature:${qs}`,
+    dbPanels: JSON.stringify([{ t: 'dbQueryPanel', qs, dbType: 'PostgreSQL', h: instance }]),
+    dbType: 'PostgreSQL',
+  });
+  if (span) { p.set('start', String(Date.parse(span.from))); p.set('end', String(Date.parse(span.to))); p.set('paused', 'true'); }
+  return `${ddSite}/databases/queries?${p.toString().replace(/\+/g, '%20')}`;
 }
 
 // The issue index: {fp: [{number, state, closedAt, notPlanned, value}]}, from
