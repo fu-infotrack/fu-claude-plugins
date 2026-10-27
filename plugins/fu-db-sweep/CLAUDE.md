@@ -49,6 +49,14 @@ orchestrator copying printed prompts) are explained in
   it, nothing filed, its state kept — because a finding from half the data is
   worse than none; the other repos carry on. A repo with nothing to file gets its
   summary (and state advance) from `plan`; the rest from `finish`.
+- **The orchestrator's hand-off is files, not notifications.** On 2026-10-27
+  the Haiku orchestrator dispatched 8 investigators, then ended its turn
+  "waiting for completion notifications", miscounted them, and never ran
+  `finish`. Every investigator had written its file. Now `wait collect` and
+  `wait investigate` block until every expected output file exists (540 s max,
+  `DB_SWEEP_WAIT_SECONDS`), and the prompt runs `wait` in the same turn as the
+  dispatch. A missing file at timeout is simply a failed agent for
+  `plan`/`finish`.
 - **The fingerprint is a wire format**: `sha1(rule|instance|db|query_signature)`
   (or `|table`, or no key for instance pressure), carried with the measured
   value in a `<!-- dd-dbm: {...} -->` marker. The value is what *not planned*

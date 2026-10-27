@@ -119,11 +119,20 @@ header, up to the next header or the end.
 
 Dispatch **every block at once**, in a single message: one Agent call per block,
 `subagent_type: general-purpose`, `model: sonnet`, `prompt` the block's prompt
-**verbatim** — do not edit, shorten or add to it. Wait for all of them and
-ignore their replies — except a call that ends in an **error** (for example
-`Agent terminated early due to an API error`): dispatch that block once more
-with `model: opus` and wait for it. Never retry a block a second time, and never
-do an agent's work yourself.
+**verbatim** — do not edit, shorten or add to it. Ignore their replies — except
+a call that ends in an **error** (for example `Agent terminated early due to an
+API error`): dispatch that block once more with `model: opus`. Never retry a
+block a second time, and never do an agent's work yourself.
+
+Then, **in the same turn**, run this verbatim with the Bash tool's `timeout` set
+to `600000`. It returns when every agent has written its file (at most 9
+minutes); do not wait for notifications or count replies yourself:
+
+```bash
+source ~/.claude/db-sweep/routine.env && node "$RT" wait collect
+```
+
+Whatever it prints (`READY` or `TIMEOUT`), go straight on to Step 3.
 
 ### Step 3 — Plan
 
@@ -137,7 +146,13 @@ source ~/.claude/db-sweep/routine.env && node "$RT" plan
   output and nothing else.
 - First line starts with `PROCEED` → the rest is blocks, each starting with a
   `--- investigator <id> ---` header. Dispatch them exactly as in Step 2
-  (all at once, Sonnet, verbatim, one Opus retry on error).
+  (all at once, Sonnet, verbatim, one Opus retry on error), then in the same
+  turn run, verbatim (Bash `timeout` `600000`), and go straight on to Step 4
+  whatever it prints:
+
+  ```bash
+  source ~/.claude/db-sweep/routine.env && node "$RT" wait investigate
+  ```
 
 ### Step 4 — File
 
