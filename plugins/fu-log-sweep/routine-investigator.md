@@ -21,19 +21,26 @@ Your task prompt gives absolute paths. Use them verbatim:
   (`NEW`, or `REGRESSION` with the closed issue's `number`), `errorKind`,
   `service`, `env`, `count`, `frame` (the top application frame, or null),
   `confidence` (`app-frame`, `first-frame` or `message`), `errorMessage`,
-  `lastSeenIso`, `windowStartIso`, `bucketQuery`, `logsUrl` (may be null),
-  `stackField` (the stack's attribute path, e.g. `Exception` or `error.stack`),
-  `postFixCount` and `versions` (REGRESSION only).
+  `lastSeenIso`, `windowStartIso`, `windowEndIso`, `bucketQuery`, `logsUrl` (may
+  be null), `stackPath` (where the stack sits on a pup log event, e.g.
+  `attributes.attributes.Exception`), `ddSite`, and `postFixCount` and
+  `versions` (REGRESSION only).
 - `SAMPLE_FILE` — `[{timestamp, message, stack}]`, the newest event.
 - `SOURCE_DIR` — the repo's default branch, checked out. Read and grep it with
   absolute paths.
 - `OUTPUT_FILE` — where you write.
 
-More samples, if one is not enough: the Datadog MCP connector's
-`search_datadog_logs` with `query` = `bucketQuery`, `from` = `windowStartIso`,
-`limit` ≤ 3, `extra_fields` = `["<first segment of stackField>", "MessageTemplate"]`
-(`error`, not `error.stack` — the connector returns nothing for a dotted name).
-Keep it modest.
+Datadog is read with the `pup` CLI (already installed and authenticated; read
+only). Always pass `--no-agent` and `--storage indexes`. More samples, if one is
+not enough — keep it modest:
+
+```bash
+pup logs search --no-agent --storage indexes --query '<bucketQuery>' \
+  --from <windowStartIso> --to <windowEndIso> --limit 3
+```
+
+Single-quote the query: types can hold backticks and brackets. Each event's
+stack is at `stackPath` under `.data[]`.
 
 GitHub is REST only — `gh api repos/<repo>/…`. Never `gh issue …`/`gh pr …`
 (GraphQL, which answers 403 here) and never `--paginate`.
@@ -80,13 +87,17 @@ The error log carries a `trace_id`. When the failing frame is a call to another
 service (a generated client, `HttpClient`, an `…Exception` carrying a status
 code), the log only says *that* the callee failed; its APM spans say *why*.
 
-1. `search_datadog_logs` with `query` = `bucketQuery`, `from` = `windowStartIso`,
-   `limit` = 1 — `trace_id` and `span_id` come back on the event by default.
-   No `trace_id` → skip this step.
-2. `search_datadog_spans` with `query` = `trace_id:<id> (status:error OR
-   @http.status_code:[400 TO 599])`, `from`/`to` = the event's timestamp ±5 min,
-   `limit` ≤ 10. (`get_datadog_trace` with `only_service_entry_spans` hides the
-   callee's child spans — use it only to see the whole shape.)
+1. Read the trace id off the sample: the same `pup logs search` as above with
+   `--limit 1`, then look under the event's `attributes.attributes` for
+   `dd.trace_id` (or `trace_id`). No trace id → skip this step.
+2. The error spans in that trace, from the event's timestamp ±5 min:
+
+   ```bash
+   pup traces search --no-agent \
+     --query 'trace_id:<id> (status:error OR @http.status_code:[400 TO 599])' \
+     --from <ts - 5m> --to <ts + 5m> --limit 10
+   ```
+
 3. Read the error spans in start order. The **deepest** error span is the root
    cause; the ones above it are propagation. Note service, resource, status
    code, `error.message` and `version` for each hop. A callee's own outbound
@@ -142,7 +153,7 @@ signature marker (the orchestrator adds it):
 <1–3 short paragraphs: what throws, why, the traced path — and, when Step 2b found one, the downstream failure behind it. Say so if confidence is not app-frame.>
 
 **Upstream cause** *(from the APM trace; omit when there is none)*
-- Trace: <base_url>/apm/trace/<trace_id>
+- Trace: <ddSite>/apm/trace/<trace_id>
 - <service> `<resource>` → <status> — <error.message> (<version>)   (deepest error span; list hops top-down)
 
 **Suspected code location**
@@ -197,4 +208,4 @@ Your entire response is exactly `DONE`.
 
 - Read-only except `OUTPUT_FILE`. Never `git commit`/`push`/`checkout`/`reset`,
   never build, install or run the project.
-- GitHub: `gh api` GETs only.
+- GitHub: `gh api` GETs only. Datadog: `pup` read commands only.

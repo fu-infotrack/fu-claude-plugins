@@ -198,10 +198,10 @@ export function extractSig(body) {
 }
 
 // ---- Cloud routine helpers --------------------------------------------------
-// The routine has no pup and no plugin: a collector sub-agent reads Datadog via
-// MCP and writes a buckets file, an investigator per candidate writes a verdict
-// file, and routine.mjs does everything else. These validate those two files
-// strictly (one bad item rejects the file) and hold the dedup/filing rules.
+// The routine has no plugin: collect.mjs reads Datadog through pup and writes a
+// buckets file, an investigator per candidate writes a verdict file, and
+// routine.mjs does everything else. These validate those two files strictly
+// (one bad item rejects the file) and hold the dedup/filing rules.
 
 const isStr = (v) => typeof v === 'string';
 const isCount = (v) => Number.isInteger(v) && v >= 0;
@@ -281,7 +281,7 @@ export function composeIssueBody(sig, body) {
 // A routine's sandbox keeps no file between runs and a run is not told when the
 // last one ran, so the end of the last completed sweep lives in a closed issue's
 // body as a hidden marker; the routine's config names the issue by number
-// (`stateIssue`). It carries no dd-log-sig marker and no
+// (`stateIssues[repo]`). It carries no dd-log-sig marker and no
 // datadog-logs label, so the dedup index never sees it.
 
 const STATE_RE = /<!--\s*fu-log-sweep-state:\s*(\{.*?\})\s*-->/s;
