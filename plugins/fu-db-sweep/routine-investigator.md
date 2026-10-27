@@ -67,6 +67,11 @@ signature: the title says `statement not recovered`, and nothing in the title
 or body names a statement, table, job or code path you did not see in a span
 that passed the check. Never invent or guess SQL.
 
+Run the count check on at most three candidates, then stop: a duration band
+rarely yields the statement, and the script ends every query finding's body
+with a pointer to DBM Query Metrics, where a person reads the SQL text for the
+signature. Do not add that pointer yourself.
+
 Note `git.commit.sha` from the newest span carrying the chosen statement: that
 is the commit serving the query in prod (`deployedSha`).
 

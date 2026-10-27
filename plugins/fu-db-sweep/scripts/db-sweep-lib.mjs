@@ -282,6 +282,13 @@ export function composeIssueBody(finding, body) {
   return `${buildMarker(finding)}\n\n${clean}`;
 }
 
+// The statement text lives in DBM, which the routine's Datadog connector cannot
+// read, so a query finding's body ends with where a person finds it.
+export function withDbmPointer(finding, body, ddSite) {
+  if (!finding.querySignature) return body;
+  return `${body.trimEnd()}\n\nSQL text: open [DBM Query Metrics](${ddSite}/databases/queries) and search \`query_signature:${finding.querySignature}\`.`;
+}
+
 // The issue index: {fp: [{number, state, closedAt, notPlanned, value}]}, from
 // the REST listing of `datadog-dbm` issues.
 export function indexIssues(issues) {
