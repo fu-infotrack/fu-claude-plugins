@@ -11,10 +11,16 @@ a plugin command.
 - **Orchestrator (the routine's model): Haiku.** It runs four fixed bash
   commands and copies the agent prompts they print. It never reads the PR.
 - **Reviewers: Opus at medium effort.** A scope of at most 5 files and 200
-  changed lines gets one reviewer covering every dimension (`SINGLE`). Anything
-  larger gets three reviewers — correctness, security & contracts, intent &
-  rules & docs — and an Opus merger that dedupes, verifies blockers and
-  re-checks prior findings (`FANOUT`). An agent whose call errors (e.g. an
+  changed lines gets one reviewer that runs every angle and verifies its own
+  candidates (`SINGLE`). Anything larger gets four finders, one per angle group
+  — `diff` (line by line, removed behavior), `trace` (callers, contracts,
+  language pitfalls, wrappers, security), `cleanup` (reuse, simplification,
+  efficiency, altitude), `intent` (scope, repo rules, the `Mint` house rule,
+  docs) — and an Opus merger that dedupes, votes CONFIRMED / PLAUSIBLE /
+  REFUTED on every candidate, grades it and re-checks prior findings
+  (`FANOUT`). The method follows the built-in `/code-review` medium recipe,
+  written as our own briefs so that we control the model, the level and the
+  cloud rules. Finding text follows the ASD-STE100 writing rules. An agent whose call errors (e.g. an
   intermittent Opus safeguard refusal) is re-dispatched once on Sonnet. A
   FANOUT still missing any reviewer's findings after that posts nothing.
 - **`--auto-approve` is on.** A review with zero blockers posts as an APPROVE
@@ -88,7 +94,7 @@ fi
 ### Step 2 — Dispatch the agents
 
 The rest of the output is blocks, each starting with a header line:
-`--- reviewer <dimension> ---` or `--- merger ---`. A block's **prompt** is every
+`--- reviewer <angle group> ---` or `--- merger ---`. A block's **prompt** is every
 line after its header, up to the next header or the end.
 
 1. Dispatch **every reviewer block at once**, in a single message: one Agent

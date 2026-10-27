@@ -306,12 +306,12 @@ eq "stderr is empty" "" "$(cat "$SANDBOX/err")"
 five_files=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs'
 headers() { grep '^--- ' "$SANDBOX/out"; }
 
-echo "== routine: a small scope gets one reviewer covering every dimension =="
+echo "== routine: a small scope gets one reviewer running every angle group =="
 new_sandbox
 one 7 --routine
 eq "token line" "SINGLE 7 acme/widgets" "$(first)"
 eq "one reviewer block" "--- reviewer all ---" "$(headers)"
-has "the reviewer brief" "$ROOT/routine-reviewer.md and follow it exactly. Review PR #7, dimension: all." "$(out)"
+has "the reviewer brief" "$ROOT/routine-reviewer.md and follow it exactly. Review PR #7, angle group: all." "$(out)"
 has "it re-checks the priors" "  PRIOR_FILE = $STATE/prior-7.json" "$(out)"
 has "it writes the findings file itself" "  OUTPUT_FILE = $STATE/findings-7.json" "$(out)"
 has "the review worktree" "  REVIEW_DIR = $HOME/.claude/pr-review/worktrees/acme-widgets" "$(out)"
@@ -339,14 +339,15 @@ PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs\nsrc/f.cs' COMPARE_F
   FILE_LINES=50 one 7 --routine
 eq "one file of six in scope" "SINGLE 7 acme/widgets" "$(first)"
 
-echo "== routine: a large scope fans out to three reviewers and a merger =="
+echo "== routine: a large scope fans out to four finders and a merger =="
 new_sandbox
 FILE_LINES=500 one 7 --routine
-eq "headers, in dispatch order" "--- reviewer correctness ---
---- reviewer security ---
+eq "headers, in dispatch order" "--- reviewer diff ---
+--- reviewer trace ---
+--- reviewer cleanup ---
 --- reviewer intent ---
 --- merger ---" "$(headers)"
-has "a reviewer writes its part" "  OUTPUT_FILE = $STATE/findings-7.security.json" "$(out)"
+has "a reviewer writes its part" "  OUTPUT_FILE = $STATE/findings-7.trace.json" "$(out)"
 eq "only the merger re-checks priors" "1" "$(grep -c 'PRIOR_FILE' "$SANDBOX/out")"
 has "the merger brief" "$ROOT/routine-merger.md and follow it exactly. Merge the reviews of PR #7." "$(out)"
 has "the merger reads every part" "  PART_FILE_INTENT = $STATE/findings-7.intent.json" "$(out)"
@@ -381,18 +382,18 @@ finish_parts() {
 
 echo "== routine: a FANOUT missing any reviewer's findings posts nothing =="
 new_sandbox
-finish_parts correctness security
+finish_parts diff trace cleanup
 eq "status" "NO_FINDINGS" "$(out)"
 eq "not posted" "no" "$([ -e "$GH_POST" ] && echo yes || echo no)"
 eq "parts cleared" "" "$(ls "$STATE"/findings-7.* 2>/dev/null)"
 new_sandbox
 bash -c 'source "$1"; echo "{\"findings\":[{\"severity\":\"HIGH\",\"text\":\"x\"}]}" > "$(pr_path part_intent 7)"' _ "$LIB"
-finish_parts correctness security
+finish_parts diff trace cleanup
 eq "an invalid part counts as missing" "NO_FINDINGS" "$(out)"
 
 echo "== routine: a complete FANOUT posts, with the routine's footer =="
 new_sandbox
-finish_parts correctness security intent
+finish_parts diff trace cleanup intent
 eq "status" "POSTED COMMENT" "$(out)"
 has "footer" "*Automated review by a Claude Code routine*" "$(posted_body)"
 has_no "not /code-review's footer" "via /code-review" "$(posted_body)"
