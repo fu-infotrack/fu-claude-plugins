@@ -197,7 +197,7 @@ test('a query finding links its DBM query panel over the last two days of the wi
   const [, url] = body.match(/^draft\n\nDBM: \[query acf8a9c4b87a929\]\((.+)\)$/);
   const u = new URL(url);
   assert.equal(u.origin + u.pathname, `${site}/databases/queries`);
-  assert.equal(u.searchParams.get('query'), 'database_instance:pg-1.example.rds.amazonaws.com query_signature:acf8a9c4b87a929');
+  assert.equal(u.searchParams.get('query'), 'env:prod query_signature:acf8a9c4b87a929');
   assert.deepEqual(JSON.parse(u.searchParams.get('dbPanels')), [{ t: 'dbQueryPanel', qs: 'acf8a9c4b87a929', dbType: 'PostgreSQL', h: 'pg-1.example.rds.amazonaws.com' }]);
   assert.equal(u.searchParams.get('start'), String(Date.parse('2026-10-25T00:00:00Z')));
   assert.equal(u.searchParams.get('end'), String(Date.parse('2026-10-27T00:00:00Z')));

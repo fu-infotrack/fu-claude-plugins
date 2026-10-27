@@ -294,7 +294,7 @@ const DBM_RANGE_MS = 2 * 86400e3;
 
 export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
   const p = new URLSearchParams({
-    query: `database_instance:${instance} query_signature:${qs}`,
+    query: `env:prod query_signature:${qs}`,
     dbPanels: JSON.stringify([{ t: 'dbQueryPanel', qs, dbType: 'PostgreSQL', h: instance }]),
     dbType: 'PostgreSQL',
   });
