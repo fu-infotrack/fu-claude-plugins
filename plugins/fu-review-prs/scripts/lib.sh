@@ -88,12 +88,12 @@ mkdir -p "$STATE_DIR"
 #   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
 #                                       `auto-approve` when asked (pr_review_one), plus
 #                                       `routine` and `fanout` for a routine run
-#   part_<d>  findings-<pr>.<d>.json    a FANOUT reviewer's findings for dimension <d>
-#                                       (ROUTINE_DIMENSIONS), merged into `findings`
+#   part_<d>  findings-<pr>.<d>.json    a FANOUT finder's candidates for angle group <d>
+#                                       (ROUTINE_DIMENSIONS), verified into `findings`
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings gate oneway mode part_correctness part_security part_intent"
+TRANSIENT_KINDS="pending scope prior findings gate oneway mode part_diff part_trace part_cleanup part_intent"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -1400,9 +1400,10 @@ pr_review_one() {
 # flow is available to it. pr_review_one --routine runs the same guard and
 # pre-flight, then prints prompts for briefs that carry their own review method
 # (routine-reviewer.md, routine-merger.md). A small scope gets one reviewer that
-# covers every dimension (SINGLE); anything larger gets one reviewer per
-# dimension plus a merger (FANOUT). The orchestrator only copies the blocks.
-ROUTINE_DIMENSIONS="correctness security intent"
+# runs every angle group and verifies its own candidates (SINGLE); anything
+# larger gets one finder per angle group plus a merger that votes on every
+# candidate (FANOUT). The orchestrator only copies the blocks.
+ROUTINE_DIMENSIONS="diff trace cleanup intent"
 ROUTINE_SINGLE_MAX_FILES=5
 ROUTINE_SINGLE_MAX_LINES=200
 ROUTINE_REVIEWER_BRIEF="$(dirname "$REVIEW_TASK_FILE")/routine-reviewer.md"
@@ -1429,7 +1430,7 @@ routine_scope_size() {
 routine_reviewer_block() {
     local pr=$1 dim=$2 out=$3
     printf -- '--- reviewer %s ---\n' "$dim"
-    printf 'Read %s and follow it exactly. Review PR #%s, dimension: %s.\n' \
+    printf 'Read %s and follow it exactly. Review PR #%s, angle group: %s.\n' \
         "$ROUTINE_REVIEWER_BRIEF" "$pr" "$dim"
     printf 'Use these absolute paths verbatim — do not construct your own:\n'
     printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
