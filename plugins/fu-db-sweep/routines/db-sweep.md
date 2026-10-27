@@ -13,7 +13,7 @@ through the **Datadog MCP connector**, so the routine clones this repo and runs
 - **Rules are the script's** (`db-sweep-lib.mjs`): heavy query, latency
   regression (vs the previous window and the 28 days before), throughput step,
   instance pressure, table hygiene; severity; one finding per query; fingerprint
-  dedup; a cap of 5 new or reopened issues per run.
+  dedup; a cap of 5 new or reopened issues per repo per run.
 - **Investigators: Sonnet**, one per candidate, all at once. Each finds the SQL
   in APM spans and the code behind it (EF `TagWith` "Spec:/Caller:" comments, or
   a grep), and drafts the issue. An agent call that errors is re-dispatched once
@@ -21,16 +21,18 @@ through the **Datadog MCP connector**, so the routine clones this repo and runs
 - **Filing is the script's**, over GitHub REST. A closed issue reopens only when
   the commit serving the query in prod contains the fix; one closed as *not
   planned* (or labelled `wontfix`) stays closed unless the number gets 2× worse.
-- **State and the weekly summary live in one closed issue** in `stateRepo`
-  (`DB perf sweep routine state`). Each run reads from the end of the last
-  completed run (at least 7 days, at most 28) and comments its summary there.
+- **Each repo is swept on its own.** Its state and weekly summary live in a
+  closed issue in that repo (`DB perf sweep routine state`); each run reads from
+  the end of that repo's last completed run (at least 7 days, at most 28) and
+  comments its summary there. A failed collector fails only its repo: a FAILED
+  summary there, nothing filed, its state kept; the other repos carry on.
 
 ## Setup (claude.ai/code → Routines → New)
 
 | Field | Value |
 |---|---|
 | Name | `DB perf sweep` |
-| Repositories | `fu-infotrack/fu-claude-plugins` on `main`, plus **every repo named in `CONFIG`** (and `stateRepo`). A pair whose repo is not attached is skipped and named in the summary — the cloud proxy refuses API calls to repos the session is not bound to. |
+| Repositories | `fu-infotrack/fu-claude-plugins` on `main`, plus **every repo named in `CONFIG`**. A pair whose repo is not attached is skipped and named in the run's output — the cloud proxy refuses API calls to repos the session is not bound to. |
 | Environment | needs `gh` and `node`, and network access to GitHub |
 | Connectors | **only** the Datadog MCP connector for your site (`Datadog AU`) |
 | Model | Haiku |
@@ -48,7 +50,7 @@ on every target repo.
 - `CONFIG` — JSON:
 
   ```json
-  {"stateRepo": "infotrackglobal/infotrack.compliance.mono",
+  {"stateIssues": {"infotrackglobal/infotrack.compliance.mono": 123},
    "pairs": [{"repo": "infotrackglobal/infotrack.compliance.mono", "db": "compliance_mono"}]}
   ```
 
@@ -59,10 +61,12 @@ on every target repo.
     `DEFAULT_THRESHOLDS` in `scripts/db-sweep-lib.mjs`, e.g.
     `{"repo": "…", "db": "…", "overrides": {"heavyBlocksPerCall": 50000}}`.
     An unknown key fails the run.
-  - `stateIssue` — add after the first `--live` run, whose result says
-    `state issue created: <repo>#N — add "stateIssue": N`. Until then each live
-    run creates another and reads only 7 days. A JSON number, not a string.
-    Observe runs post their summary only once it is set.
+  - `stateIssues` — repo → state issue number, one per repo. Leave a repo out
+    until its first `--live` run, whose result says
+    `<repo>: state issue created #N — add "<repo>": N to CONFIG.stateIssues`.
+    Until then each live run creates another for that repo and reads only 7
+    days. Numbers, not strings. Observe runs post a repo's summary only once
+    its entry is set.
   - `ddSite` — default `https://ap2.datadoghq.com`, used for links.
 
 ## Prompt
@@ -84,7 +88,7 @@ Run this as one Bash command, verbatim:
 
 ```bash
 MODE=--observe
-CONFIG='{"stateRepo":"infotrackglobal/infotrack.compliance.mono","pairs":[{"repo":"infotrackglobal/infotrack.compliance.mono","db":"compliance_mono"}]}'
+CONFIG='{"pairs":[{"repo":"infotrackglobal/infotrack.compliance.mono","db":"compliance_mono"}]}'
 if ! command -v node >/dev/null || ! command -v gh >/dev/null; then
   echo "SKIP — node or gh missing"
 else
