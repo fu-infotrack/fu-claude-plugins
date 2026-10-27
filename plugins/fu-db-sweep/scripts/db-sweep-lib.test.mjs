@@ -190,10 +190,19 @@ test('marker round-trips and a body cannot smuggle a second one', () => {
   assert.deepEqual(parseMarker(body), { fp: 'abc123def456', measure: 'blocksPerCall', value: 75373 });
 });
 
-test('a query finding points at DBM for its SQL; other findings are left alone', () => {
+test('a query finding links its DBM query panel over the last two days of the window; other findings are left alone', () => {
   const site = 'https://ap2.datadoghq.com';
-  const body = withDbmPointer({ querySignature: 'c985631ee7416fa1' }, 'draft\n', site);
-  assert.match(body, /^draft\n\nSQL text: open \[DBM Query Metrics\]\(https:\/\/ap2\.datadoghq\.com\/databases\/queries\) and search `query_signature:c985631ee7416fa1`\.$/);
+  const finding = { querySignature: 'acf8a9c4b87a929', instance: 'pg-1.example.rds.amazonaws.com' };
+  const body = withDbmPointer(finding, 'draft\n', site, { from: '2026-10-20T00:00:00Z', to: '2026-10-27T00:00:00Z' });
+  const [, url] = body.match(/^draft\n\nDBM: \[query acf8a9c4b87a929\]\((.+)\)$/);
+  const u = new URL(url);
+  assert.equal(u.origin + u.pathname, `${site}/databases/queries`);
+  assert.equal(u.searchParams.get('query'), 'env:prod query_signature:acf8a9c4b87a929');
+  assert.deepEqual(JSON.parse(u.searchParams.get('dbPanels')), [{ t: 'dbQueryPanel', qs: 'acf8a9c4b87a929', dbType: 'PostgreSQL', h: 'pg-1.example.rds.amazonaws.com' }]);
+  assert.equal(u.searchParams.get('start'), String(Date.parse('2026-10-25T00:00:00Z')));
+  assert.equal(u.searchParams.get('end'), String(Date.parse('2026-10-27T00:00:00Z')));
+  assert.equal(u.searchParams.get('paused'), 'true');
+  assert.ok(!url.includes('+'));
   assert.equal(withDbmPointer({ instance: 'reader-1' }, 'draft', site), 'draft');
 });
 

@@ -282,11 +282,29 @@ export function composeIssueBody(finding, body) {
   return `${buildMarker(finding)}\n\n${clean}`;
 }
 
-// The statement text lives in DBM, which the routine's Datadog connector cannot
-// read, so a query finding's body ends with where a person finds it.
-export function withDbmPointer(finding, body, ddSite) {
+// A query finding's body ends with a link that opens its DBM query panel, so a
+// person lands on the statement and its plans in one click. DBM rejects a
+// week-long range as "Invalid Query", so it shows the window's last two days.
+export function withDbmPointer(finding, body, ddSite, span) {
   if (!finding.querySignature) return body;
-  return `${body.trimEnd()}\n\nSQL text: open [DBM Query Metrics](${ddSite}/databases/queries) and search \`query_signature:${finding.querySignature}\`.`;
+  return `${body.trimEnd()}\n\nDBM: [query ${finding.querySignature}](${dbmQueryUrl(finding, ddSite, span)})`;
+}
+
+const DBM_RANGE_MS = 2 * 86400e3;
+
+export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
+  const p = new URLSearchParams({
+    query: `env:prod query_signature:${qs}`,
+    dbPanels: JSON.stringify([{ t: 'dbQueryPanel', qs, dbType: 'PostgreSQL', h: instance }]),
+    dbType: 'PostgreSQL',
+  });
+  if (span) {
+    const end = Date.parse(span.to);
+    p.set('start', String(Math.max(Date.parse(span.from), end - DBM_RANGE_MS)));
+    p.set('end', String(end));
+    p.set('paused', 'true');
+  }
+  return `${ddSite}/databases/queries?${p.toString().replace(/\+/g, '%20')}`;
 }
 
 // The issue index: {fp: [{number, state, closedAt, notPlanned, value}]}, from
