@@ -116,6 +116,28 @@ test('step change is low; one query breaching two rules files once, at the worst
   assert.deepEqual([f.rule, f.severity, f.alsoBreached.sort()], ['regression', 'high', ['heavy', 'step']]);
 });
 
+test('acceptance: a sampled signature gets only the pages-per-call rule', () => {
+  const quiet = { instance: PROD, maxBlocked: 0, maxConnPct: 0.1, deadlocks: 0, maxIdleInTxnSeconds: 5, timeNsByDb: { compliance_mono: 1e15 } };
+  const sampled = (sig, win, base) => ({ ...q(sig, win, base), sampled: true });
+  const data = parseCollectorOutput({
+    db: 'compliance_mono', instances: [PROD], instanceStats: [quiet], tables: [],
+    queries: [
+      // 2026-10-27: a signature shared with other databases dominated the db-tagged slice
+      // (97% of its time) at 17.5k pages/call — share, regression and step must not fire.
+      sampled('2afe7f44d8ebc0f3', stats(794, 32, 17572), stats(100, 8, 17000)),
+      // A shared signature still reading ~48k pages a call is heavy whatever its counts.
+      sampled('c8183c1d0e8a9836', stats(441, 42.5, 47907), stats(400, 41, 47000)),
+      q('filler', stats(1e4, 0.1), stats(1e4, 0.1)),
+    ],
+  }, PAIR);
+  assert.ok(data.ok, data.error);
+  const { findings } = evaluate(PAIR, data.value, SPANS, T);
+  assert.deepEqual(findings.map((f) => [f.querySignature, f.rule, f.measure.name]), [['c8183c1d0e8a9836', 'heavy', 'blocksPerCall']]);
+  assert.equal(findings[0].metrics.sampled, true);
+  assert.match(findings[0].why, /call counts sampled/);
+  assert.match(parseCollectorOutput({ ...PROD_FIXTURE, queries: [{ ...PROD_FIXTURE.queries[0], sampled: 'yes' }] }, PAIR).error, /sampled: not a boolean/);
+});
+
 test('pressure: an issue when our database is the busiest on the instance', () => {
   const data = { ...PROD_FIXTURE, queries: [], instanceStats: [{ ...PROD_FIXTURE.instanceStats[0], timeNsByDb: { compliance_mono: 9e15, text_resource: 1e12 } }] };
   const { findings, notes } = evaluate(PAIR, data, SPANS, T);

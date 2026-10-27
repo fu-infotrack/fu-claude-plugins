@@ -85,6 +85,7 @@ export function parseCollectorOutput(raw, expect) {
       checkStats(q.window, `queries[${n}].window`);
       checkStats(q.baseline, `queries[${n}].baseline`);
       checkStats(q.drift, `queries[${n}].drift`);
+      if (q.sampled !== undefined && typeof q.sampled !== 'boolean') throw new Error(`queries[${n}].sampled: not a boolean`);
     });
     if (!Array.isArray(raw.instanceStats)) throw new Error('instanceStats: not an array');
     raw.instanceStats.forEach((s, n) => {
@@ -163,8 +164,26 @@ export function evaluate(pair, data, spans, t) {
       driftAvgMs: round(avgMs(q.drift), 3), blocksPerCall: Math.round(blocksPerCall(w)),
       totalSeconds: round(w.timeNs / 1e9, 1), shareOfDbTime: round(dbTimeByInstance[q.instance] ? w.timeNs / dbTimeByInstance[q.instance] : 0, 3),
       baselineCallsPerDay: round(q.baseline.calls / baseDays, 1),
+      ...(q.sampled ? { sampled: true } : {}),
     };
     const hits = [];
+
+    // A sampled query (its signature also runs in another database) has only
+    // the db-tagged slice of its rows, and that slice swings day to day: its
+    // counts, time and even its average are noise. Pages per call is the one
+    // number a sample keeps, so it is the only rule it gets.
+    if (q.sampled) {
+      const bpc = blocksPerCall(w);
+      if (bpc >= t.heavyBlocksPerCall && w.calls > 0) {
+        findings.push({
+          rule: 'heavy', severity: 'med', measure: { name: 'blocksPerCall', value: Math.round(bpc) },
+          why: `${Math.round(bpc).toLocaleString('en-US')} buffer pages per call (~${Math.round(bpc * 8 / 1024)} MB), avg ${round(cur, 1)} ms (call counts sampled)`,
+          kind: 'query', repo: pair.repo, db: pair.db, instance: q.instance, querySignature: q.querySignature,
+          fingerprint: fingerprint('heavy', q.instance, pair.db, q.querySignature), metrics, alsoBreached: [],
+        });
+      }
+      continue;
+    }
 
     // Latency regression against the same-length baseline, or slow drift
     // against the 28 days before the window — whichever is the lower bar.
