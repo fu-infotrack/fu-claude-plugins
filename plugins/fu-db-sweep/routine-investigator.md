@@ -23,62 +23,49 @@ Your task prompt gives absolute paths:
   `recordedValue`, `ddSite`, `window`/`baseline` (`{from, to}`), and `finding`:
   `rule` (`heavy`, `regression`, `step`, `pressure` or `hygiene`), `severity`,
   `kind` (`query`, `instance` or `table`), `instance`, `querySignature` (query
-  findings), `table` (hygiene), `why` (one line), `measure` and `metrics`.
+  findings), `table` (hygiene), `why` (one line), `measure` and `metrics`;
+  and `sql` — for a query finding, the statement behind `querySignature` as
+  DBM stores it (literals replaced by `?`, comments stripped), with
+  `sqlTables`; `null` when DBM kept no sample in the window.
 - `SOURCE_DIR` — the repo's default branch, checked out. Use absolute paths.
 - `OUTPUT_FILE` — where you write.
 
 GitHub is REST only — `gh api repos/<repo>/…`. Never `gh issue …`/`gh pr …`
 (GraphQL answers 403 here) and never `--paginate`.
 
-## Step 1 — Find the SQL (query findings)
+## Step 1 — The SQL (query findings)
 
-DBM metrics carry the `querySignature` but not the SQL text; APM client spans
-carry the text as `db.statement`. Use the Datadog connector's
-`search_datadog_spans` with:
+Datadog is read with the `pup` CLI (already installed and authenticated; read
+only). Always pass `--no-agent`.
 
-- `query` = `env:prod @db.instance:<db> @duration:[<lo> TO <hi>]` where `lo` /
-  `hi` bracket `finding.metrics.avgMs` (`lo` = half of it, `hi` = three times
-  it, both in **nanoseconds**). For a `step` finding (a fast query called far
-  more often) skip the duration filter and look for the statement whose call
-  volume rose.
-- `from` / `to` = `window`, `limit` = `25`, `max_tokens` = `12000`,
-  `custom_attributes` = `["db.statement", "db.instance", "git.commit.sha"]`.
-  Wider attribute sets (`db.*`) overflow the tool's output limit.
+**`sql` is set** → that is the statement, exactly: DBM matched it to the
+signature, so `sqlConfidence` is `high`. Never substitute another statement.
 
-`metrics.sampled: true` means DBM only tagged a slice of this signature's rows
-to `<db>` (it also runs in other databases), so its `callsPerDay` is a floor,
-not a count.
+**`sql` is `null`** → set `sql` to `null` and `sqlConfidence` to `low`, and
+draft the issue around the signature: the title says `statement not
+recovered`, and nothing in the title or body names a statement, table, job or
+code path. Never infer SQL from span durations or counts — that matched the
+wrong statement before.
 
-Group the returned `db.statement` texts. The finding's statement is the one
-whose shape fits the numbers: per-call duration near `avgMs`, and for `heavy`
-a statement that plausibly reads `blocksPerCall` pages (a scan, a window
-function over a whole table, a join without a selective filter).
+To find the code, look for the same statement in APM client spans, which keep
+the comments DBM strips (EF Core `TagWith` comments name the caller). Take one
+distinctive fragment of `sql` (a table plus an unusual column or alias, no `?`)
+and run:
 
-A duration band holds many statements, so fitting the band is not a match.
-Before you choose one, count its spans over `window` with `aggregate_spans`
-(the span query plus a filter on a distinctive fragment of its text, e.g.
-`@db.statement:*risk_order_requests_v*`) and compare with `callsPerDay` × the
-window's days: within about 3× (or above it, when `sampled`) supports the
-match; far below it rules the statement out.
+```bash
+pup traces search --no-agent --query 'env:prod @db.instance:<db> @db.statement.text:*<fragment>*' \
+  --from <window.from> --to <window.to> --limit 10 \
+  --jq '.data[] | {sha: .attributes.custom.git.commit.sha, sql: .attributes.custom.db.statement.text[0:600]}'
+```
 
-If two statements fit equally, or none survives that check, set `sql` to
-`null` and `sqlConfidence` to `low`, and draft the issue around the
-signature: the title says `statement not recovered`, and nothing in the title
-or body names a statement, table, job or code path you did not see in a span
-that passed the check. Never invent or guess SQL.
+Use only spans whose statement has the same shape as `sql` (same tables,
+joins and clauses; aliases may be numbered differently). Note `git.commit.sha`
+from the newest matching span: that is the commit serving the query in prod
+(`deployedSha`). No matching span is fine: go to Step 2 with `sql` alone.
 
-Run the count check on at most three candidates, then stop: a duration band
-rarely yields the statement, and the script ends every query finding's body
-with a pointer to DBM Query Metrics, where a person reads the SQL text for the
-signature. Do not add that pointer yourself.
-
-Note `git.commit.sha` from the newest span carrying the chosen statement: that
-is the commit serving the query in prod (`deployedSha`).
-
-Instance (`pressure`) and table (`hygiene`) findings have no single statement:
-for pressure, list the top statements by duration on that instance instead
-(same tool, no duration filter, `limit` 50); for hygiene, skip to Step 2 with
-the table name.
+Instance (`pressure`) findings have no single statement: list the busiest
+statements on that database instead (the same command with no fragment,
+`--limit 50`). For hygiene, skip to Step 2 with the table name.
 
 ## Step 2 — Find the code
 
@@ -124,12 +111,13 @@ e.g. `perf(compliance_mono): latest-monitoring-event lookup scans all of risk.mo
 1. `## Finding` — rule, severity, `instance`, `querySignature` (or table), and a
    small table of `metrics` (calls/day, avg ms vs baseline, pages/call, share
    of db time) for `window` vs `baseline`.
-2. `## SQL` — the statement in a fenced `sql` block, and `sqlConfidence`.
+2. `## SQL` — `sql` in a fenced `sql` block, and `sqlConfidence`; with a
+   matching span, its `TagWith` comment lines too.
 3. `## Where` — the code locations, as repo-relative `path:line`.
 4. `## Why it costs this` — Step 3.
 5. `## Recent changes` — the commit list (sha, date, subject, author name).
-6. `## Links` — an APM spans search for the statement:
-   `<ddSite>/apm/traces?query=<url-encoded span query from Step 1>`.
+6. `## Links` — the APM spans search from Step 1, when one matched:
+   `<ddSite>/apm/traces?query=<url-encoded span query>`.
 7. A last line: `Filed by the fu-db-sweep routine; the marker above dedups it. Close as "not planned" to accept the cost.`
 
 **`REOPEN_ACCEPTED` or `REGRESSION_CHECK` → `comment`**: the numbers now vs
