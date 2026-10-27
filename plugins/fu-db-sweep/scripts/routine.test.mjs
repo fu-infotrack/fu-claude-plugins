@@ -1,7 +1,9 @@
 // routine.mjs end to end, hermetic: a throwaway $HOME, fake target clones found
-// through DB_SWEEP_SEARCH_ROOT, and a `gh` stub on PATH that serves REST
-// fixtures, records every call, and rejects what a cloud session's proxy does:
-// GraphQL-backed commands, --paginate, and any API path outside repos/{owner}/{repo}/.
+// through DB_SWEEP_SEARCH_ROOT, a `gh` stub on PATH that serves REST fixtures,
+// records every call, and rejects what a cloud session's proxy does
+// (GraphQL-backed commands, --paginate, any API path outside
+// repos/{owner}/{repo}/), and a `pup` stub that serves DBM samples and fails
+// metric queries unless $FX/timeseries.json exists.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -43,6 +45,17 @@ case "$p" in
       *) cat "$R/issue-\${p##*/}.json" 2>/dev/null || { echo "HTTP 404" >&2; exit 1; } ;;
     esac ;;
   *) echo "stub: unexpected $2" >&2; exit 9 ;;
+esac
+`;
+
+const PUP_STUB = `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FX/pup.log"
+case "$*" in
+  *'dbm samples search'*)
+    sig=$(printf '%s' "$*" | sed -n 's/.*@db.query_signature:\\([0-9a-f]*\\).*/\\1/p')
+    printf '{"result":{"events":[{"event":{"custom":{"db":{"statement":"SELECT * FROM t WHERE sig = ? -- %s","metadata":{"tables":["risk.t"]}}}}}]}}' "$sig" ;;
+  *'metrics timeseries'*) [ -f "$FX/timeseries.json" ] && cat "$FX/timeseries.json" || { echo "stub: HTTP 403 Forbidden" >&2; exit 1; } ;;
+  *) echo "stub: unexpected pup $*" >&2; exit 9 ;;
 esac
 `;
 
@@ -88,6 +101,7 @@ function setup({ issues = [], billingIssues = [], stateIssue = true } = {}) {
     if (stateIssue) fs.writeFileSync(path.join(r, `issue-${n}.json`), JSON.stringify({ number: n, body: buildStateBody(LAST_TICK) }));
   }
   fs.writeFileSync(path.join(bin, 'gh'), GH_STUB, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'pup'), PUP_STUB, { mode: 0o755 });
   const env = { ...process.env, HOME: home, FX: fx, PATH: `${bin}:${process.env.PATH}`, DB_SWEEP_SEARCH_ROOT: clones, COMPARE: 'behind' };
   const run = (...args) => {
     const r = spawnSync(process.execPath, [ROUTINE, ...args], { env, encoding: 'utf8' });
@@ -142,18 +156,21 @@ const quiet = { ...COLLECTED, queries: [filler], tables: [] };
 test('live: files the new finding, holds an undeployed fix, keeps accepted and open ones, posts the summary, advances state', () => {
   const s = setup({ issues: STANDARD_ISSUES });
   const out = s.run('prepare', '--live', CONFIG());
-  assert.match(out, /^PROCEED 1 collectors live/);
-  assert.match(out, /--- collector p0 compliance_mono ---/);
-  assert.doesNotMatch(out, /other_db/);
-  const query = fs.readFileSync(path.join(s.dir, 'query-p0.js'), 'utf8');
-  assert.ok(query.includes(`const PARAMS = {"db":"compliance_mono","window":{"from":"${new Date(LAST_TICK).toISOString()}"`));
+  assert.match(out, /^PROCEED 1 pair\(s\) live/);
+  const run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.equal(run.repos[REPO].spans.window.from, new Date(LAST_TICK).toISOString());
 
   writeCollectors(s);
   const planOut = s.run('plan');
   assert.match(planOut, /^PROCEED 2 — 1 repo\(s\) with candidates/);
   assert.match(planOut, /acme\/compliance: findings=4 already-open=1 accepted=1 candidates=2/);
   assert.match(planOut, /acme\/elsewhere: skipped — not attached/);
-  writeVerdicts(s);
+  // A query candidate carries its statement from DBM; a table candidate has none.
+  const cands = Object.fromEntries(planCandidates(writeVerdicts(s)).map((cf) => JSON.parse(fs.readFileSync(cf, 'utf8'))).map((c) => [c.finding.rule, c]));
+  assert.equal(cands.heavy.sql, 'SELECT * FROM t WHERE sig = ? -- c985631ee7416fa1');
+  assert.deepEqual(cands.heavy.sqlTables, ['risk.t']);
+  assert.equal(cands.hygiene.sql, null);
+  assert.match(fs.readFileSync(path.join(s.fx, 'pup.log'), 'utf8'), new RegExp(`dbm samples search --query @db.query_signature:c985631ee7416fa1 host:${INST} --from \\S+ --to \\S+ --limit 1`));
   const fin = s.run('finish');
   assert.match(fin, /^SWEPT — filed=1 held=1 dropped=0 failed=0/);
   assert.match(fin, /acme\/compliance#42 created \(med\)/);
@@ -307,13 +324,22 @@ test('a second prod instance is its own finding', () => {
   assert.match(out, /^PROCEED 2 /);
 });
 
-test('wait: READY once every agent output exists, TIMEOUT naming the missing ones', () => {
+test('collect: a pup failure becomes that pair\'s error, and plan fails its repo', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  s.run('prepare', '--live', CONFIG());
+  assert.match(s.run('collect'), /^COLLECTED 0\/1/);
+  const run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.match(JSON.parse(fs.readFileSync(run.pairs[0].outputFile, 'utf8')).error, /HTTP 403/);
+  assert.match(s.run('plan'), /^FAILED — 1 repo\(s\) failed/);
+  assert.match(s.read('comments.jsonl'), /DB perf sweep — FAILED/);
+  assert.equal(s.read('patch-5.json'), '');
+});
+
+test('wait: READY once every investigator output exists, TIMEOUT naming the missing ones', () => {
   const s = setup({ issues: STANDARD_ISSUES });
   s.run('prepare', '--live', TWO_REPOS());
   s.env.DB_SWEEP_WAIT_SECONDS = '0';
-  assert.match(s.run('wait', 'collect'), /^TIMEOUT 0\/2 — missing: collect-p0\.json, collect-p1\.json/);
   writeCollectors(s);
-  assert.match(s.run('wait', 'collect'), /^READY 2\/2/);
   s.run('plan');
   assert.match(s.run('wait', 'investigate'), /^TIMEOUT 0\/\d+ — missing: inv-/);
   writeVerdicts(s);

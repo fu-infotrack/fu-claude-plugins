@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-// The cloud routine's deterministic side. Datadog is reachable only through the
-// Datadog MCP connector, which only a model can call, so the model does the
-// Datadog/judgement steps in sub-agents (one collector per (repo, db) pair, one
-// investigator per candidate) and this script does everything else: config,
-// the issue index, the rules, dedup, the cap, the reopen gate, filing, the
-// summary and the run state. GitHub is REST only (`gh api`, explicit pages):
+// The cloud routine's deterministic side. It reads Datadog through the `pup` CLI
+// (DD_ACCESS_TOKEN in the environment): the DBM metrics per (repo, db) pair and
+// each candidate's SQL from a DBM query sample. The model does only the
+// judgement step, in sub-agents (one investigator per candidate); this script
+// does everything else: config, collection, the issue index, the rules, dedup,
+// the cap, the reopen gate, filing, the summary and the run state. GitHub is REST only (`gh api`, explicit pages):
 // cloud sessions answer GraphQL with 403, their proxy rejects `--paginate`'s
 // links, and every path must sit under repos/{owner}/{repo}/ of an attached repo.
 //
 // Every step prints a status token first; the orchestrator never reads data.
 //   node routine.mjs prepare [--live|--observe] '<config-json>'
+//   node routine.mjs collect
 //   node routine.mjs plan
+//   node routine.mjs wait investigate
 //   node routine.mjs finish
 // The handoff between steps is on disk, in $HOME/.claude/db-sweep/routine/.
 import { execFileSync } from 'node:child_process';
@@ -22,6 +24,7 @@ import {
   windows, parseConfig, parseCollectorOutput, evaluate, indexIssues, classify, rankFindings,
   composeIssueBody, withDbmPointer, gateDecision, validateVerdict, parseSweepState, buildStateBody,
 } from './db-sweep-lib.mjs';
+import { collectDb, pupScalar, dbmStatement } from './collect.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.dirname(SCRIPTS);
@@ -133,12 +136,6 @@ function block(header, lines) {
   for (const l of lines) say(l);
 }
 
-function renderQuery(db, spans) {
-  const tpl = fs.readFileSync(path.join(PLUGIN, 'collector-query.js'), 'utf8');
-  const params = `const PARAMS = ${JSON.stringify({ db, window: spans.window, baseline: spans.baseline, drift: spans.drift })};`;
-  return tpl.replace(/^const PARAMS = .*$/m, params);
-}
-
 // Each repo is swept on its own: its own state issue, window, summary, cap
 // and failure. Pairs share their repo's window.
 function prepare(args) {
@@ -174,7 +171,7 @@ function prepare(args) {
   }
   const pairs = cfg.pairs.map((p, i) => ({
     ...p, id: `p${i}`, sourceDir: clones[p.repo] || null, active: !repos[p.repo].skip,
-    queryFile: f(`query-p${i}.js`), outputFile: f(`collect-p${i}.json`),
+    outputFile: f(`collect-p${i}.json`),
   }));
   const run = { mode, ddSite: cfg.ddSite, nowIso: new Date(nowMs).toISOString(), pairs, repos, index };
   writeJson(f('run.json'), run);
@@ -182,17 +179,26 @@ function prepare(args) {
   const skipped = repoNames.filter((r) => repos[r].skip).map((r) => `${r}: ${repos[r].skip}`);
   if (!active.length) return say(`SKIP — no (repo, db) pair is reachable: ${skipped.join('; ')}`);
 
-  for (const p of active) fs.writeFileSync(p.queryFile, renderQuery(p.db, repos[p.repo].spans));
-  say(`PROCEED ${active.length} collectors ${mode}`);
+  say(`PROCEED ${active.length} pair(s) ${mode}`);
+}
+
+// One output file per active pair: the collected data, or {error} so plan
+// fails that pair's repo rather than filing from half the data.
+async function collect() {
+  if (!fs.existsSync(f('run.json'))) return say('NOTHING_PENDING');
+  const run = readJson(f('run.json'));
+  const active = run.pairs.filter((p) => p.active);
+  const scalar = onPath('pup') ? pupScalar({ site: run.ddSite, tmpDir: DIR }) : null;
+  let ok = 0;
   for (const p of active) {
-    block(`collector ${p.id} ${p.db}`, [
-      `Read ${path.join(PLUGIN, 'routine-collector.md')} and follow it exactly. Your inputs:`,
-      '',
-      `DB=${p.db}`,
-      `QUERY_FILE=${p.queryFile}`,
-      `OUTPUT_FILE=${p.outputFile}`,
-    ]);
+    const spans = run.repos[p.repo].spans;
+    try {
+      if (!scalar) throw new Error('pup is not on PATH');
+      writeJson(p.outputFile, await collectDb({ db: p.db, window: spans.window, baseline: spans.baseline, drift: spans.drift }, scalar));
+      ok++;
+    } catch (e) { writeJson(p.outputFile, { error: firstLine(e).slice(0, 300) }); }
   }
+  say(`COLLECTED ${ok}/${active.length}`);
 }
 
 function summaryText(run, repo, head, lines) {
@@ -202,7 +208,19 @@ function summaryText(run, repo, head, lines) {
 
 const bullets = (title, xs) => (xs.length ? ['', `### ${title}`, ...xs.map((x) => `- ${x}`)] : []);
 
-function plan() {
+// The statement for a query candidate, read from DBM so investigators start
+// from the real SQL. Missing it is not fatal: the investigator says so.
+async function attachSql(cand) {
+  const fd = cand.finding;
+  if (!fd.querySignature || !onPath('pup')) return;
+  try {
+    const s = await dbmStatement({ site: cand.ddSite, signature: fd.querySignature, instance: fd.instance, span: cand.window });
+    cand.sql = s?.sql ?? null;
+    cand.sqlTables = s?.tables ?? [];
+  } catch (e) { cand.sqlError = firstLine(e).slice(0, 300); }
+}
+
+async function plan() {
   if (!fs.existsSync(f('run.json'))) return say('NOTHING_PENDING');
   const run = readJson(f('run.json'));
   const out = [];
@@ -215,7 +233,7 @@ function plan() {
     if (g.skip) { out.push(`${repo}: skipped — ${g.skip}`); continue; }
     const pairs = run.pairs.filter((p) => p.repo === repo);
 
-    // A collector failing fails its repo: its comparison needs every pair's data.
+    // One pair failing collection fails its repo: its comparison needs every pair's data.
     const data = {};
     const failures = [];
     for (const p of pairs) {
@@ -249,16 +267,19 @@ function plan() {
     }
     const ranked = rankFindings(queue.map((x) => ({ ...x.fd, _x: x }))).map((r) => r._x);
     for (const x of ranked.slice(CAP)) notes.push(`over the ${CAP}-per-repo cap: ${x.fd.severity} ${x.fd.rule} ${x.pair.db} ${x.fd.querySignature || x.fd.table || x.fd.instance} — ${x.fd.why}`);
-    const picked = ranked.slice(0, CAP).map(({ fd, cls, pair }) => {
+    const picked = [];
+    for (const { fd, cls, pair } of ranked.slice(0, CAP)) {
       const cand = {
         id: fd.fingerprint, repo, db: pair.db, mode: run.mode, classification: cls.kind, number: cls.number ?? null,
         closedAt: cls.closedAt ?? null, recordedValue: cls.recorded ?? null, finding: fd, ddSite: run.ddSite,
         window: g.spans.window, baseline: g.spans.baseline,
         candidateFile: f(`cand-${fd.fingerprint}.json`), outputFile: f(`inv-${fd.fingerprint}.json`), sourceDir: pair.sourceDir,
+        sql: null,
       };
+      await attachSql(cand);
       writeJson(cand.candidateFile, cand);
-      return cand;
-    });
+      picked.push(cand);
+    }
     const line = `${repo}: findings=${counts.findings} already-open=${counts.alreadyOpen} accepted=${counts.accepted} candidates=${picked.length}`;
     out.push(line);
     if (!picked.length) {
@@ -381,20 +402,15 @@ function finish() {
 
 // The orchestrator's hand-off is files, not agent notifications: a Haiku
 // orchestrator waiting on "completion notifications" ended its turn and never
-// ran finish. `wait` blocks until every agent's output file exists (or the
-// timeout), so the next step can always run straight after it.
+// ran finish. `wait` blocks until every investigator's output file exists (or
+// the timeout), so the next step can always run straight after it.
 function wait(stage) {
-  let files;
-  if (stage === 'collect') {
-    if (!fs.existsSync(f('run.json'))) return say('NOTHING_PENDING');
-    files = readJson(f('run.json')).pairs.filter((p) => p.active).map((p) => p.outputFile);
-  } else if (stage === 'investigate') {
-    if (!fs.existsSync(f('plan.json'))) return say('NOTHING_PENDING');
-    files = Object.values(readJson(f('plan.json')).repos).flatMap((r) => r.candidates).map((cf) => readJson(cf).outputFile);
-  } else {
-    process.stderr.write('usage: wait collect|investigate\n');
+  if (stage !== 'investigate') {
+    process.stderr.write('usage: wait investigate\n');
     process.exit(1);
   }
+  if (!fs.existsSync(f('plan.json'))) return say('NOTHING_PENDING');
+  const files = Object.values(readJson(f('plan.json')).repos).flatMap((r) => r.candidates).map((cf) => readJson(cf).outputFile);
   const deadline = Date.now() + Number(process.env.DB_SWEEP_WAIT_SECONDS || 540) * 1000;
   const sleeper = new Int32Array(new SharedArrayBuffer(4));
   let missing = files.filter((x) => !fs.existsSync(x));
@@ -407,9 +423,9 @@ function wait(stage) {
 }
 
 const [, , cmd, ...args] = process.argv;
-const commands = { prepare: () => prepare(args), plan, finish, wait: () => wait(args[0]) };
+const commands = { prepare: () => prepare(args), collect, plan, finish, wait: () => wait(args[0]) };
 if (!commands[cmd]) {
   process.stderr.write(`unknown command: ${cmd}\n`);
   process.exit(1);
 }
-commands[cmd]();
+await commands[cmd]();
