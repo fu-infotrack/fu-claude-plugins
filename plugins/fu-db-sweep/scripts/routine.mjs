@@ -334,8 +334,18 @@ function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite, c.wi
 
 function labels(c) { return [LABEL, 'auto-filed', `sev:${c.finding.severity}`]; }
 
+// GitHub creates a missing label grey; create ours red first. It already
+// existing is the usual case, and a failure only costs the colour.
+const labelled = new Set();
+function ensureLabel(repo) {
+  if (labelled.has(repo)) return;
+  labelled.add(repo);
+  try { gh([`repos/${repo}/labels`, '--method', 'POST', '-f', `name=${LABEL}`, '-f', 'color=B60205']); } catch { /* exists */ }
+}
+
 function fileOne(c, v) {
   if (c.classification === 'NEW') {
+    ensureLabel(c.repo);
     const issue = JSON.parse(gh([`repos/${c.repo}/issues`, '--method', 'POST', '--input', '-'], JSON.stringify({
       title: v.title, body: composeIssueBody(c.finding, newBody(c, v)), labels: labels(c),
     })));

@@ -82,7 +82,7 @@ node --test plugins/fu-db-sweep/scripts/*.test.mjs
 ```
 
 `db-sweep-lib.test.mjs` covers windows, every rule, overrides, strict collector
-parsing, the marker, the DBM pointer, classify, the gate and the verdict
+parsing, the marker, the DBM query link, classify, the gate and the verdict
 validator. `collect.test.mjs` runs `collectDb` against a fake metric reader: the
 `_other` attribution and the instance stats. `routine.test.mjs` runs `prepare` →
 `collect` → `plan` → `finish` with a throwaway `$HOME`, fake clones under

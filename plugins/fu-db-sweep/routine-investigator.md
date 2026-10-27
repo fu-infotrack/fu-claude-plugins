@@ -103,8 +103,8 @@ evidence in `reason`.
 
 ## Step 5 — Draft
 
-**Title** (≤ 120 chars): `perf(<db>): <what the query does> — <the finding in a few words>`,
-e.g. `perf(compliance_mono): latest-monitoring-event lookup scans all of risk.monitoring_event (~600 MB/call)`.
+**Title** (≤ 120 chars): `perf(db): <what the query does> — <the finding in a few words>`,
+e.g. `perf(db): latest-monitoring-event lookup scans all of risk.monitoring_event (~600 MB/call)`.
 
 **`NEW` → `body`** (Markdown), these sections in order:
 

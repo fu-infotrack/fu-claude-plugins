@@ -38,6 +38,7 @@ case "$p" in
     esac ;;
   issues/*/comments) cat >> "$R/comments.jsonl"; printf '\\n' >> "$R/comments.jsonl"; echo '{}' ;;
   issues/*/events*) cat "$R/events.json" ;;
+  labels) echo "$*" >> "$R/labels.log"; echo "HTTP 422 already_exists" >&2; exit 1 ;;
   compare/*) echo "{\\"status\\":\\"$COMPARE\\"}" ;;
   issues/*)
     case "$*" in
@@ -128,7 +129,7 @@ const STANDARD_ISSUES = [
   marked(12, 'hygiene', 'outbox.inbox_state', 120000, { state: 'closed', state_reason: 'completed', closed_at: '2026-10-01T00:00:00Z' }),
 ];
 
-const verdict = (extra) => ({ actionable: true, reason: 'r', title: 'perf(compliance_mono): t', body: 'A long enough body naming src/Risk/Spec.cs:12 and the numbers.', sql: 'select 1', sqlConfidence: 'high', codePaths: [], deployedSha: '0e789f0a', ...extra });
+const verdict = (extra) => ({ actionable: true, reason: 'r', title: 'perf(db): t', body: 'A long enough body naming src/Risk/Spec.cs:12 and the numbers.', sql: 'select 1', sqlConfidence: 'high', codePaths: [], deployedSha: '0e789f0a', ...extra });
 
 // data: one collector output for every pair, or a function of the pair's db.
 function writeCollectors(s, data = COLLECTED) {
@@ -179,6 +180,7 @@ test('live: files the new finding, holds an undeployed fix, keeps accepted and o
   const created = s.read('created.jsonl').trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(created.length, 1);
   assert.deepEqual(created[0].labels, ['datadog-dbm', 'auto-filed', 'sev:med']);
+  assert.match(s.read('labels.log'), /name=datadog-dbm -f color=B60205/);
   assert.match(created[0].body, new RegExp(`dd-dbm: \\{"fp":"${fp('heavy', 'c985631ee7416fa1')}"`));
   assert.match(s.read('comments.jsonl'), /DB perf sweep — SWEPT/);
   assert.match(s.read('patch-5.json'), /fu-db-sweep-state/);
@@ -227,7 +229,7 @@ test('observe: posts the summary with drafts, files nothing, never advances stat
   assert.match(fin, /^OBSERVED — would-file=1 held=1/);
   assert.equal(s.read('created.jsonl'), '');
   assert.equal(s.read('patch-5.json'), '');
-  assert.match(s.read('comments.jsonl'), /<details><summary>create: perf\(compliance_mono\): t/);
+  assert.match(s.read('comments.jsonl'), /<details><summary>create: perf\(db\): t/);
 });
 
 test('a failed collector fails only its repo: failed summary there, nothing filed, its state kept', () => {
