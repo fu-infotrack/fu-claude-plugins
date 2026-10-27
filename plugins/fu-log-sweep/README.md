@@ -32,8 +32,9 @@ prefix for the issue link), `version_tag` (Datadog tag with the deployed build, 
 
 ## Cloud routine
 
-The same sweep as a daily Claude Code routine, with no plugin and no `pup`: it
-reads Datadog through the Datadog MCP connector and files through GitHub REST.
+The same sweep as one daily Claude Code routine over a list of repos, in the
+DB perf sweep's shape: no plugin, Datadog through `pup` (npm-installed,
+`DD_ACCESS_TOKEN`), filing through GitHub REST.
 Setup and the prompt to paste are in [`routines/log-sweep.md`](routines/log-sweep.md).
 
 ## Tests
