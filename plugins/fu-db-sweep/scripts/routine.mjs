@@ -20,7 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   windows, parseConfig, parseCollectorOutput, evaluate, indexIssues, classify, rankFindings,
-  composeIssueBody, gateDecision, validateVerdict, parseSweepState, buildStateBody,
+  composeIssueBody, withDbmPointer, gateDecision, validateVerdict, parseSweepState, buildStateBody,
 } from './db-sweep-lib.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -309,12 +309,14 @@ function gate(c, deployedSha) {
   } catch (e) { return { reopen: false, reason: `cannot tell whether the fix is deployed (${firstLine(e)})` }; }
 }
 
+function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite); }
+
 function labels(c) { return [LABEL, 'auto-filed', `sev:${c.finding.severity}`]; }
 
 function fileOne(c, v) {
   if (c.classification === 'NEW') {
     const issue = JSON.parse(gh([`repos/${c.repo}/issues`, '--method', 'POST', '--input', '-'], JSON.stringify({
-      title: v.title, body: composeIssueBody(c.finding, v.body), labels: labels(c),
+      title: v.title, body: composeIssueBody(c.finding, newBody(c, v)), labels: labels(c),
     })));
     return `${c.repo}#${issue.number} created (${c.finding.severity}) — ${v.title}`;
   }
@@ -349,13 +351,13 @@ function finish() {
       if (run.mode !== 'live') {
         n.filed++;
         lines.push(`would ${action} (${label}) — ${v.title}`);
-        drafts.push({ title: `${action}: ${v.title}`, text: c.classification === 'NEW' ? v.body : v.comment });
+        drafts.push({ title: `${action}: ${v.title}`, text: c.classification === 'NEW' ? newBody(c, v) : v.comment });
         continue;
       }
       try { lines.push(fileOne(c, v)); n.filed++; } catch (e) {
         n.failed++;
         lines.push(`FAILED ${label}: ${action} failed (${firstLine(e)})`);
-        drafts.push({ title: `unfiled: ${v.title}`, text: c.classification === 'NEW' ? v.body : v.comment });
+        drafts.push({ title: `unfiled: ${v.title}`, text: c.classification === 'NEW' ? newBody(c, v) : v.comment });
       }
     }
     const verb = run.mode === 'live' ? 'filed' : 'would-file';

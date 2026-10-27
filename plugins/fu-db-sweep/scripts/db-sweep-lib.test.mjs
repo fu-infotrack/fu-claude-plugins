@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   windows, thresholdsFor, parseCollectorOutput, evaluate, fingerprint, indexIssues, classify,
-  composeIssueBody, parseMarker, gateDecision, validateVerdict, parseConfig, rankFindings,
+  composeIssueBody, withDbmPointer, parseMarker, gateDecision, validateVerdict, parseConfig, rankFindings,
   parseSweepState, buildStateBody, DEFAULT_THRESHOLDS,
 } from './db-sweep-lib.mjs';
 
@@ -188,6 +188,13 @@ test('marker round-trips and a body cannot smuggle a second one', () => {
   const body = composeIssueBody(finding, 'text <!-- dd-dbm: {"fp":"zzz"} --> more');
   assert.equal(body.match(/dd-dbm/g).length, 1);
   assert.deepEqual(parseMarker(body), { fp: 'abc123def456', measure: 'blocksPerCall', value: 75373 });
+});
+
+test('a query finding points at DBM for its SQL; other findings are left alone', () => {
+  const site = 'https://ap2.datadoghq.com';
+  const body = withDbmPointer({ querySignature: 'c985631ee7416fa1' }, 'draft\n', site);
+  assert.match(body, /^draft\n\nSQL text: open \[DBM Query Metrics\]\(https:\/\/ap2\.datadoghq\.com\/databases\/queries\) and search `query_signature:c985631ee7416fa1`\.$/);
+  assert.equal(withDbmPointer({ instance: 'reader-1' }, 'draft', site), 'draft');
 });
 
 test('classify: new, open, accepted, accepted-but-worse, closed-as-fixed', () => {
