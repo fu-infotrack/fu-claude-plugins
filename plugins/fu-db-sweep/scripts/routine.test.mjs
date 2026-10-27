@@ -306,3 +306,16 @@ test('a second prod instance is its own finding', () => {
   const out = s.run('plan');
   assert.match(out, /^PROCEED 2 /);
 });
+
+test('wait: READY once every agent output exists, TIMEOUT naming the missing ones', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  s.run('prepare', '--live', TWO_REPOS());
+  s.env.DB_SWEEP_WAIT_SECONDS = '0';
+  assert.match(s.run('wait', 'collect'), /^TIMEOUT 0\/2 — missing: collect-p0\.json, collect-p1\.json/);
+  writeCollectors(s);
+  assert.match(s.run('wait', 'collect'), /^READY 2\/2/);
+  s.run('plan');
+  assert.match(s.run('wait', 'investigate'), /^TIMEOUT 0\/\d+ — missing: inv-/);
+  writeVerdicts(s);
+  assert.match(s.run('wait', 'investigate'), /^READY (\d+)\/\1/);
+});

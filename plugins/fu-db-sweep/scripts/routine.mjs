@@ -377,8 +377,35 @@ function finish() {
   for (const l of out) say(`  ${l}`);
 }
 
+// The orchestrator's hand-off is files, not agent notifications: a Haiku
+// orchestrator waiting on "completion notifications" ended its turn and never
+// ran finish. `wait` blocks until every agent's output file exists (or the
+// timeout), so the next step can always run straight after it.
+function wait(stage) {
+  let files;
+  if (stage === 'collect') {
+    if (!fs.existsSync(f('run.json'))) return say('NOTHING_PENDING');
+    files = readJson(f('run.json')).pairs.filter((p) => p.active).map((p) => p.outputFile);
+  } else if (stage === 'investigate') {
+    if (!fs.existsSync(f('plan.json'))) return say('NOTHING_PENDING');
+    files = Object.values(readJson(f('plan.json')).repos).flatMap((r) => r.candidates).map((cf) => readJson(cf).outputFile);
+  } else {
+    process.stderr.write('usage: wait collect|investigate\n');
+    process.exit(1);
+  }
+  const deadline = Date.now() + Number(process.env.DB_SWEEP_WAIT_SECONDS || 540) * 1000;
+  const sleeper = new Int32Array(new SharedArrayBuffer(4));
+  let missing = files.filter((x) => !fs.existsSync(x));
+  while (missing.length && Date.now() < deadline) {
+    Atomics.wait(sleeper, 0, 0, 5000);
+    missing = files.filter((x) => !fs.existsSync(x));
+  }
+  if (!missing.length) return say(`READY ${files.length}/${files.length}`);
+  say(`TIMEOUT ${files.length - missing.length}/${files.length} — missing: ${missing.map((x) => path.basename(x)).join(', ')}`);
+}
+
 const [, , cmd, ...args] = process.argv;
-const commands = { prepare: () => prepare(args), plan, finish };
+const commands = { prepare: () => prepare(args), plan, finish, wait: () => wait(args[0]) };
 if (!commands[cmd]) {
   process.stderr.write(`unknown command: ${cmd}\n`);
   process.exit(1);
