@@ -18,7 +18,10 @@ a plugin command.
   efficiency, altitude), `intent` (scope, repo rules, the `Mint` house rule,
   docs) — and an Opus merger that dedupes, votes CONFIRMED / PLAUSIBLE /
   REFUTED on every candidate, grades it and re-checks prior findings
-  (`FANOUT`). The method follows the built-in `/code-review` medium recipe,
+  (`FANOUT`). A review posts every BLOCKER and at most 10 NITs, the most
+  important first. Generated files (`*.Designer.cs`, `*.g.cs`, lock files) do
+  not count toward the size and get no line-by-line pass. A DELTA counts only
+  the lines changed since the last review. The method follows the built-in `/code-review` medium recipe,
   written as our own briefs so that we control the model, the level and the
   cloud rules. Finding text follows the ASD-STE100 writing rules. An agent whose call errors (e.g. an
   intermittent Opus safeguard refusal) is re-dispatched once on Sonnet. A

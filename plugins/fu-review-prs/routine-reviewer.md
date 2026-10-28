@@ -48,6 +48,7 @@ Your task prompt gives absolute paths. Use them exactly. Do not make your own.
   the last review.
 - `<PR>` — the PR number, from your task prompt ("Review PR #N").
 - `OUTPUT_FILE` — the file that you write.
+- `MAX_NITS` — group `all` only: the largest number of NITs that you keep (Step 3).
 - `REVIEW_DIR` — the PR head, checked out (detached). Read, grep and blame the
   code there. Each Bash call starts in a different directory. Thus, always use
   absolute paths: `Read`/`Grep` on `REVIEW_DIR/...`, and
@@ -95,6 +96,12 @@ Read the diff of each file in scope. For each change, read the code around it
 in `REVIEW_DIR`. Read the full changed function. If a signature or a behavior
 changes, find its callers with `Grep`. In DELTA mode, examine only the changes
 after `DELTA_BASE`. Do not examine unchanged code again.
+
+Do not examine a generated file line by line. A generated file is the output of
+a tool, for example `*.Designer.cs`, `*.g.cs`, `*ModelSnapshot.cs`, a lock file
+or `*.min.js`. Read it only to check a change in a different file, for example
+that a migration and its snapshot agree. The hand-written migration
+(`<timestamp>_<Name>.cs`) is not generated.
 
 Run each angle of your group as a separate pass over the diff. Do not let the
 result of one angle stop a different angle. If two angles find the same line
@@ -286,6 +293,18 @@ cannot quote a line that refutes a candidate, it is not REFUTED.
 Then remove duplicates. Two candidates are the same when they have the same
 defect at the same location. Keep the clearer one.
 
+Keep every BLOCKER. Keep at most `MAX_NITS` NITs. If you have more, keep the
+NITs with the largest effect, in this order:
+
+1. Correctness and security NITs.
+2. Docs and comments that state something false, and broken rules or scope.
+3. Efficiency.
+4. Reuse, simplification and altitude.
+5. Naming, layout and style.
+
+Remove the other NITs. Write the NITs that you keep in this order. The
+orchestrator posts only the first `MAX_NITS` NITs.
+
 ## Step 4 — Prior findings (group `all`, DELTA mode only)
 
 `PRIOR_FILE` is `{"findings": [...]}`. It holds the findings that were open
@@ -357,6 +376,11 @@ Give each candidate or finding one severity:
 - **NIT** — All other items: reuse, simplification, efficiency, altitude,
   naming, readability, missing tests, a convention, an incorrect document that
   is not a contract.
+
+Data loss includes a race or a stale read that can overwrite a final state
+(for example Complete) or lose a write. That is a BLOCKER. Severity is the
+effect if the problem occurs. It is not how often it occurs. Do not make a
+candidate a NIT because its trigger is rare or depends on timing.
 
 For groups `diff`, `trace`, `cleanup` and `intent`, the severity is your
 proposal. The merger can change it.

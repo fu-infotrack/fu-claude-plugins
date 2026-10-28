@@ -71,7 +71,12 @@ case "$2" in
       --arg sha "${HEAD_SHA:-deadbeef}" \
       '{user: {login: "alice"}, state: "open", head: {sha: $sha}, title: "Some PR",
         requested_reviewers: .}' | respond ;;
-  */compare/*) printf '%s\n' "${COMPARE_FILES-src/a.cs}" ;;
+  */compare/*)
+    if [[ "$*" == *@tsv* ]]; then
+      printf '%s\n' "${COMPARE_FILES-src/a.cs}" | sed "s/\$/\t${COMPARE_LINES:-10}/"
+    else
+      printf '%s\n' "${COMPARE_FILES-src/a.cs}"
+    fi ;;
   */reactions/*) [[ "$*" == *"--method DELETE"* ]] && echo "$2" >> "$GH_DEL" ;;
   */reactions\?content=eyes*)
     echo '[{"id": 11, "user": {"login": "bot"}}]' | respond ;;
@@ -88,7 +93,7 @@ exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
-  unset REQUESTED HEAD_PRS HEAD_SHA HEAD_TREE PR_FILES FILE_LINES COMPARE_FILES PR_REVIEW_REPO \
+  unset REQUESTED HEAD_PRS HEAD_SHA HEAD_TREE PR_FILES FILE_LINES COMPARE_FILES COMPARE_LINES PR_REVIEW_REPO \
         PR_REVIEW_AUTO_APPROVE CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
@@ -339,6 +344,21 @@ PR_FILES=$'src/a.cs\nsrc/b.cs\nsrc/c.cs\nsrc/d.cs\nsrc/e.cs\nsrc/f.cs' COMPARE_F
   FILE_LINES=50 one 7 --routine
 eq "one file of six in scope" "SINGLE 7 acme/widgets" "$(first)"
 
+echo "== routine: DELTA counts the lines changed since the last review =="
+new_sandbox
+state=$(jq -cn '{v:1, commit:"0ldc0mm1t", tree:"01dtree"}' | base64 | tr -d '\n')
+serve_review bot $'<!-- claude-pr-review -->\n<!-- fu-review-state:'"$state"' -->' \
+  2026-10-20T00:00:00Z 0ldc0mm1t
+COMPARE_FILES=src/a.cs FILE_LINES=500 COMPARE_LINES=50 one 7 --routine
+eq "50 lines since, not 500 over the PR" "SINGLE 7 acme/widgets" "$(first)"
+
+echo "== routine: generated files leave the size count =="
+new_sandbox
+PR_FILES=$(printf 'src/a.cs\n'; printf 'Data/Migrations/2026_M%02d.Designer.cs\n' $(seq 1 20)) \
+  FILE_LINES=40 one 7 --routine
+eq "one hand-written file: SINGLE" "SINGLE 7 acme/widgets" "$(first)"
+eq "the scope keeps them" "21" "$(sed '1,/^$/d' "$STATE/scope-7.txt" | grep -c .)"
+
 echo "== routine: a large scope fans out to four finders and a merger =="
 new_sandbox
 FILE_LINES=500 one 7 --routine
@@ -397,6 +417,24 @@ finish_parts diff trace cleanup intent
 eq "status" "POSTED COMMENT" "$(out)"
 has "footer" "*Automated review by a Claude Code routine*" "$(posted_body)"
 has_no "not /code-review's footer" "via /code-review" "$(posted_body)"
+
+echo "== routine: a review posts every BLOCKER and at most ROUTINE_MAX_NITS NITs =="
+new_sandbox
+bash -c 'source "$1"
+  jq -n "{findings: ([{severity: \"BLOCKER\", text: \"b1\"}]
+                     + [range(1; 14) | {severity: \"NIT\", text: \"n\(.)\"}]
+                     + [{severity: \"BLOCKER\", text: \"b2\"}])}" > "$(pr_path findings 7)"
+  record_write pending 7 deadbeef cafef00d 2026-10-23T04:00:00Z
+  printf "single\nroutine\n" > "$(pr_path mode 7)"
+  pr_review_finish 7' _ "$LIB" > "$SANDBOX/out" 2> "$SANDBOX/err"
+eq "status" "POSTED COMMENT" "$(out)"
+has "both blockers, first" "1. [BLOCKER] b1
+2. [BLOCKER] b2
+3. [NIT] n1" "$(posted_body)"
+has "the tenth NIT" "12. [NIT] n10" "$(posted_body)"
+has_no "no eleventh NIT" "[NIT] n11" "$(posted_body)"
+has "a SINGLE prompt carries the cap" "  MAX_NITS = 10" "$(PR_FILES=src/a.cs one 7 --routine; out)"
+has "a merger prompt carries the cap" "  MAX_NITS = 10" "$(FILE_LINES=500 one 7 --routine; sed -n '/^--- merger/,$p' "$SANDBOX/out")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
