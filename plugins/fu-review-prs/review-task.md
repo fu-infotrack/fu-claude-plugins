@@ -105,6 +105,15 @@ exactly `mint`, case-insensitively. `MintToken`, `TryMintAsync`, and `mint_creds
 hit; `ConfirmIntent` and `Minutes` do not. Methods the PR only calls, or leaves
 untouched, are out of scope — this is a rule about names the PR is introducing.
 
+**Design check — cross-cutting concerns belong in the pipeline.** Flag a NIT when the PR repeats the
+same concern in several controllers, handlers or consumers. Concerns include auth, tenant/account/caller
+context, correlation, logging, validation, transactions, retries, auditing and context propagation,
+whether repeated as code or as a scope (`using`/`Use(...)`, a static, an `AsyncLocal`).
+Name the hook that should own it: middleware, a filter, a MediatR behaviour, a MassTransit filter,
+a `DelegatingHandler` or an EF interceptor. Prefer a hook that already exists in the repo.
+Skip the check when the value depends on data the handler loads, or when the rule is
+business logic for one use case.
+
 **Scope check** (skip if Step 0 recorded "no stated intent"): measure the diff against the stated intent. A scope problem is a finding like any other — tag it BLOCKER or NIT and list it:
 - The PR does **not** address the linked issue's core ask, or implements something materially different/unrelated → **BLOCKER** (it won't actually resolve the issue it claims to). Prefix the text with `Scope:` and cite the issue, e.g. `Scope: issue #123 asks for X but the diff does Y / never touches X`.
 - Partial coverage (most of the ask, minor part missing) or unrelated extra churn riding along → **NIT** (text `Scope: …`). Genuinely matching the intent adds no finding.

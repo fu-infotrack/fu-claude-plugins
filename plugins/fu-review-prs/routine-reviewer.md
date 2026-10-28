@@ -250,7 +250,7 @@ Compare the diff with the stated intent:
 
 Use only the stated request. Do not add acceptance criteria.
 
-### Angle 11 — Repo rules and the house rule (`intent`)
+### Angle 11 — Repo rules, the house rule and the design check (`intent`)
 
 - A violation of a correctness rule or a safety rule from Step 1 is a BLOCKER.
   A violation of a convention is a NIT. Give the file of the rule.
@@ -260,6 +260,16 @@ Use only the stated request. Do not add acceptance criteria.
   is `mint` (any case), record it. `MintToken`, `TryMintAsync` and `mint_creds`
   match. `ConfirmIntent` and `Minutes` do not match. Use this text:
   ``Naming: `MintCredentials` uses `Mint`, which is not the vocabulary of this codebase. Rename it to what the method does.``
+- **Design check — cross-cutting concerns belong in the pipeline.** Flag a NIT
+  when the PR repeats the same concern in several controllers, handlers or
+  consumers. Concerns include auth, tenant/account/caller context, correlation,
+  logging, validation, transactions, retries, auditing and context propagation,
+  whether repeated as code or as a scope (`using`/`Use(...)`, a static, an
+  `AsyncLocal`). Name the hook that should own it: middleware, a filter, a
+  MediatR behaviour, a MassTransit filter, a `DelegatingHandler` or an EF
+  interceptor. Prefer a hook that already exists in the repo. Skip the check
+  when the value depends on data the handler loads, or when the rule is
+  business logic for one use case.
 
 ### Angle 12 — Documents and comments (`intent`)
 
