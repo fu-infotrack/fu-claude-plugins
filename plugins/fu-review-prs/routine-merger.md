@@ -25,6 +25,7 @@ Your task prompt gives absolute paths. Use them exactly:
   the `{"findings": [...]}` of each finder. Each item is a candidate with a
   proposed severity. Its `text` gives the problem and its failure scenario.
 - `FINDINGS_FILE` — the file that you write.
+- `MAX_NITS` — the largest number of NITs that you keep (Step 3).
 - `REVIEW_DIR` — the PR head, checked out. Read the code there with absolute
   paths.
 
@@ -67,7 +68,13 @@ Then:
 2. If you cannot quote a line that refutes a candidate, it is not REFUTED.
 3. Make the severity correct. A candidate is a BLOCKER only if it is a bug, a
    vulnerability, data loss, a broken contract, or a violation of a safety
-   rule. If a BLOCKER is real but is not one of these, change it to NIT.
+   rule. If a BLOCKER is real but is not one of these, change it to NIT. If a
+   NIT is one of these, change it to BLOCKER.
+
+   Data loss includes a race or a stale read that can overwrite a final state
+   (for example Complete) or lose a write. Severity is the effect if the
+   problem occurs. It is not how often it occurs. A PLAUSIBLE vote is about the
+   trigger. It does not make a BLOCKER a NIT.
 4. Do not change or remove these two types on your opinion only:
    - A `Scope:` BLOCKER. The `intent` finder read the linked issue. You did
      not.
@@ -77,6 +84,17 @@ Then:
 5. Do not add findings of your own. Your work is verification, not a fifth
    review.
 6. Put BLOCKERs first, then NITs.
+7. Keep every BLOCKER. Keep at most `MAX_NITS` NITs. If you have more, keep the
+   NITs with the largest effect, in this order:
+
+   1. Correctness and security NITs.
+   2. Docs and comments that state something false, and broken rules or scope.
+   3. Efficiency.
+   4. Reuse, simplification and altitude.
+   5. Naming, layout and style.
+
+   Remove the other NITs. Write the NITs that you keep in this order. The
+   orchestrator posts only the first `MAX_NITS` NITs.
 
 ## Step 4 — Prior findings (DELTA mode only)
 

@@ -313,6 +313,9 @@ def normalize:
        elif (.merge_danger | danger_errors | length) > 0
        then {merge_danger_invalid: (.merge_danger | danger_errors | join("; "))}
        else {merge_danger: (.merge_danger | {door, blast_radius, why: (.why | flat)})} end);
+# Every BLOCKER, then the first $n NITs, in the order of the file (the merger ranks them).
+def cap_nits($n): .findings = ([.findings[] | select(.severity == "BLOCKER")]
+                             + ([.findings[] | select(.severity == "NIT")] | .[:$n]));
 def live_prior: [.prior[] | select(.status != "RESOLVED")];
 def blockers: [(.findings + live_prior)[] | select(.severity == "BLOCKER")] | length;
 def carried: {findings: (.findings + [live_prior[] | del(.status)])};
@@ -353,6 +356,8 @@ findings_load() {
 
 # Queries over normalized findings (findings_load's output) on stdin.
 findings_blockers() { jq -r "$FINDINGS_JQ"'blockers'; }
+findings_cap_nits() { jq -c --argjson n "$1" "$FINDINGS_JQ"'cap_nits($n)'; }   # findings_cap_nits <n>
+findings_nits()     { jq -r '[.findings[] | select(.severity == "NIT")] | length'; }
 findings_body()     { jq -r --arg pr "$1" "$FINDINGS_JQ"'body($pr)'; }   # findings_body <pr>
 # What the next DELTA review re-checks: this review's findings plus the prior
 # ones still open or reintroduced. A RESOLVED finding is done with.
@@ -1172,7 +1177,14 @@ pr_review_finish() {
         pr_review_notify nobody "$pr" 0 "" "nothing posted, retries next tick"
         status=NO_FINDINGS
     else
-        local decision=COMMENT blockers review_body downgraded=0
+        local decision=COMMENT blockers review_body downgraded=0 nits
+        if mode_has "$pr" routine; then
+            nits=$(findings_nits <<< "$findings")
+            if [ "$nits" -gt "$ROUTINE_MAX_NITS" ]; then
+                log "PR #$pr: $nits NITs — posting the first $ROUTINE_MAX_NITS"
+                findings=$(findings_cap_nits "$ROUTINE_MAX_NITS" <<< "$findings")
+            fi
+        fi
         blockers=$(findings_blockers <<< "$findings")
         [ "$blockers" = 0 ] && decision=APPROVE
         # Policy gate: zero BLOCKERs only makes the verdict APPROVE. Turning that
@@ -1404,25 +1416,49 @@ pr_review_one() {
 # larger gets one finder per angle group plus a merger that votes on every
 # candidate (FANOUT). The orchestrator only copies the blocks.
 ROUTINE_DIMENSIONS="diff trace cleanup intent"
+# A review posts every BLOCKER and at most this many NITs. The merger (SINGLE:
+# the reviewer) ranks the NITs and keeps the most important; finish enforces the
+# cap on what it posts. EntityPlatform #3257 posted 32 NITs in one review.
+ROUTINE_MAX_NITS=10
+# Generated files: tool output nobody edits by hand (an EF migration's
+# *.Designer.cs and ModelSnapshot, NSwag's *.g.cs). They leave only the size
+# count, so a PR does not go FANOUT on them; they stay in the scope (the reviewer
+# brief says not to read them line by line) and in the approval gate's file list.
+# The hand-written migration (<ts>_<Name>.cs) is not generated. Patterns as in LOW_RISK_PATHS_DEFAULT.
+ROUTINE_GENERATED_PATHS=(
+    '*.Designer.cs' '*.designer.cs' '*.g.cs' '*.g.i.cs' '*.generated.cs' '*ModelSnapshot.cs'
+    '*package-lock.json' '*yarn.lock' '*pnpm-lock.yaml' '*packages.lock.json'
+    '*.min.js' '*.min.css'
+)
 ROUTINE_SINGLE_MAX_FILES=5
 ROUTINE_SINGLE_MAX_LINES=200
 ROUTINE_REVIEWER_BRIEF="$(dirname "$REVIEW_TASK_FILE")/routine-reviewer.md"
 ROUTINE_MERGER_BRIEF="$(dirname "$REVIEW_TASK_FILE")/routine-merger.md"
 
-# Print "<files> <lines>" for the review scope: the files in scope-<pr>.txt and
-# their changed lines (additions + deletions, whole-PR per file, so a DELTA is
-# over-counted — toward FANOUT, the safe side). An unfetchable count prints a
-# line total past the threshold. routine_scope_size <pr>
+# Print "<files> <lines>" for the review scope: the files in scope-<pr>.txt that
+# are not generated (ROUTINE_GENERATED_PATHS), and their changed lines
+# (additions + deletions over the PR for FULL, over compare DELTA_BASE...HEAD for
+# DELTA, so a small follow-up push to a large PR can be SINGLE). An unfetchable
+# count prints a line total past the threshold. routine_scope_size <pr>
 routine_scope_size() {
-    local pr=$1 files n lines
-    files=$(sed '1,/^$/d' "$(pr_path scope "$pr")" 2>/dev/null | grep .)
+    local pr=$1 scope files base head counts f n=0 lines=0
+    scope=$(pr_path scope "$pr")
+    files=$(sed '1,/^$/d' "$scope" 2>/dev/null | grep .)
+    files=$(while IFS= read -r f; do
+        [ -n "$f" ] && ! path_in "$f" "${ROUTINE_GENERATED_PATHS[@]}" && printf '%s\n' "$f"
+    done <<< "$files")
     n=$(grep -c . <<< "$files")
-    if ! lines=$(gh_api_pages "repos/$REPO/pulls/$pr/files" \
-            '.[] | [.filename, ((.additions // 0) + (.deletions // 0))] | @tsv' 2>/dev/null); then
-        printf '%s %s\n' "$n" $((ROUTINE_SINGLE_MAX_LINES + 1)); return 0
-    fi
+    base=$(sed -n 's/^DELTA_BASE=//p' "$scope" 2>/dev/null)
+    head=$(sed -n 's/^HEAD=//p' "$scope" 2>/dev/null)
+    if [ -n "$base" ]; then
+        counts=$(gh api "repos/$REPO/compare/${base}...${head}" \
+            --jq '.files[] | [.filename, ((.additions // 0) + (.deletions // 0))] | @tsv' 2>/dev/null)
+    else
+        counts=$(gh_api_pages "repos/$REPO/pulls/$pr/files" \
+            '.[] | [.filename, ((.additions // 0) + (.deletions // 0))] | @tsv' 2>/dev/null)
+    fi || { printf '%s %s\n' "$n" $((ROUTINE_SINGLE_MAX_LINES + 1)); return 0; }
     lines=$(awk -F'\t' 'NR == FNR { want[$0] = 1; next } ($1 in want) { s += $2 } END { print s + 0 }' \
-        <(printf '%s\n' "$files") <(printf '%s\n' "$lines"))
+        <(printf '%s\n' "$files") <(printf '%s\n' "$counts"))
     printf '%s %s\n' "$n" "$lines"
 }
 
@@ -1434,7 +1470,10 @@ routine_reviewer_block() {
         "$ROUTINE_REVIEWER_BRIEF" "$pr" "$dim"
     printf 'Use these absolute paths verbatim — do not construct your own:\n'
     printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
-    if [ "$dim" = all ]; then printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"; fi
+    if [ "$dim" = all ]; then
+        printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"
+        printf '  MAX_NITS = %s\n' "$ROUTINE_MAX_NITS"
+    fi
     printf '  OUTPUT_FILE = %s\n' "$out"
     printf '  REVIEW_DIR = %s\n' "$REVIEW_DIR"
 }
@@ -1468,6 +1507,7 @@ routine_prompts() {
         printf '  PART_FILE_%s = %s\n' "$(tr '[:lower:]' '[:upper:]' <<< "$d")" "$(pr_path "part_$d" "$pr")"
     done
     printf '  FINDINGS_FILE = %s\n' "$(pr_path findings "$pr")"
+    printf '  MAX_NITS = %s\n' "$ROUTINE_MAX_NITS"
     printf '  REVIEW_DIR = %s\n' "$REVIEW_DIR"
 }
 
