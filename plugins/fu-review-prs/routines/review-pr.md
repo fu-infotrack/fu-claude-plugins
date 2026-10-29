@@ -50,6 +50,31 @@ The Claude GitHub App must be installed on both repositories. Reviews post as
 your GitHub account. Most events are team requests or requests to someone else;
 those end at the first command with `SKIP`.
 
+## Another repo
+
+The prompt is repo-agnostic apart from the repo name. To add a repo, create a
+routine from this setup table with the name swapped in two places in Step 1's
+bash: the `case` pattern (`*[/:]InfoTrackGlobal/<repo>`) and the `SKIP (clones
+not found: …)` message. `lib.sh` and the briefs need no change. Everything below
+was measured through the `RemoteTrigger` tool (2026-10-29, `InfoTrack.DeliverySystems.CreditReport`).
+
+- **Fastest path:** `RemoteTrigger get` an existing routine's `job_config.ccr`
+  (`environment_id`, `events`, `session_context`), swap the repo in the prompt
+  and in `session_context.sources[0]`, then `create`. The Haiku model and the
+  `Task, Bash, Glob, Grep, Read, Write` tool list ride in `session_context`.
+- **The GitHub trigger is a separate call**, `create_webhook_trigger`. Its body
+  has no `repository` or `scope` key; the API reports one missing field per call
+  (`hook_type`, `source`, `scope_id`, `events`), so use exactly:
+
+  ```json
+  {"routine_trigger_id": "<routine id>", "hook_type": "app", "source": "github",
+   "scope_id": "<owner>/<repo>", "events": ["pull_request.review_requested"]}
+  ```
+
+- **`create` attaches your account's MCP connectors** (Docs, GitHub MCP, M365,
+  Figma, Datadog, Claude Code Remote) to the new routine. `update` with
+  `mcp_connections: []` returns 200 and clears nothing; remove them in the UI.
+
 ## Prompt
 
 Paste everything between the two lines.
