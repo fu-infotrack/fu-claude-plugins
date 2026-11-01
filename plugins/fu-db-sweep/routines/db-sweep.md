@@ -36,7 +36,7 @@ environment's `DD_ACCESS_TOKEN`.
 |---|---|
 | Name | `DB perf sweep` |
 | Repositories | `fu-infotrack/fu-claude-plugins` on `main`, plus **every repo named in `CONFIG`**. A pair whose repo is not attached is skipped and named in the run's output — the cloud proxy refuses API calls to repos the session is not bound to. |
-| Environment | needs `gh`, `node` and `npm`; network access to GitHub, the npm registry and `api.<site>` (e.g. `api.ap2.datadoghq.com`); and the secret `DD_ACCESS_TOKEN`, a Datadog personal access token (`ddpat_…`) whose user can read metrics, APM and DBM |
+| Environment | needs `gh`, `node` and `npm`; network access to GitHub, the npm registry (or `github.com` release downloads — the prompt falls back to the `DataDog/pup` release binary if `npm install` fails, and sources `~/.nvm/nvm.sh` if `node` is not on PATH) and `api.<site>` (e.g. `api.ap2.datadoghq.com`); and the secret `DD_ACCESS_TOKEN`, a Datadog personal access token (`ddpat_…`) whose user can read metrics, APM and DBM |
 | Connectors | none |
 | Model | Haiku |
 | Trigger | Schedule → `CRON_TZ=Australia/Sydney 43 7 * * 1` (Monday 07:43) |
@@ -92,9 +92,22 @@ Run this as one Bash command, verbatim, with the Bash tool's `timeout` set to
 ```bash
 MODE=--observe
 CONFIG='{"pairs":[{"repo":"infotrackglobal/infotrack.compliance.mono","db":"compliance_mono"}]}'
-command -v pup >/dev/null || npm install -g @datadog/pup >/dev/null 2>&1
-if ! command -v node >/dev/null || ! command -v gh >/dev/null || ! command -v pup >/dev/null; then
-  echo "SKIP — node, gh or pup missing (npm install -g @datadog/pup failed?)"
+command -v node >/dev/null || { NVM_DIR=${NVM_DIR:-$HOME/.nvm}; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; }
+L=/tmp/pup-install.log; : > "$L"
+if ! command -v pup >/dev/null; then
+  for i in 1 2 3; do npm install -g @datadog/pup >>"$L" 2>&1 && break; sleep $((i * 10)); done
+  PATH="$(npm prefix -g 2>/dev/null)/bin:$PATH"
+fi
+if ! pup --version >>"$L" 2>&1; then
+  R=https://github.com/DataDog/pup/releases; A=$(uname -m); [ "$A" = aarch64 ] && A=arm64
+  V=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$R/latest" 2>>"$L"); V=${V##*/v}
+  mkdir -p ~/.local/bin && curl -fsSL "$R/download/v$V/pup_${V}_Linux_$A.tar.gz" 2>>"$L" | tar -xz -C ~/.local/bin pup >>"$L" 2>&1
+  PATH="$HOME/.local/bin:$PATH"
+fi
+M=""; for t in node gh pup; do command -v "$t" >/dev/null || M="$M $t"; done
+pup --version >/dev/null 2>&1 || M="${M% pup} pup"
+if [ -n "$M" ]; then
+  echo "SKIP — missing:$M"; tail -n 20 "$L"
 elif [ -z "$DD_ACCESS_TOKEN" ]; then
   echo "SKIP — DD_ACCESS_TOKEN is not set in the environment"
 else
