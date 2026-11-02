@@ -31,6 +31,7 @@ Project file shape: `{ "<tool>": { ... } }`. See each plugin's README.
 | /fu-k8 | hidden | Read-only K8s inspection across clusters (stage/prod, pick with `-c`) via the k8dash API proxy (GET-only, user's OIDC token) |
 | /fu-order | hidden | Orders API inspection |
 | /fu-wsl | hidden | Provision a WSL Debian work environment for Claude Code from Windows PowerShell 7+ (WSL/disk preflight, named instance, tool inventory + full install; non-interactive steps automated, credential logins handed off) |
+| /fu-delegate-ready | hidden | Make a local session the delegate for cloud sessions: preflight gh/GraphQL/stage-DB access, Remote Control under a `local` title, then serve merge-queue, read-only stage-DB and GitHub GraphQL requests and reply to the sender |
 | /fu-ce | hidden | Document solved problems (EveryInc fork, MIT); ships the ce-* review agents |
 | /ask-fu | hidden | Catalogue/router — invoke when you can't remember which /fu-* skill you need |
 
