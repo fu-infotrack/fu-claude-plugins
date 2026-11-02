@@ -20,6 +20,7 @@ answer from this table alone — the target skill holds the actual instructions.
 | `fu-pup` | Query Datadog from the terminal with the `pup` CLI — logs/traces search, Error Tracking triage, auth/meta ops | "search datadog logs", "pup auth", "error tracking triage" |
 | `fu-order` | Inspect the Orders API (config-resolved host + token) | "inspect an order", "query the orders api" |
 | `fu-wsl` | Provision a WSL work environment for Claude Code from Windows PowerShell 7+ | "set up wsl", "new wsl instance", "provision a dev environment" |
+| `fu-delegate-ready` | Make this **local** session the target cloud sessions delegate to — preflight gh/GraphQL/stage-DB access, Remote Control under a `local` title, then serve merge-queue, read-only stage-DB and GraphQL requests and reply | "get ready for delegation", "be the local session for cloud", "serve cloud requests" |
 | `fu-ce` | Document a recently solved problem to compound team knowledge (EveryInc fork) | "document this fix", "write up what we solved" |
 
 If nothing fits, say so — don't force the nearest match. If two could fit
