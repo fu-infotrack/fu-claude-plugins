@@ -1,5 +1,5 @@
 ---
-description: Review ONE pull request and post the GitHub review as a COMMENT (pass --auto-approve to let a clean docs/tests/UI-only PR be approved). Only runs when the review is requested from you by name — a team request is skipped. Built for a cloud scheduled task on a GitHub pull_request.review_requested trigger; with no PR argument it reviews the open PR whose head is the checkout's HEAD.
+description: Review ONE pull request and post the GitHub review as a COMMENT (pass --auto-approve to let a clean docs/tests/UI-only PR, or one you approved by hand before, be approved). Only runs when the review is requested from you by name — a team request is skipped. Built for a cloud scheduled task on a GitHub pull_request.review_requested trigger; with no PR argument it reviews the open PR whose head is the checkout's HEAD.
 argument-hint: "[<pr> | #<pr> | <pr-url>] [--auto-approve]"
 ---
 

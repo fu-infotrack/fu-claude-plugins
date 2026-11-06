@@ -83,6 +83,8 @@ mkdir -p "$STATE_DIR"
 #                                       or the first PR path that is not (classify_pr_files)
 #   oneway    oneway-<pr>.txt           `clear`, or the first PR path on the one-way
 #                                       list (classify_one_way_files)
+#   approval  approval-<pr>.txt         `approved <commit>` when the user approved this
+#                                       PR by hand before, else `none` (prior_manual_approval)
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
 #   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
@@ -93,7 +95,7 @@ mkdir -p "$STATE_DIR"
 # `reviewed`, `carried` and `empty` outlive a dispatch (DURABLE_KINDS, removed by
 # purge once the PR closes); the rest live for one dispatch (TRANSIENT_KINDS).
 DURABLE_KINDS="reviewed carried empty"
-TRANSIENT_KINDS="pending scope prior findings gate oneway mode part_diff part_trace part_cleanup part_intent"
+TRANSIENT_KINDS="pending scope prior findings gate oneway approval mode part_diff part_trace part_cleanup part_intent"
 
 pr_path() {
     local kind=$1 pr=$2
@@ -106,6 +108,7 @@ pr_path() {
         findings) printf '%s/findings-%s.json\n'      "$STATE_DIR" "$pr" ;;
         gate)     printf '%s/gate-%s.txt\n'           "$STATE_DIR" "$pr" ;;
         oneway)   printf '%s/oneway-%s.txt\n'         "$STATE_DIR" "$pr" ;;
+        approval) printf '%s/approval-%s.txt\n'       "$STATE_DIR" "$pr" ;;
         empty)    printf '%s/empty-%s\n'              "$STATE_DIR" "$pr" ;;
         mode)     printf '%s/mode-%s\n'               "$STATE_DIR" "$pr" ;;
         part_*)   printf '%s/findings-%s.%s.json\n'   "$STATE_DIR" "$pr" "${kind#part_}" ;;
@@ -714,6 +717,31 @@ fetch_prior_findings() {
 }
 
 # ── Review state on GitHub ─────────────────────────────────────────────────────
+# Whether the user approved this PR by hand before, at any head: print
+# `approved <commit>` or `none`. "By hand" = a review by the user's own login with
+# no REVIEW_MARKER — a bot approval of a docs-only head must not carry over to the
+# code pushed after it. The latest such decisive review wins: APPROVED, or
+# DISMISSED (how a push-dismissed approval reads — GitHub keeps no original state,
+# so a dismissed changes-request reads the same; rare, accepted), and a later
+# CHANGES_REQUESTED cancels it. COMMENTED reviews are ignored. Rebases and pushes
+# since the approval are deliberately not inspected: the user trusts the team, and
+# this review still has to find zero blockers. Returns 1 on a failed lookup
+# (pre-flight then writes no record, which finish reads as "no").
+# prior_manual_approval <pr>
+prior_manual_approval() {
+    local me rows
+    me=$(get_gh_user)
+    [ -n "$me" ] || return 1
+    rows=$(gh_api_pages "repos/$REPO/pulls/$1/reviews" \
+        ".[] | select(.user.login == \"$me\"
+                     and ((.body // \"\") | contains(\"$REVIEW_MARKER\") | not)
+                     and (.state | IN(\"APPROVED\", \"DISMISSED\", \"CHANGES_REQUESTED\")))
+             | [.submitted_at, .state, .commit_id] | @tsv") || return 1
+    LC_ALL=C sort <<< "$rows" | grep . | tail -n 1 | awk -F'\t' '
+        $2 == "APPROVED" || $2 == "DISMISSED" { print "approved " $3; found = 1 }
+        END { if (!found) print "none" }'
+}
+
 # The hidden comment finish appends to every review body:
 #   <!-- fu-review-state:<base64 of {"v":1,"commit":…,"tree":…,"carried":{"findings":[…]}}> -->
 # `carried` is left out when it would push the body past REVIEW_BODY_MAX; the
@@ -1020,6 +1048,8 @@ write_review_scope() {
     # old path too — moving code into docs/ still deletes code.
     tr '\t' '\n' <<< "$listing" | grep . | classify_pr_files > "$(pr_path gate "$pr")"
     tr '\t' '\n' <<< "$listing" | grep . | classify_one_way_files > "$(pr_path oneway "$pr")"
+    local approval
+    approval=$(prior_manual_approval "$pr") && printf '%s\n' "$approval" > "$(pr_path approval "$pr")"
 
     local rec last_commit last_tree _at
     if rec=$(record_read reviewed "$pr"); then
@@ -1195,14 +1225,20 @@ pr_review_finish() {
             decision="COMMENT"
             downgraded=1
         fi
-        # Second gate: a docs/tests/UI-only PR (LOW_RISK_PATHS_DEFAULT), or one
-        # the review judged a two-way door with a contained or local blast
-        # radius and that touches nothing on the one-way list
-        # (ONE_WAY_PATHS_DEFAULT). A missing record or judgement fails closed.
-        local gate="" oneway="" danger=""
+        # Second gate: a docs/tests/UI-only PR (LOW_RISK_PATHS_DEFAULT), a PR
+        # the user approved by hand before (prior_manual_approval — whatever was
+        # pushed or rebased since), or one the review judged a two-way door with
+        # a contained or local blast radius and that touches nothing on the
+        # one-way list (ONE_WAY_PATHS_DEFAULT). A missing record or judgement
+        # fails closed.
+        local gate="" oneway="" danger="" approval="" reapproved=""
         if [ "$decision" = "APPROVE" ]; then
             gate=$(head -n 1 "$(pr_path gate "$pr")" 2>/dev/null)
-            if [ "$gate" != low-risk ]; then
+            approval=$(head -n 1 "$(pr_path approval "$pr")" 2>/dev/null)
+            if [ "$gate" != low-risk ] && [[ "$approval" == "approved "?* ]]; then
+                reapproved=${approval#approved }
+                log "PR #$pr: no blockers found, and you approved it by hand before (at $reapproved) — re-approving"
+            elif [ "$gate" != low-risk ]; then
                 danger=$(findings_danger <<< "$findings")
                 oneway=$(head -n 1 "$(pr_path oneway "$pr")" 2>/dev/null)
                 if { [ "$danger" = "two-way contained" ] || [ "$danger" = "two-way local" ]; } && [ "$oneway" = clear ]; then
@@ -1219,12 +1255,15 @@ pr_review_finish() {
 
         local footer="*Automated review by Claude Code via /code-review*"
         mode_has "$pr" routine && footer="*Automated review by a Claude Code routine*"
-        if [ "$downgraded" = 1 ]; then
+        if [ -n "$reapproved" ]; then
+            footer="$footer
+*Re-approved: you approved this PR by hand before (at \`${reapproved:0:7}\`), and this review found no blockers.*"
+        elif [ "$downgraded" = 1 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
         elif [ "$downgraded" = 2 ]; then
             footer="$footer
-*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes, or two-way doors with a contained or local blast radius, are auto-approved.*"
+*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes, PRs you approved before, or two-way doors with a contained or local blast radius, are auto-approved.*"
         elif [ "$downgraded" = 3 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — \`$oneway\` is on the one-way list, so this PR is never auto-approved.*"

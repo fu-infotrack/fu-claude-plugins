@@ -95,6 +95,12 @@ if [ "$1" = "api" ] && [[ "$2" == *"/compare/"* ]]; then
   exit 0
 fi
 if [ "$1" = "api" ] && [[ "$2" == *"/reviews" ]]; then echo "[]"; exit 0; fi
+# The paged reviews lookup (prior_manual_approval): REVIEWS is page 1's JSON.
+if [ "$1" = "api" ] && [[ "$2" == *"/reviews?"* ]]; then
+  [ -n "${REVIEWS_FAIL:-}" ] && exit 1
+  printf '%s\n' "${REVIEWS:-[]}" | respond
+  exit 0
+fi
 exit 0
 STUB
   cat >"$SANDBOX/bin/git" <<'STUB'
@@ -108,6 +114,7 @@ STUB
   export PATH="$SANDBOX/bin:$PATH"
   # Let lib.sh resolve review-task.md beside itself, not from an installed plugin.
   unset PR_STATE HEAD_FAIL HEAD_TREE PR_FILES FILES_FAIL FILES_FAIL_PAGE COMPARE_FILES COMPARE_FAIL \
+        REVIEWS REVIEWS_FAIL \
         CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
@@ -353,6 +360,62 @@ HEAD_FAIL=1 preflight 7 review_requested
 eq "stdout is SKIP" "SKIP" "$(out)"
 eq "stderr is empty" "" "$(err)"
 eq "no pending file" "absent" "$([ -e "$STATE/pending-7" ] && echo present || echo absent)"
+cleanup
+
+# rv <login> <state> <submitted_at> <commit> [body] — one review object.
+rv() { jq -nc --arg u "$1" --arg s "$2" --arg t "$3" --arg c "$4" --arg b "${5-}" \
+  '{user: {login: $u}, state: $s, submitted_at: $t, commit_id: $c, body: $b}'; }
+reviews() { printf '%s\n' "$@" | jq -sc .; }
+approval() { cat "$STATE/approval-7.txt" 2>/dev/null || echo "(no record)"; }
+
+echo "== prior approval: none when the user never approved =="
+new_sandbox
+preflight 7 review_requested
+eq "none" "none" "$(approval)"
+cleanup
+
+echo "== prior approval: a manual approval at an older head is recorded =="
+new_sandbox
+REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t)") preflight 7 review_requested
+eq "approved at its commit" "approved 0ldc0mm1t" "$(approval)"
+cleanup
+
+echo "== prior approval: a push-dismissed approval still counts =="
+new_sandbox
+REVIEWS=$(reviews "$(rv bot DISMISSED 2026-10-01T00:00:00Z 0ldc0mm1t)") preflight 7 review_requested
+eq "dismissed counts" "approved 0ldc0mm1t" "$(approval)"
+cleanup
+
+echo "== prior approval: the bot's own marked approval does not count =="
+new_sandbox
+REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t $'<!-- claude-pr-review -->\nFound 0 issues')") \
+  preflight 7 review_requested
+eq "marked approval ignored" "none" "$(approval)"
+cleanup
+
+echo "== prior approval: someone else's approval does not count =="
+new_sandbox
+REVIEWS=$(reviews "$(rv carol APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t)") preflight 7 review_requested
+eq "other user ignored" "none" "$(approval)"
+cleanup
+
+echo "== prior approval: a later changes-request cancels it, a later approval restores it =="
+new_sandbox
+REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z c1)" "$(rv bot CHANGES_REQUESTED 2026-10-02T00:00:00Z c2)") \
+  preflight 7 review_requested
+eq "cancelled" "none" "$(approval)"
+cleanup
+new_sandbox
+REVIEWS=$(reviews "$(rv bot CHANGES_REQUESTED 2026-10-02T00:00:00Z c2)" "$(rv bot COMMENTED 2026-10-04T00:00:00Z c3)" \
+                  "$(rv bot APPROVED 2026-10-03T00:00:00Z c3)") preflight 7 review_requested
+eq "latest decisive wins, comments ignored, order-independent" "approved c3" "$(approval)"
+cleanup
+
+echo "== prior approval: a failed lookup writes no record (finish reads it as no) =="
+new_sandbox
+REVIEWS_FAIL=1 preflight 7 review_requested
+eq "no record" "(no record)" "$(approval)"
+eq "pre-flight still proceeds" "PROCEED" "$(out | head -n 1)"
 cleanup
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

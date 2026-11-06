@@ -101,7 +101,8 @@ trap cleanup EXIT
 # seed one PR's sub-agent findings on disk, then run the requested commands. The
 # verdict is derived from the findings: APPROVE seeds none, COMMENT one BLOCKER.
 # GATE is pre-flight's file check (default `low-risk`; `none` seeds no file), and
-# ONEWAY its one-way-list check (default `clear`; `none` seeds no file). DANGER
+# ONEWAY its one-way-list check (default `clear`; `none` seeds no file), and
+# APPROVAL its prior-manual-approval check (default `none`: no file). DANGER
 # adds a merge_danger object to the findings.
 # run <pr> <APPROVE|COMMENT> <shell-snippet>
 run() {
@@ -116,8 +117,9 @@ run() {
     record_write pending "$pr" deadbeef cafef00d
     [ "$5" = none ] || printf "%s\n" "$5" > "$(pr_path gate "$pr")"
     [ "$6" = none ] || printf "%s\n" "$6" > "$(pr_path oneway "$pr")"
+    [ "$7" = none ] || printf "%s\n" "$7" > "$(pr_path approval "$pr")"
     eval "$4"
-  ' _ "$LIB" "$pr" "$findings" "$snippet" "${GATE-low-risk}" "${ONEWAY-clear}" 2>/dev/null
+  ' _ "$LIB" "$pr" "$findings" "$snippet" "${GATE-low-risk}" "${ONEWAY-clear}" "${APPROVAL-none}" 2>/dev/null
 }
 
 # Drive pr_review_init end-to-end (real flock holder, stubbed gh/git) and report
@@ -323,6 +325,57 @@ new_sandbox
 out=$(GH_FAIL_REVIEW=1 run 7 COMMENT 'pr_review_set_mode; pr_review_finish 7')
 eq "status token" "FAILED" "$out"
 eq "nothing deleted" "" "$(cat "$GH_DEL" 2>/dev/null)"
+cleanup
+
+prior='approved abc1234def5678'
+
+echo "== --auto-approve: a code PR you approved by hand before is re-approved =="
+new_sandbox
+out=$(GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED APPROVE" "$out"
+has "footer names the earlier approval" 'Re-approved: you approved this PR by hand before (at `abc1234`)' "$(posted_body)"
+cleanup
+
+echo "== a prior approval re-approves even past the one-way list (the user's call) =="
+new_sandbox
+GATE=src/Migrations/1_add.cs ONEWAY=src/Migrations/1_add.cs APPROVAL=$prior \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "APPROVE" "$(posted_event)"
+cleanup
+
+echo "== a prior approval never overrides a blocker =="
+new_sandbox
+GATE=src/a.cs APPROVAL=$prior run 7 COMMENT 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+has_no "no re-approve note" "Re-approved" "$(posted_body)"
+cleanup
+
+echo "== a prior approval never upgrades without the flag =="
+new_sandbox
+GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+has "blamed on the flag" "auto-approve is off" "$(posted_body)"
+cleanup
+
+echo "== --auto-approve: an approval record of none posts as COMMENT =="
+new_sandbox
+GATE=src/a.cs APPROVAL=none run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "COMMENT" "$(posted_event)"
+has "downgrade note lists the prior-approval route" "PRs you approved before" "$(posted_body)"
+cleanup
+
+echo "== a low-risk PR approves through the file gate, not as a re-approval =="
+new_sandbox
+APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null
+eq "posted event" "APPROVE" "$(posted_event)"
+has_no "no re-approve note" "Re-approved" "$(posted_body)"
+cleanup
+
+echo "== finish clears the approval record =="
+new_sandbox
+out=$(GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7 >/dev/null
+  [ -e "$(pr_path approval 7)" ] && echo approval=present || echo approval=absent')
+has "approval cleared" "approval=absent" "$out"
 cleanup
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
