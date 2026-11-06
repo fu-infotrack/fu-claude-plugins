@@ -31,7 +31,9 @@ a plugin command.
   when the merger (SINGLE: the reviewer) judges it a two-way door with a
   `contained` or `local` blast radius and no PR file is on the one-way list
   (`ONE_WAY_PATHS_DEFAULT`: migrations, contracts, infrastructure, CI/CD
-  pipelines and Docker files). The fu-tools
+  pipelines and Docker files), or when you approved the PR by hand at any
+  earlier head (a rebase since does not matter; a later changes-request from
+  you cancels it). The fu-tools
   overrides of both lists do not reach a cloud session. Everything else posts
   as a COMMENT.
 

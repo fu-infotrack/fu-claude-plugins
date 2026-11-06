@@ -71,7 +71,7 @@ durable, outward-facing signal that can satisfy branch protection and unblock a
 merge, so it has to be asked for:
 
 ```
-/loop 30m /review-prs --auto-approve    # clean docs/tests/UI-only PRs get an APPROVE
+/loop 30m /review-prs --auto-approve    # clean docs/tests/UI-only PRs, or ones you approved before, get an APPROVE
 /loop 30m /review-prs                   # default: comment-only
 ```
 
@@ -85,8 +85,9 @@ findings do — a mid-tick compaction can't flip it — and is
 cleared at cleanup so it never leaks into a later tick. `PR_REVIEW_AUTO_APPROVE=1`
 is an equivalent env seam (used by the tests).
 
-**Only docs, tests and UI are ever approved.** Even with `--auto-approve`, a
-zero-BLOCKER PR posts as `COMMENT` unless **every** file it touches — the whole
+**Only docs, tests and UI, a PR you approved before, or a small two-way door are
+ever approved.** Even with `--auto-approve`, a zero-BLOCKER PR posts as `COMMENT`
+unless one of the gates below opens. The file gate: **every** file it touches — the whole
 PR, not just a DELTA scope, and a rename's old path too — matches a low-risk
 pattern (`LOW_RISK_PATHS_DEFAULT` in `scripts/lib.sh`: Markdown/docs dirs, test
 dirs and `*.test.*`/`*.spec.*`/`*Tests/`/`*-tests/`, and `*.UI/`/`ui/`/`frontend/` dirs plus
@@ -108,7 +109,18 @@ which pre-flight records in `oneway-<PR>.txt`. That list is bash's, so a PR
 cannot argue its way past it; replace it with the fu-tools array
 `review-prs.one_way_paths`. A missing judgement or record fails closed. The
 `/review-prs` loop and the plugin's `/review-pr` don't judge merge danger yet,
-so for them only the file gate approves.
+so for them only the file gate and the prior-approval gate approve.
+
+**…or a PR you approved by hand before (all three commands).** If your own login
+approved the PR at any earlier head, and that approval carries no bot marker (a
+bot approval of a docs-only head never carries over), a zero-BLOCKER review
+re-approves it — whatever was pushed or rebased since, and past the one-way list.
+That is deliberate: you trust the team, and the review must still find zero
+blockers. A push-dismissed approval (`DISMISSED`) counts; a later
+`CHANGES_REQUESTED` from you cancels it; your `COMMENTED` reviews are ignored.
+Pre-flight records `approved <commit>` or `none` in `approval-<PR>.txt`; a failed
+lookup writes nothing, which fails closed. The footer says *Re-approved: you
+approved this PR by hand before (at `abc1234`) …*.
 
 ## Findings — the sub-agent classifies, bash does the rest
 
@@ -363,6 +375,8 @@ and PR-number-keyed state never collides across repos:
   state/<slug>/prior-<PR>.json         # prior findings (delta mode)
   state/<slug>/findings-<PR>.json      # the sub-agent's findings
   state/<slug>/gate-<PR>.txt           # approval gate: `low-risk` or the first code path
+  state/<slug>/oneway-<PR>.txt         # `clear` or the first path on the one-way list
+  state/<slug>/approval-<PR>.txt       # `approved <commit>` (your manual approval) or `none`
   state/<slug>/auto-approve            # present only while a --auto-approve tick runs
 ```
 
