@@ -37,7 +37,9 @@ case "$p" in
       *) printf '%s\\n' "$in" >> "$R/created.jsonl"; echo '{"number":42}' ;;
     esac ;;
   issues/*/comments) cat >> "$R/comments.jsonl"; printf '\\n' >> "$R/comments.jsonl"; echo '{}' ;;
-  issues/*/events*) cat "$R/events.json" ;;
+  issues/*/comments\\?*) cat "$R/comments-get.json" 2>/dev/null || echo '[]' ;;
+  issues/*/timeline*) cat "$R/timeline.json" ;;
+  pulls/*) cat "$R/pull-\${p##*/}.json" 2>/dev/null || { echo "HTTP 404" >&2; exit 1; } ;;
   labels) echo "$*" >> "$R/labels.log"; echo "HTTP 422 already_exists" >&2; exit 1 ;;
   compare/*) echo "{\\"status\\":\\"$COMPARE\\"}" ;;
   issues/*)
@@ -98,7 +100,7 @@ function setup({ issues = [], billingIssues = [], stateIssue = true } = {}) {
     const r = path.join(fx, name);
     fs.mkdirSync(r);
     fs.writeFileSync(path.join(r, 'issues.json'), JSON.stringify(list));
-    fs.writeFileSync(path.join(r, 'events.json'), JSON.stringify([{ event: 'closed', commit_id: 'f1f1f1f1' }]));
+    fs.writeFileSync(path.join(r, 'timeline.json'), JSON.stringify([{ event: 'closed', commit_id: 'f1f1f1f1', created_at: '2026-10-01T00:00:00Z' }]));
     if (stateIssue) fs.writeFileSync(path.join(r, `issue-${n}.json`), JSON.stringify({ number: n, body: buildStateBody(LAST_TICK) }));
   }
   fs.writeFileSync(path.join(bin, 'gh'), GH_STUB, { mode: 0o755 });
@@ -175,7 +177,9 @@ test('live: files the new finding, holds an undeployed fix, keeps accepted and o
   const fin = s.run('finish');
   assert.match(fin, /^SWEPT — filed=1 held=1 dropped=0 failed=0/);
   assert.match(fin, /acme\/compliance#42 created \(med\)/);
-  assert.match(fin, /held #12 .*fix not deployed yet/);
+  assert.match(fin, /held #12 .*fix not released yet: prod runs 0e789f0, which is behind of it — commented/);
+  assert.match(s.read('comments.jsonl'), /Not reopening: the fix \(f1f1f1f\) is merged but not released yet/);
+  assert.match(s.log(), /compare\/f1f1f1f1\.\.\.0e789f0a/);
 
   const created = s.read('created.jsonl').trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(created.length, 1);
@@ -217,6 +221,65 @@ test('a fix that is deployed reopens the closed issue with a comment', () => {
   assert.match(fin, /acme\/compliance#12 reopened \(low\)/);
   assert.match(s.read('patches.log'), /issues\/12 --method PATCH -f state=open/);
   assert.match(s.read('comments.jsonl'), /Still breaching/);
+});
+
+// GitHub leaves commit_id null when a merged PR closes an issue; the PR is the
+// cross-reference merged just before the close. The deployed commit (Jan 2027)
+// is newer than the close, so the old date fallback would have reopened it.
+const PR_CLOSED = [
+  { event: 'cross-referenced', created_at: '2026-09-28T00:00:00Z', source: { issue: { number: 30, repository: { full_name: REPO }, pull_request: { merged_at: '2026-10-01T00:00:00Z' } } } },
+  { event: 'closed', commit_id: null, created_at: '2026-10-01T00:00:02Z' },
+];
+function prClosed(s) {
+  fs.writeFileSync(path.join(s.fx, 'compliance', 'timeline.json'), JSON.stringify(PR_CLOSED));
+  fs.writeFileSync(path.join(s.fx, 'compliance', 'pull-30.json'), JSON.stringify({ number: 30, merged: true, merge_commit_sha: 'abcabcab' }));
+}
+const sweep = (s, mode = '--live') => { s.run('prepare', mode, CONFIG()); writeCollectors(s); s.run('plan'); writeVerdicts(s); return s.run('finish'); };
+
+test('closed by a merged PR that is not released: held, told once on the issue, never reopened', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  prClosed(s);
+  const fin = sweep(s);
+  assert.match(fin, /held #12 .*fix not released yet: #30 is merged, but prod runs 0e789f0, which is behind of it — commented/);
+  assert.match(s.log(), /pulls\/30\n/);
+  assert.match(s.log(), /compare\/abcabcab\.\.\.0e789f0a/);
+  assert.doesNotMatch(s.log(), /commits\/0e789f0a/); // no date fallback for a PR close
+  assert.doesNotMatch(s.read('patches.log'), /issues\/12 .*state=open/);
+  const told = s.read('comments.jsonl').split('\n').filter((l) => l.includes('dd-dbm-unreleased')).map((l) => JSON.parse(l).body);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /Not reopening: the fix \(#30\) is merged but not released yet — prod runs `0e789f0`/);
+  assert.match(told[0], /<!-- dd-dbm-unreleased: abcabcab -->/);
+
+  // The next run sees its own comment and does not repeat it.
+  fs.writeFileSync(path.join(s.fx, 'compliance', 'comments-get.json'), JSON.stringify([{ body: told[0] }]));
+  assert.match(sweep(s), /held #12 .*— already commented/);
+  assert.equal(s.read('comments.jsonl').split('\n').filter((l) => l.includes('dd-dbm-unreleased')).length, 1);
+});
+
+test('closed by a merged PR that is released: reopens', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  prClosed(s);
+  s.env.COMPARE = 'ahead';
+  assert.match(sweep(s), /acme\/compliance#12 reopened \(low\)/);
+  assert.match(s.log(), /compare\/abcabcab\.\.\.0e789f0a/);
+});
+
+test('closed by a merged PR whose merge commit cannot be read: held, not judged by date', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  prClosed(s);
+  fs.rmSync(path.join(s.fx, 'compliance', 'pull-30.json'));
+  const fin = sweep(s);
+  assert.match(fin, /held #12 .*cannot tell whether the fix is deployed/);
+  assert.doesNotMatch(s.read('patches.log'), /issues\/12 .*state=open/);
+});
+
+test('observe: an unreleased fix becomes a comment draft in the summary', () => {
+  const s = setup({ issues: STANDARD_ISSUES });
+  prClosed(s);
+  const fin = sweep(s, '--observe');
+  assert.match(fin, /held #12 .*— would comment/);
+  assert.match(s.read('comments.jsonl'), /<details><summary>comment #12: fix not released yet/);
+  assert.doesNotMatch(s.read('comments.jsonl'), /^\{"body":"The DB perf sweep still sees/m);
 });
 
 test('observe: posts the summary with drafts, files nothing, never advances state', () => {

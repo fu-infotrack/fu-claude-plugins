@@ -22,7 +22,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   windows, parseConfig, parseCollectorOutput, evaluate, indexIssues, classify, rankFindings,
-  composeIssueBody, withDbmPointer, gateDecision, validateVerdict, parseSweepState, buildStateBody,
+  composeIssueBody, withDbmPointer, gateDecision, closingFix, unreleasedComment, saidUnreleased,
+  validateVerdict, parseSweepState, buildStateBody,
 } from './db-sweep-lib.mjs';
 import { collectDb, pupScalar, dbmStatement } from './collect.mjs';
 
@@ -310,24 +311,39 @@ async function plan() {
   }
 }
 
-// The reopen gate's inputs: the fix commit on the issue's close event, then
-// compare it with the deployed commit; with no fix commit, the deployed
-// commit's date against the close.
+// The reopen gate's inputs: what closed the issue (a commit, or a merged PR and
+// its merge commit), compared with the deployed commit; with neither, the
+// deployed commit's date against the close. A timeline that cannot be read
+// holds: it may hide a closing PR, which must never be judged by date.
 function gate(c, deployedSha) {
   if (!deployedSha) return gateDecision({ deployedSha });
-  let fixSha = null;
+  let closer;
+  try { closer = closingFix(ghPages(`repos/${c.repo}/issues/${c.number}/timeline`), c.repo); } catch (e) {
+    return { reopen: false, reason: `cannot tell what closed it (${firstLine(e)})` };
+  }
+  const pr = closer?.pr ?? null;
   try {
-    const events = ghPages(`repos/${c.repo}/issues/${c.number}/events`);
-    fixSha = [...events].reverse().find((e) => e.event === 'closed')?.commit_id || null;
-  } catch { /* fall through to the date check */ }
-  try {
+    const fixSha = closer?.sha ?? (pr ? JSON.parse(gh([`repos/${c.repo}/pulls/${pr}`])).merge_commit_sha : null);
     if (fixSha) {
       const cmp = JSON.parse(gh([`repos/${c.repo}/compare/${fixSha}...${deployedSha}`]));
-      return gateDecision({ deployedSha, compareStatus: cmp.status });
+      return { ...gateDecision({ deployedSha, compareStatus: cmp.status, pr }), fixSha, pr };
     }
+    if (pr) return gateDecision({ deployedSha, pr });
     const commit = JSON.parse(gh([`repos/${c.repo}/commits/${deployedSha}`]));
     return gateDecision({ deployedSha, deployedCommitDate: commit.commit?.committer?.date, closedAt: c.closedAt });
   } catch (e) { return { reopen: false, reason: `cannot tell whether the fix is deployed (${firstLine(e)})` }; }
+}
+
+// A held issue whose fix is merged but not released is told so, once per fix;
+// it stays closed. Returns the summary line's suffix.
+function tellUnreleased(c, g, deployedSha, run, drafts) {
+  const text = unreleasedComment({ fixSha: g.fixSha, pr: g.pr, deployedSha, why: c.finding.why });
+  if (run.mode !== 'live') { drafts.push({ title: `comment #${c.number}: fix not released yet`, text }); return ' — would comment'; }
+  try {
+    if (saidUnreleased(ghPages(`repos/${c.repo}/issues/${c.number}/comments`), g.fixSha)) return ' — already commented';
+    gh([`repos/${c.repo}/issues/${c.number}/comments`, '--method', 'POST', '--input', '-'], JSON.stringify({ body: text }));
+    return ' — commented';
+  } catch (e) { return ` — comment failed (${firstLine(e)})`; }
 }
 
 function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite, c.window); }
@@ -376,7 +392,12 @@ function finish() {
       if (!v.actionable) { n.dropped++; lines.push(`dropped ${label}: ${v.reason}`); continue; }
       if (c.classification === 'REGRESSION_CHECK') {
         const g = gate(c, v.deployedSha);
-        if (!g.reopen) { n.held++; lines.push(`held #${c.number} (${label}): ${g.reason}`); continue; }
+        if (!g.reopen) {
+          n.held++;
+          const told = g.unreleased ? tellUnreleased(c, g, v.deployedSha, run, drafts) : '';
+          lines.push(`held #${c.number} (${label}): ${g.reason}${told}`);
+          continue;
+        }
       }
       const action = c.classification === 'NEW' ? 'create' : `reopen #${c.number}`;
       if (run.mode !== 'live') {

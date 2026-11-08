@@ -21,7 +21,9 @@ environment's `DD_ACCESS_TOKEN`.
   in APM spans, or a grep), and drafts the issue. An agent call that errors is
   re-dispatched once on Opus.
 - **Filing is the script's**, over GitHub REST. A closed issue reopens only when
-  the commit serving the query in prod contains the fix; one closed as *not
+  the commit serving the query in prod contains the fix (for one closed by a
+  merged PR, its merge commit); while the fix is merged but not released the
+  issue stays closed and gets one comment saying so. One closed as *not
   planned* (or labelled `wontfix`) stays closed unless the number gets 2× worse.
 - **Each repo is swept on its own.** Its state and weekly summary live in a
   closed issue in that repo (`DB perf sweep routine state`); each run reads from
