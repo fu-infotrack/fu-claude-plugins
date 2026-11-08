@@ -347,17 +347,57 @@ export function rankFindings(list) {
 }
 
 // ---- Reopen gate ------------------------------------------------------------------
+// What closed the issue, from its REST timeline (oldest first): {sha} when the
+// close event names a commit, {pr} when a PR in this repo merged within two
+// minutes before the close, else null. GitHub leaves `commit_id` null on the
+// close event of an issue closed by a merged PR, so the PR is found from its
+// cross-reference (verified on cli/cli#14800 and #14814: merge, close 2 s later).
+export function closingFix(timeline, repo) {
+  const closed = [...(timeline || [])].reverse().find((e) => e.event === 'closed');
+  if (!closed) return null;
+  if (closed.commit_id) return { sha: closed.commit_id };
+  const at = Date.parse(closed.created_at);
+  const prs = timeline
+    .filter((e) => e.event === 'cross-referenced' && e.source?.issue?.pull_request?.merged_at
+      && (e.source.issue.repository?.full_name ?? repo).toLowerCase() === repo.toLowerCase())
+    .map((e) => ({ pr: e.source.issue.number, mergedAt: Date.parse(e.source.issue.pull_request.merged_at) }))
+    .filter((p) => p.mergedAt <= at + 5e3 && at - p.mergedAt <= 120e3)
+    .sort((a, b) => b.mergedAt - a.mergedAt);
+  return prs.length ? { pr: prs[0].pr } : null;
+}
+
+// The comment a closed issue gets instead of a reopen while its fix is merged
+// but not released. The marker names the fix, so each fix is said once.
+const UNRELEASED_RE = /<!--\s*dd-dbm-unreleased:\s*(\S+)\s*-->/;
+export function unreleasedComment({ fixSha, pr, deployedSha, why }) {
+  return [
+    `The DB perf sweep still sees this in prod: ${why}.`,
+    '',
+    `Not reopening: ${pr ? `the fix (#${pr})` : `the fix (${fixSha.slice(0, 7)})`} is merged but not released yet — prod runs \`${deployedSha.slice(0, 7)}\`, which does not contain it. The sweep checks again each run and reopens this only if it is still seen once the fix is deployed.`,
+    '',
+    `<!-- dd-dbm-unreleased: ${fixSha} -->`,
+  ].join('\n');
+}
+export function saidUnreleased(comments, fixSha) {
+  return (comments || []).some((c) => (c.body || '').match(UNRELEASED_RE)?.[1] === fixSha);
+}
+
 // Merged is not deployed. A closed issue reopens only when the commit serving
 // the query contains the fix: GitHub's compare of fixSha...deployedSha is
-// "ahead" or "identical". With no fix commit on the close event, the deployed
-// commit must be newer than the close. With no deployed commit, hold.
-export function gateDecision({ deployedSha, compareStatus, deployedCommitDate, closedAt }) {
+// "ahead" or "identical". An issue closed by a merged PR is checked against the
+// PR's merge commit and never by date: a merged-but-unreleased fix holds with
+// `unreleased: true`, which the script tells the issue instead of reopening it.
+// With no fix commit and no closing PR, the deployed commit must be newer than
+// the close. With no deployed commit, hold.
+export function gateDecision({ deployedSha, compareStatus, deployedCommitDate, closedAt, pr }) {
   if (!deployedSha) return { reopen: false, reason: 'no deployed commit found in APM spans' };
+  const fix = pr ? `the fix (#${pr})` : 'the fix';
   if (compareStatus) {
     return ['ahead', 'identical'].includes(compareStatus)
-      ? { reopen: true, reason: `deployed ${deployedSha.slice(0, 7)} contains the fix` }
-      : { reopen: false, reason: `fix not deployed yet (deployed ${deployedSha.slice(0, 7)} is ${compareStatus} of it)` };
+      ? { reopen: true, reason: `deployed ${deployedSha.slice(0, 7)} contains ${fix}` }
+      : { reopen: false, unreleased: true, reason: `fix not released yet: ${pr ? `#${pr} is merged, but ` : ''}prod runs ${deployedSha.slice(0, 7)}, which is ${compareStatus} of it` };
   }
+  if (pr) return { reopen: false, reason: `cannot tell whether ${fix} is released` };
   if (deployedCommitDate && closedAt) {
     return Date.parse(deployedCommitDate) >= Date.parse(closedAt)
       ? { reopen: true, reason: `deployed ${deployedSha.slice(0, 7)} is newer than the close` }

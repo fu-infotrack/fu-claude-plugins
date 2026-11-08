@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   windows, thresholdsFor, parseCollectorOutput, evaluate, fingerprint, indexIssues, classify,
-  composeIssueBody, withDbmPointer, parseMarker, gateDecision, validateVerdict, parseConfig, rankFindings,
+  composeIssueBody, withDbmPointer, parseMarker, gateDecision, closingFix, unreleasedComment, saidUnreleased, validateVerdict, parseConfig, rankFindings,
   parseSweepState, buildStateBody, DEFAULT_THRESHOLDS,
 } from './db-sweep-lib.mjs';
 
@@ -225,6 +225,39 @@ test('acceptance: a closed issue whose fix is not in the deployed commit is held
   assert.equal(gateDecision({ deployedSha: '0e789f0a', deployedCommitDate: '2026-09-30T00:00:00Z', closedAt: '2026-10-01T00:00:00Z' }).reopen, false);
   assert.equal(gateDecision({ deployedSha: '0e789f0a', deployedCommitDate: '2026-10-02T00:00:00Z', closedAt: '2026-10-01T00:00:00Z' }).reopen, true);
   assert.equal(gateDecision({ deployedSha: null }).reopen, false);
+  assert.equal(gateDecision({ deployedSha: '0e789f0a', compareStatus: 'behind' }).unreleased, true);
+});
+
+test('acceptance: an issue closed by a merged PR is gated on the PR, never by date', () => {
+  const held = gateDecision({ deployedSha: '0e789f0a', compareStatus: 'behind', pr: 30 });
+  assert.deepEqual([held.reopen, held.unreleased], [false, true]);
+  assert.match(held.reason, /fix not released yet: #30 is merged, but prod runs 0e789f0/);
+  assert.equal(gateDecision({ deployedSha: '0e789f0a', compareStatus: 'ahead', pr: 30 }).reopen, true);
+  // a deployed commit newer than the close would reopen a non-PR close; not a PR one
+  assert.equal(gateDecision({ deployedSha: '0e789f0a', deployedCommitDate: '2026-10-02T00:00:00Z', closedAt: '2026-10-01T00:00:00Z', pr: 30 }).reopen, false);
+});
+
+test('closingFix: commit on the close, else the PR merged just before it', () => {
+  const R = 'acme/compliance';
+  const xref = (number, merged_at, full_name = R) => ({ event: 'cross-referenced', source: { issue: { number, repository: { full_name }, pull_request: { merged_at } } } });
+  const closed = (commit_id = null) => ({ event: 'closed', commit_id, created_at: '2026-10-01T00:00:02Z' });
+  assert.equal(closingFix([], R), null);
+  assert.deepEqual(closingFix([closed('f1f1f1f1')], R), { sha: 'f1f1f1f1' });
+  assert.deepEqual(closingFix([xref(30, '2026-10-01T00:00:00Z'), closed()], R), { pr: 30 });
+  assert.deepEqual(closingFix([xref(29, '2026-09-30T23:59:00Z'), xref(30, '2026-10-01T00:00:00Z'), closed()], R), { pr: 30 });
+  assert.equal(closingFix([xref(30, '2026-09-20T00:00:00Z'), closed()], R), null); // merged long before: closed by hand
+  assert.equal(closingFix([xref(30, null), closed()], R), null); // not merged
+  assert.equal(closingFix([xref(30, '2026-10-01T00:00:00Z', 'acme/other'), closed()], R), null); // another repo's PR
+  assert.deepEqual(closingFix([xref(30, '2026-10-01T00:00:00Z', 'ACME/Compliance'), closed()], R), { pr: 30 });
+});
+
+test('unreleased comment: names the fix, said once per fix', () => {
+  const body = unreleasedComment({ fixSha: 'abcabcab', pr: 30, deployedSha: '0e789f0a', why: '140,000 dead rows' });
+  assert.match(body, /still sees this in prod: 140,000 dead rows\./);
+  assert.match(body, /the fix \(#30\) is merged but not released yet — prod runs `0e789f0`/);
+  assert.equal(saidUnreleased([{ body }], 'abcabcab'), true);
+  assert.equal(saidUnreleased([{ body }], 'deadbeef'), false);
+  assert.equal(saidUnreleased([], 'abcabcab'), false);
 });
 
 test('verdicts: shape per kind, and no @mentions outside code', () => {

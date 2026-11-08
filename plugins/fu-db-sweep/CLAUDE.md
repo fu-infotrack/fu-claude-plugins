@@ -71,9 +71,22 @@ orchestrator copying printed prompts) are explained in
   value in a `<!-- dd-dbm: {...} -->` marker. The value is what *not planned*
   issues are compared against (reopen at 2× worse).
 - **Reopen gate**: the investigator reports the `git.commit.sha` on the newest
-  span for the statement; `finish` compares the close event's commit with it
-  (`repos/{repo}/compare/{fix}...{deployed}`, `ahead`/`identical` = deployed),
-  or with no close commit, the deployed commit's date against the close.
+  span for the statement; `finish` reads the issue's timeline for what closed
+  it and compares that fix with it (`repos/{repo}/compare/{fix}...{deployed}`,
+  `ahead`/`identical` = deployed). The fix is the close event's `commit_id`, or
+  — since GitHub leaves `commit_id` **null** when a merged PR closes an issue
+  (checked on cli/cli#14800, #14814) — the `merge_commit_sha` of the PR in the
+  same repo whose cross-reference merged within 2 minutes before the close.
+  - A PR close is **never judged by date**: the deployed commit being newer
+    than the close says nothing about whether it contains the PR (that
+    fallback used to reopen merged-but-unreleased fixes). No merge commit, or
+    an unreadable timeline, holds.
+  - A fix that is merged but not in prod (`behind`/`diverged`) is held, and the
+    closed issue gets one comment saying the fix is not released yet. Its
+    `<!-- dd-dbm-unreleased: <fixSha> -->` marker dedups it per fix across runs;
+    observe mode puts it in the summary as a draft.
+  - With neither a close commit nor a closing PR (closed by hand), the
+    deployed commit's date against the close still decides.
 
 ## Tests
 
@@ -88,7 +101,8 @@ validator. `collect.test.mjs` runs `collectDb` against a fake metric reader: the
 `collect` → `plan` → `finish` with a throwaway `$HOME`, fake clones under
 `DB_SWEEP_SEARCH_ROOT`, the same proxy-faithful `gh` stub as fu-log-sweep, and a
 `pup` stub (DBM samples served, metric queries failing): live filing with the
-candidate's DBM SQL, held vs reopened, accepted and already-open, observe
+candidate's DBM SQL, held vs reopened (closed by commit and by a merged PR,
+released or not, and the once-per-fix "not released yet" comment), accepted and already-open, observe
 (summary with drafts, no filing, no state), per-repo summaries and state, a
 failed collection failing only its repo, every repo failing, a bad verdict, the
 per-repo cap, NO_WORK, state-issue bootstrap, skipped pairs, two instances, and
