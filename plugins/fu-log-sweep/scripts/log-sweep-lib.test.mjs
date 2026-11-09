@@ -192,6 +192,32 @@ test('buildSignature: no app prefix falls back to first non-BCL frame', () => {
   assert.equal(r.confidence, 'first-frame');
   assert.equal(r.frame, 'Acme.Widgets.Orders.CompanyDetailProjector.Project');
 });
+// The shape of a real prod stack whose only non-BCL frames are a runtime-compiled
+// expression (`lambda_methodN`, renumbered every process) and the library that
+// called it. Each deploy filed it again under a new number.
+const compiledStack = (n) => [
+  "System.InvalidOperationException: Unable to resolve service for type 'System.Boolean' while attempting to activate 'Acme.Widgets.FormValidator'.",
+  '   at Microsoft.Extensions.DependencyInjection.ActivatorUtilities.ThrowHelperUnableToResolveService(Type type, Type requiredBy)',
+  `   at lambda_method${n}(Closure, IServiceProvider, Object[])`,
+  '   at FastEndpoints.ServiceResolver.CreateInstance(Type type, IServiceProvider serviceProvider)',
+  '   at FastEndpoints.Swagger.ValidationSchemaProcessor.ApplyValidationRule(JsonSchema schema, IValidationRule validationRule, String propertyName, IServiceProvider services, HashSet`1 activeChildValidators)',
+].join('\n');
+
+test('firstNonBclFrame: skips runtime-compiled lambda_methodN frames', () => {
+  assert.equal(firstNonBclFrame(compiledStack(666)), 'FastEndpoints.ServiceResolver.CreateInstance');
+});
+test('firstNonBclFrame: skips DynamicClass frames', () => {
+  const s = ['   at DynamicClass.lambda_method12(Closure, Object)', '   at Lib.Thing.Run()'].join('\n');
+  assert.equal(firstNonBclFrame(s), 'Lib.Thing.Run');
+});
+test('buildSignature: lambda_method number does not change the signature', () => {
+  const sigs = [658, 486, 666, 713].map((n) => buildSignature(
+    'System.InvalidOperationException', 'svc', compiledStack(n), 'Exception while processing X', ['Acme']));
+  assert.equal(new Set(sigs.map((r) => r.sig)).size, 1);
+  assert.equal(sigs[0].confidence, 'first-frame');
+  assert.equal(sigs[0].frame, 'FastEndpoints.ServiceResolver.CreateInstance');
+});
+
 test('buildSignature: no stack falls back to normalized message', () => {
   const r = buildSignature('E', 'a-api', '', 'Order 5 failed', ['Acme']);
   assert.equal(r.confidence, 'message');
