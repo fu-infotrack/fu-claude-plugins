@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# alert-watch — poll the Datadog alert inbox (Teams channel messages a Power
+# Automate flow writes into a OneDrive folder) and triage each alert:
+#   alert-triage.mjs handle  → deterministic routing + facts
+#   claude -p /fu-log-sweep:alert-triage <facts>   → the judgement, one fresh session
+#   alert-triage.mjs finish  → verdict check, notification, archive
+#
+#   alert-watch              poll forever (what the systemd unit runs)
+#   alert-watch --once       process the inbox once, then exit
+#   alert-watch install      copy this script to ~/.claude/alert-triage/ and enable
+#                            the fu-alert-watch systemd user service
+#   alert-watch uninstall    stop and remove the service (keeps logs and notes)
+#   ALERT_TRIAGE_DRY_RUN=1 alert-watch --once   observe mode: nothing moved, no
+#                            GitHub writes, no notification
+#   ALERT_TRIAGE_PLUGIN_DIR=<plugins/fu-log-sweep>  load the command from a checkout
+#                            (--plugin-dir) instead of the installed plugin
+#
+# It runs from a fixed path, not the plugin cache (whose path changes with every
+# version), and finds the plugin's scripts on each poll — so a plugin update takes
+# effect without reinstalling; reinstall only when this file changes.
+set -uo pipefail
+
+HOME_DIR=${ALERT_TRIAGE_HOME:-$HOME/.claude/alert-triage}
+LOG=$HOME_DIR/log
+UNIT=fu-alert-watch.service
+UNIT_PATH=$HOME/.config/systemd/user/$UNIT
+INTERVAL=${ALERT_TRIAGE_INTERVAL:-30}
+RUN_TIMEOUT=${ALERT_TRIAGE_RUN_TIMEOUT:-1800}
+
+mkdir -p "$HOME_DIR"
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+
+# The plugin's scripts dir: an explicit override, this file's own dir when run
+# from a checkout, else the newest installed version in the plugin cache.
+scripts_dir() {
+  if [ -n "${ALERT_TRIAGE_SCRIPTS:-}" ]; then echo "$ALERT_TRIAGE_SCRIPTS"; return; fi
+  local here; here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+  if [ -f "$here/alert-triage.mjs" ]; then echo "$here"; return; fi
+  find "$HOME/.claude/plugins/cache" -path '*/fu-log-sweep/*/scripts/alert-triage.mjs' 2>/dev/null \
+    | sed 's#/alert-triage.mjs$##' | sort -V | tail -1
+}
+
+case "${1:-}" in
+  install)
+    src=$(readlink -f "$0")
+    install -m 755 "$src" "$HOME_DIR/alert-watch"
+    mkdir -p "$(dirname "$UNIT_PATH")"
+    cat >"$UNIT_PATH" <<EOF
+[Unit]
+Description=Triage Datadog monitor alerts from the OneDrive inbox (fu-log-sweep)
+
+[Service]
+ExecStart=$HOME_DIR/alert-watch
+Environment=PATH=$HOME/.local/bin:$(dirname "$(command -v node)"):$(dirname "$(command -v claude)"):/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload && systemctl --user enable --now "$UNIT" \
+      && echo "installed: $HOME_DIR/alert-watch, $UNIT enabled. Log: $LOG" \
+      && echo "keep it running with no terminal open: loginctl enable-linger \"\$USER\""
+    exit $? ;;
+  uninstall)
+    systemctl --user disable --now "$UNIT" 2>/dev/null
+    rm -f "$UNIT_PATH" "$HOME_DIR/alert-watch"
+    systemctl --user daemon-reload
+    echo "removed $UNIT (logs and notes kept)"
+    exit 0 ;;
+esac
+
+# One watcher at a time, or two polls would triage the same alert.
+exec 9>"$HOME_DIR/watch.lock"
+flock -n 9 || { log "another alert-watch holds $HOME_DIR/watch.lock — exiting"; exit 0; }
+
+triage() {  # $1 file, $2 id, $3 facts, $4 cwd, $5 scripts
+  local f=$1 id=$2 facts=$3 cwd=$4 S=$5 model rc res
+  model=$(node "$S/alert-triage.mjs" config | jq -r '.model // empty')
+  log "$id triaging from $cwd"
+  # Default permission mode: in -p, a tool not allowed here is refused, never
+  # prompted. Not dontAsk — measured, it ignores prefix rules like Bash(cat:*)
+  # and denies every Bash call; only a blanket `Bash` got through.
+  ( cd "$cwd" && timeout "$RUN_TIMEOUT" claude -p "/fu-log-sweep:alert-triage $facts" \
+      ${model:+--model "$model"} ${ALERT_TRIAGE_PLUGIN_DIR:+--plugin-dir "$ALERT_TRIAGE_PLUGIN_DIR"} \
+      --allowedTools 'Bash(pup:*)' 'Bash(gh:*)' 'Bash(node:*)' 'Bash(cat:*)' 'Bash(jq:*)' Read Write Grep Glob Agent \
+      </dev/null ) >>"$HOME_DIR/run-$id.log" 2>&1
+  rc=$?
+  [ $rc -eq 0 ] || log "$id claude exited $rc (see $HOME_DIR/run-$id.log)"
+  res=$(node "$S/alert-triage.mjs" finish "$f")
+  log "$res"
+}
+
+while :; do
+  S=$(scripts_dir)
+  if [ -z "$S" ]; then
+    log "fu-log-sweep scripts not found (is the plugin installed?)"
+  else
+    inbox=$(node "$S/alert-triage.mjs" config | jq -r '.inbox')
+    if [ -z "$inbox" ] || [ ! -d "$inbox" ]; then
+      log "inbox '${inbox}' missing — set alert-triage.inbox in ~/.claude/fu-tools/config.json"
+    else
+      for f in "$inbox"/*.json; do
+        [ -e "$f" ] || continue
+        line=$(node "$S/alert-triage.mjs" handle "$f")
+        case "$line" in
+          TRIAGE*) IFS=$'\t' read -r _ id facts cwd <<<"$line"; triage "$f" "$id" "$facts" "$cwd" "$S" ;;
+          *) log "$line" ;;
+        esac
+      done
+    fi
+  fi
+  [ "${1:-}" = --once ] && break
+  sleep "$INTERVAL"
+done

@@ -5,7 +5,7 @@
   "owner": { "name": "fu-infotrack", "url": "https://github.com/fu-infotrack" },
   "plugins": [
     { "name": "fu-log-sweep", "source": "./plugins/fu-log-sweep", "category": "productivity",
-      "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature." },
+      "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature. Also triages Datadog monitor alerts against the same issues and flags upstream outages." },
     { "name": "fu-db-sweep", "source": "./plugins/fu-db-sweep", "category": "productivity",
       "description": "Weekly cloud routine: Datadog Database Monitoring for (repo, db) pairs into de-duped, report-only GitHub issues for prod query and instance problems." },
     { "name": "fu-review-prs", "source": "./plugins/fu-review-prs", "category": "productivity",
