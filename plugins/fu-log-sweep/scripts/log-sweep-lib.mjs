@@ -132,11 +132,16 @@ export function firstAppFrame(stackText, appNsPrefixes) {
   return null;
 }
 
-// First frame that is not a known BCL/framework frame — the fallback used when
-// no app prefix is configured or none matched.
+// A method the runtime compiled from an expression tree (DI activators,
+// compiled LINQ): `lambda_method666` / `DynamicClass.lambda_method12`. Its
+// number changes every process, so signing on it files one error per deploy.
+const COMPILED_FRAME_RE = /^(?:DynamicClass\.)?lambda_method\d+$/;
+
+// First frame that is not a known BCL/framework frame or a runtime-compiled
+// one — the fallback used when no app prefix is configured or none matched.
 export function firstNonBclFrame(stackText) {
   for (const f of parseFrames(stackText)) {
-    if (!isBclFrame(f)) return f;
+    if (!isBclFrame(f) && !COMPILED_FRAME_RE.test(f)) return f;
   }
   return null;
 }

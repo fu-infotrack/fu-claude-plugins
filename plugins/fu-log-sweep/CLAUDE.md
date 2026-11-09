@@ -15,6 +15,10 @@ error signature — `sha1(type|service|top-app-frame)` — and dedups GitHub iss
 that. Change the signature inputs and every previously filed issue stops matching, so
 treat it as a wire format.
 
+The frame is the first app-namespace frame, else the first non-BCL frame that is not
+runtime-compiled: `lambda_methodN` (DI activators, compiled expressions) is renumbered every
+process, and signing on it filed one prod error three times across deploys (0.3.1).
+
 ## The cloud routine (`routines/log-sweep.md`)
 
 The same sweep as one daily Claude Code routine over a list of repos, in the
