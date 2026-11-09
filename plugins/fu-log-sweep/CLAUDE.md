@@ -90,7 +90,7 @@ with `pup` (npm-installed, `DD_ACCESS_TOKEN`), with no connector:
   sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 
-## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.4.0
+## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.5.0
 
 Datadog monitor alerts reach Teams, a Power Automate flow copies each one into a OneDrive
 folder, and `alert-watch` (a systemd user service, in the shape of the user's standalone
@@ -100,7 +100,16 @@ alert path calls `buildSignature`, `issueMatchesBySig`, `classify` and `releaseC
 never copies them: an alert's error has to hash the same as the swept error, or the alert
 files a duplicate.
 
-- **Script / headless session / script.** `alert-triage.mjs handle` does all the reading:
+- **0.5.0: the watcher only forwards.** `alert-watch` now runs `alert-triage.mjs fire`, which
+  reads no Datadog and starts no session. A Triggered / Re-Triggered alert is POSTed to a
+  cloud routine's `/fire` endpoint (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from
+  `~/.claude/alert-triage/env`, which the user creates; nothing here writes a credential).
+  Everything else is archived. The judgement moved to the routine. The 0.4.0 path below
+  (`handle` / `claude -p` / `finish`) is kept for a manual run. Why the split: under systemd
+  the local triage had no `pup` auth, and the unit's `PATH` pointed at fnm's per-shell
+  multishell link, which goes away; `install` now resolves `node`'s real directory.
+  A 429 / 5xx / network error retries forever; any other refusal counts toward the 3-attempt cap.
+- **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
   monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
   `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
   each error (through the existing `log-triage-gate` and `log-investigator` agents) and
@@ -142,7 +151,7 @@ classification, nearby alerts and verdict validation. It also runs the CLI again
 `gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
 stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
 quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
-that moves nothing.
+that moves nothing. The `fire` cases run against a local routine server: non-triggers archived with no call, a trigger POSTed with the bearer and beta headers then archived, a missing URL or token and a 503 left in the inbox, and three 400s archived as "Not sent".
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a

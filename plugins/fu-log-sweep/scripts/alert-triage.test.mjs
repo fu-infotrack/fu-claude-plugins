@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { buildSignature, buildMarker } from './log-sweep-lib.mjs';
 import {
   parseAlertMessage, actionFor, logsQueryFromMonitor, alertLogsQuery, facetPath, signEvents,
-  classifyErrors, nearbyAlerts, validateVerdict, teamsReplyPayload, triggerFor, pushLine,
+  classifyErrors, nearbyAlerts, validateVerdict, teamsReplyPayload, triggerFor, pushLine, fireText,
 } from './alert-triage-lib.mjs';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), 'alert-triage.mjs');
@@ -316,4 +316,94 @@ test('dry run moves nothing and sends nothing', async () => {
   const t = s.put(alertMsg({ id: '98', createdMs: recentMs() }));
   const r = await s.run('handle', t, { ALERT_TRIAGE_DRY_RUN: '1' });
   assert.equal(JSON.parse(fs.readFileSync(r.stdout.split('\t')[2], 'utf8')).mode, 'observe');
+});
+
+// ---- fire: hand a trigger to the cloud routine ---------------------------------
+
+test('fireText carries the alert ids, window and archive path as JSON', () => {
+  const a = parseAlertMessage(alertMsg({ id: '5' })).alert;
+  const t = fireText(a, 'datadog-alerts/processed/5.json');
+  const j = JSON.parse(t.match(/```json\n([\s\S]*)\n```/)[1]);
+  assert.deepEqual([j.id, j.state, j.monitorId, j.eventId, j.teamId, j.file], ['5', 'Triggered', 42, '777', 'team-1', 'datadog-alerts/processed/5.json']);
+  assert.equal(j.fromIso, new Date(T0 - 16 * 60000).toISOString());
+});
+
+async function routine(statuses) {
+  const got = [];
+  const server = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      got.push({ url: req.url, headers: req.headers, body: JSON.parse(b) });
+      const status = statuses.length > 1 ? statuses.shift() : statuses[0];
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(status === 200 ? JSON.stringify({ claude_code_session_url: 'https://claude.ai/code/session_1' }) : '{"error":"nope"}');
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { got, url: `http://127.0.0.1:${server.address().port}/v1/claude_code/routines/trig_1/fire`, close: () => server.close() };
+}
+
+test('fire archives everything but a trigger, without calling the routine', async () => {
+  const rt = await routine([200]);
+  try {
+    const s = setup({ config: { fire_url: rt.url } });
+    const tok = { ALERT_TRIAGE_FIRE_TOKEN: 'tok' };
+    for (const [id, state] of [['1', 'Warn'], ['2', 'No Data'], ['3', 'Recovered']]) {
+      const f = s.put(alertMsg({ id, state, createdMs: recentMs() }));
+      assert.equal((await s.run('fire', f, tok)).stdout, `ARCHIVED ${id} ${state}`);
+      assert.ok(fs.existsSync(path.join(s.processed, `${id}.json`)));
+    }
+    assert.match((await s.run('fire', s.put({ id: '4', summary: 'hi' }), tok)).stdout, /^ARCHIVED 4 unparseable/);
+    assert.equal((await s.run('fire', s.put(alertMsg({ id: '5', createdMs: Date.now() - 48 * 3600000 })), tok)).stdout, 'ARCHIVED 5 stale');
+    assert.equal(rt.got.length, 0);
+    assert.ok(!fs.existsSync(path.join(s.fx, 'pup.log')));
+  } finally { rt.close(); }
+});
+
+test('fire POSTs a trigger to the routine with the bearer token, then archives', async () => {
+  const rt = await routine([200]);
+  try {
+    const s = setup({ config: { fire_url: rt.url } });
+    const f = s.put(alertMsg({ id: '10', state: 'Re-Triggered', createdMs: recentMs() }));
+    assert.equal((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, 'FIRED 10 https://claude.ai/code/session_1');
+    assert.equal(rt.got.length, 1);
+    const g = rt.got[0];
+    assert.equal(g.url, '/v1/claude_code/routines/trig_1/fire');
+    assert.equal(g.headers.authorization, 'Bearer tok');
+    assert.equal(g.headers['anthropic-beta'], 'experimental-cc-routine-2026-04-01');
+    assert.match(g.body.text, /"id": "10"/);
+    assert.match(g.body.text, /"file": "alerts\/processed\/10.json"/);
+    assert.ok(!fs.existsSync(f));
+    assert.match(fs.readFileSync(path.join(s.processed, '10.md'), 'utf8'), /session_1/);
+    assert.ok(!fs.existsSync(path.join(s.fx, 'pup.log')));
+  } finally { rt.close(); }
+});
+
+test('fire leaves a trigger in the inbox without a URL or token, or on a 5xx', async () => {
+  const rt = await routine([503]);
+  try {
+    const none = setup();
+    const f0 = none.put(alertMsg({ id: '20', createdMs: recentMs() }));
+    assert.equal((await none.run('fire', f0, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, 'RETRY 20 no alert-triage.fire_url configured');
+    const s = setup({ config: { fire_url: rt.url } });
+    const f = s.put(alertMsg({ id: '21', createdMs: recentMs() }));
+    assert.equal((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: '' })).stdout, 'RETRY 21 ALERT_TRIAGE_FIRE_TOKEN not set');
+    for (let i = 0; i < 4; i++) assert.match((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, /^RETRY 21 fire http 503/);
+    assert.ok(fs.existsSync(f));
+  } finally { rt.close(); }
+});
+
+test('fire gives up on a trigger the routine refuses three times', async () => {
+  const rt = await routine([400]);
+  try {
+    const s = setup({ config: { fire_url: rt.url } });
+    const f = s.put(alertMsg({ id: '30', createdMs: recentMs() }));
+    const tok = { ALERT_TRIAGE_FIRE_TOKEN: 'tok' };
+    assert.match((await s.run('fire', f, tok)).stdout, /^RETRY 30 fire http 400: .* \(attempt 1\/3\)$/);
+    assert.match((await s.run('fire', f, tok)).stdout, /\(attempt 2\/3\)$/);
+    assert.match((await s.run('fire', f, tok)).stdout, /^FAILED 30 fire http 400: .*archived after 3 attempts$/);
+    assert.ok(fs.existsSync(path.join(s.processed, '30.json')));
+    assert.match(fs.readFileSync(path.join(s.processed, '30.md'), 'utf8'), /Not sent/);
+  } finally { rt.close(); }
 });

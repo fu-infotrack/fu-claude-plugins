@@ -11,6 +11,13 @@
 //     RETRY <id> <reason>           leave it in the inbox for the next poll
 //   node alert-triage.mjs finish <file>   after the command: check its verdict,
 //     notify on an Authority-down verdict, archive. Prints DONE / RETRY / FAILED.
+//   node alert-triage.mjs fire <file>     what alert-watch runs: route one alert
+//     and hand a trigger to the cloud routine (`fire_url`, bearer token from
+//     $ALERT_TRIAGE_FIRE_TOKEN) instead of triaging it here. Prints ONE line:
+//     ARCHIVED <id> <reason>        anything but Triggered / Re-Triggered
+//     FIRED <id> <session url|->    the routine accepted it; alert archived
+//     RETRY <id> <reason>           left in the inbox for the next poll
+//     FAILED <id> <reason>          refused 3 times; archived with a note
 //   node alert-triage.mjs config          the resolved config (JSON)
 //
 // Archiving moves the alert JSON to processed/ next to the inbox; that move is
@@ -25,7 +32,7 @@ import { mergeConfig } from './log-sweep-lib.mjs';
 import { pupRunner } from './collect.mjs';
 import {
   parseAlertMessage, actionFor, alertLogsQuery, tagValues, signEvents, classifyErrors,
-  nearbyAlerts, validateVerdict, pushLine, teamsReplyPayload, recoveryLine, triggerFor,
+  nearbyAlerts, validateVerdict, pushLine, teamsReplyPayload, recoveryLine, triggerFor, fireText,
 } from './alert-triage-lib.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -59,6 +66,8 @@ function loadConfig() {
     authorityPrompt: c.authority_prompt || null,
     toast: c.toast !== false,
     model: c.model || null,
+    fireUrl: c.fire_url || null,
+    fireToken: process.env.ALERT_TRIAGE_FIRE_TOKEN || null,
   };
 }
 
@@ -282,8 +291,62 @@ async function finish(file, cfg) {
   return out(`DONE ${a.id} ${head}${sent.length ? ` [${sent.join('; ')}]` : ''}`);
 }
 
+// Route one alert without reading Datadog: everything but a trigger is
+// archived, a trigger is POSTed to the routine and archived once accepted.
+async function fire(file, cfg) {
+  const msg = readJson(file);
+  const r = parseAlertMessage(msg);
+  const id = (msg && msg.id) || path.basename(file, '.json');
+  const p = paths(file, id);
+  if (!r.ok) { archive(file, p.json); return out(`ARCHIVED ${id} unparseable: ${r.error}`); }
+  const a = r.alert;
+  if (cfg.monitors.length && !cfg.monitors.includes(a.monitorId)) { archive(file, p.json); return out(`ARCHIVED ${id} monitor ${a.monitorId} not in scope`); }
+  if (actionFor(a.state) !== 'triage') { archive(file, p.json); return out(`ARCHIVED ${id} ${a.state}`); }
+  if (a.createdMs && Date.now() - a.createdMs > cfg.maxAgeHours * 3600 * 1000) {
+    writeNote(p.note, `**Not sent** — ${a.state} ${a.title} arrived ${Math.round((Date.now() - a.createdMs) / 3600000)}h late (limit ${cfg.maxAgeHours}h).\n`);
+    archive(file, p.json);
+    return out(`ARCHIVED ${id} stale`);
+  }
+  if (!cfg.fireUrl) return out(`RETRY ${id} no alert-triage.fire_url configured`);
+  if (!cfg.fireToken) return out(`RETRY ${id} ALERT_TRIAGE_FIRE_TOKEN not set`);
+  const rel = path.join(path.basename(path.dirname(p.dir)), 'processed', `${id}.json`);
+  const text = fireText(a, rel);
+  if (DRY) return out(`FIRED ${id} dry-run (${text.length} chars, not sent)`);
+  let status = 0; let body = null; let err = null;
+  try {
+    const res = await fetch(cfg.fireUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.fireToken}`, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'experimental-cc-routine-2026-04-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(30000),
+    });
+    status = res.status;
+    body = await res.text();
+  } catch (e) { err = e.name; }
+  if (status >= 200 && status < 300) {
+    let session = '-';
+    try { const j = JSON.parse(body); session = j.claude_code_session_url || j.session_url || j.claude_code_session_id || j.session_id || '-'; } catch { /* not JSON */ }
+    writeNote(p.note, `**${a.state}** ${a.title}\n\nSent to the triage routine: ${session}\n`);
+    archive(file, p.json);
+    try { fs.rmSync(p.attempts); } catch { /* none */ }
+    return out(`FIRED ${id} ${session}`);
+  }
+  const why = err ? `fire failed (${err})` : `fire http ${status}: ${String(body || '').replace(/\s+/g, ' ').slice(0, 200)}`;
+  // A network error or a 429/5xx is worth waiting out; anything else counts.
+  if (err || status === 429 || status >= 500) return out(`RETRY ${id} ${why}`);
+  fs.mkdirSync(p.dir, { recursive: true });
+  const attempts = (Number(readJson(p.attempts)) || 0) + 1;
+  fs.writeFileSync(p.attempts, String(attempts));
+  if (attempts < MAX_ATTEMPTS) return out(`RETRY ${id} ${why} (attempt ${attempts}/${MAX_ATTEMPTS})`);
+  writeNote(p.note, `**Not sent** — the routine refused it ${attempts} times: ${why}.\n`);
+  archive(file, p.json);
+  try { fs.rmSync(p.attempts); } catch { /* gone */ }
+  return out(`FAILED ${id} ${why}; archived after ${attempts} attempts`);
+}
+
 const [, , cmd, file] = process.argv;
 const cfg = loadConfig();
-if (cmd === 'config') out(JSON.stringify({ ...cfg, teamsWebhook: cfg.teamsWebhook ? '<set>' : null }));
+if (cmd === 'config') out(JSON.stringify({ ...cfg, teamsWebhook: cfg.teamsWebhook ? '<set>' : null, fireToken: cfg.fireToken ? '<set>' : null }));
+else if (cmd === 'fire' && file) await fire(file, cfg);
 else if ((cmd === 'handle' || cmd === 'finish') && file) await (cmd === 'handle' ? handle : finish)(file, cfg);
-else { process.stderr.write('usage: alert-triage.mjs handle|finish <alert.json> | config\n'); process.exit(2); }
+else { process.stderr.write('usage: alert-triage.mjs fire|handle|finish <alert.json> | config\n'); process.exit(2); }
