@@ -39,7 +39,7 @@ Setup and the prompt to paste are in [`routines/log-sweep.md`](routines/log-swee
 
 ## Alert triage (`alert-watch` → cloud routine)
 
-Triages Datadog **monitor alerts** as they fire. A Power Automate flow copies
+Triages Datadog **monitor alerts** as they fire. The judgement runs in a cloud routine; its setup and prompt are in [`routines/alert-triage.md`](routines/alert-triage.md). A Power Automate flow copies
 each Datadog → Teams alert message (a Microsoft Graph channel message, JSON)
 into a OneDrive folder. `alert-watch`, a systemd user service, polls that
 folder and runs `alert-triage.mjs fire` on each file. That step is dumb on
