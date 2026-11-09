@@ -90,11 +90,59 @@ with `pup` (npm-installed, `DD_ACCESS_TOKEN`), with no connector:
   sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 
+## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.4.0
+
+Datadog monitor alerts reach Teams, a Power Automate flow copies each one into a OneDrive
+folder, and `alert-watch` (a systemd user service, in the shape of the user's standalone
+`teams-pr-watch`) triages them. It is in this plugin, not a separate repo, because the
+question "does this error already have a ticket?" is the sweep's signature and dedup. The
+alert path calls `buildSignature`, `issueMatchesBySig`, `classify` and `releaseCheck`, and
+never copies them: an alert's error has to hash the same as the swept error, or the alert
+files a duplicate.
+
+- **Script / headless session / script.** `alert-triage.mjs handle` does all the reading:
+  monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
+  `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
+  each error (through the existing `log-triage-gate` and `log-investigator` agents) and
+  whether an Authority is down. Its signal that the triage finished is the verdict file.
+  `finish` validates that file and is the only part that notifies. Every alert gets its own
+  session, not a `/loop` tick, so context never builds up across alerts.
+- **Archiving is the idempotency.** The alert JSON moves to `processed/` only in `finish`, or
+  for Warn / No Data / Recovered / out of scope / stale / unparseable. A failed run leaves it
+  in the inbox, and `<id>.attempts` caps the retries at 3.
+- **Status lines are tab-separated.** The paths sit under `OneDrive - <Org>`, which has spaces.
+- **The watcher runs outside the plugin cache.** Same reason as `fu-statusline`: the cache path
+  changes with every version. `alert-watch install` copies it to `~/.claude/alert-triage/`,
+  and on each poll it finds the newest cached `scripts/`. So a plugin update needs no
+  reinstall unless `alert-watch` itself changed.
+- **Permissions: `--allowedTools` prefix rules in the default mode, not `dontAsk`.**
+  Measured 2026-11-10: under `--permission-mode dontAsk`, `Bash(cat:*)` and `Bash(cat *)`
+  were both ignored and every Bash call was denied (only a blanket `Bash` worked). The first
+  dry run therefore triaged with no `pup` at all. In the default mode, `-p` honours both
+  forms and refuses anything unlisted without prompting.
+- **Company specifics stay in config.** The inbox path, monitor ids and the Authority list
+  (`authority_prompt`) live in `fu-tools` `alert-triage`, never in the repo.
+- **Measured on the first two real alerts** (2026-11-10, a log monitor with `> 0` errors in
+  10 m). Each alert was one EF Core `CommandError` log line with no exception type and no
+  stack, so the sweep would never have bucketed it. That is why a log line is signed under
+  its logger name (`EventId.Name`, then `SourceContext`). `pup monitors get` returns the
+  monitor unwrapped (no `.data`). `pup traces aggregate` returned no buckets even for an
+  unfiltered service query, and rejects `--limit`, so the outbound-span comparison is the
+  model's job, through `pup traces search`.
+
 ## Tests
 
 ```bash
 node --test plugins/fu-log-sweep/scripts/*.test.mjs
 ```
+
+`alert-triage.test.mjs` covers the alert lib: card parsing, the monitor-query unescape, a
+signature equal to the sweep's, the logger-name fallback, open / regression / held / new
+classification, nearby alerts and verdict validation. It also runs the CLI against `pup` and
+`gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
+stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
+quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
+that moves nothing.
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a
