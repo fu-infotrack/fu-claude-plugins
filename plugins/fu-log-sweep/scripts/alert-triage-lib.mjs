@@ -232,17 +232,3 @@ export function triggerFor(recovery, triggers) {
     .filter((t) => t.monitorId === recovery.monitorId && (!recovery.atMs || !t.atMs || t.atMs <= recovery.atMs))
     .sort((a, b) => (b.atMs || 0) - (a.atMs || 0))[0] || null;
 }
-
-// The text alert-watch sends a cloud routine's /fire endpoint for one
-// triggered alert: everything the routine needs to start, so it never has to
-// find the alert in OneDrive. `file` is where the alert JSON is archived.
-export function fireText(alert, file) {
-  const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
-  const facts = {
-    id: alert.id, state: alert.state, title: alert.title,
-    monitorId: alert.monitorId, monitorUrl: alert.monitorUrl, eventId: alert.eventId, site: alert.site,
-    fromIso: iso(alert.fromMs), toIso: iso(alert.toMs), createdIso: iso(alert.createdMs),
-    teamId: alert.teamId, channelId: alert.channelId, webUrl: alert.webUrl, file,
-  };
-  return `Datadog alert to triage (sent by alert-watch):\n\n\`\`\`json\n${JSON.stringify(facts, null, 2)}\n\`\`\`\n`;
-}

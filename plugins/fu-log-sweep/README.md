@@ -42,14 +42,14 @@ Setup and the prompt to paste are in [`routines/log-sweep.md`](routines/log-swee
 Triages Datadog **monitor alerts** as they fire. A Power Automate flow copies
 each Datadog → Teams alert message (a Microsoft Graph channel message, JSON)
 into a OneDrive folder. `alert-watch`, a systemd user service, polls that
-folder and runs `alert-triage.mjs fire` on each file. That step reads no
-Datadog and starts no local session; it only sorts:
+folder and runs `alert-triage.mjs fire` on each file. That step is dumb on
+purpose: no card parsing, no Datadog, no local session.
 
-| `[state]` in the summary | What happens |
+| Message | What happens |
 |---|---|
-| `Triggered`, `Re-Triggered` | POSTed to the triage routine's `/fire` endpoint, then archived |
-| `Recovered`, `Warn`, `No Data` | archived |
-| out of scope, older than `max_age_hours`, unparseable | archived |
+| `summary` starts with `[Triggered]` | the file's raw JSON is POSTed as the routine's fire `text`, then archived |
+| anything else (`[Recovered]`, `[Re-Triggered]`, `[Warn]`, a human reply…) | archived |
+| older than `max_age_hours` | archived, "Not sent" note |
 
 Archiving moves the JSON to `processed/` next to `inbox/`. That move is what
 stops an alert being sent twice. The note `<id>.md` beside it links the
@@ -57,9 +57,10 @@ routine's session. A 429, a 5xx or a network error leaves the alert in the
 inbox for the next poll. Any other refusal counts as an attempt, and after 3
 the alert is archived with a "Not sent" note.
 
-The fire payload is `{"text": …}`: the alert's ids, state, title, monitor,
-alert window and the Teams team/channel/message ids, as a JSON block. The
-routine gets everything it needs from that, so it never has to search OneDrive.
+The fire payload is `{"text": "<the Graph message JSON, verbatim>"}` (about
+10 KB, most of it the Mute card). Reading the Adaptive Card — the monitor link
+and window, the monitored query, the monitor tags (`repo:…`), the count — is
+the routine's job, so a change to Datadog's card never breaks the watcher.
 
 The routine's bearer token is read from `$ALERT_TRIAGE_FIRE_TOKEN`. The watcher
 loads it from `~/.claude/alert-triage/env` (`KEY=value` lines). Create that
@@ -85,7 +86,6 @@ Config is the `fu-tools` tool key `alert-triage` (user config):
 |---|---|---|
 | `inbox` | — (required) | the folder the flow writes to; `processed/` is its sibling |
 | `fire_url` | — (required) | the routine's `…/routines/<trig_id>/fire` URL |
-| `monitors` | all | monitor ids in scope; others are archived untouched |
 | `max_age_hours` | `24` | older alerts (a backlog after downtime) are archived unsent |
 
 ### Local triage (manual)
@@ -97,7 +97,7 @@ error logs signed with log-sweep's `buildSignature`, matched against the repo's
 `claude -p "/fu-log-sweep:alert-triage <facts>"` judges it (link, reopen or file,
 and whether an upstream Authority is down), and `alert-triage.mjs finish`
 validates the verdict, notifies (`toast`, `teams_webhook`) and archives. Its
-keys: `repo_root`, `mode`, `teams_webhook`, `authority_prompt`, `toast`, `model`.
+keys: `monitors`, `repo_root`, `mode`, `teams_webhook`, `authority_prompt`, `toast`, `model`.
 
 ## Tests
 

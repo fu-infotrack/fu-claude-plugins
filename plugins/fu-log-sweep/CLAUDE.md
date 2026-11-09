@@ -101,7 +101,8 @@ never copies them: an alert's error has to hash the same as the swept error, or 
 files a duplicate.
 
 - **0.5.0: the watcher only forwards.** `alert-watch` now runs `alert-triage.mjs fire`, which
-  reads no Datadog and starts no session. A Triggered / Re-Triggered alert is POSTed to a
+  reads no Datadog, starts no session and parses no card: a message whose `summary` starts
+  with `[Triggered]` is POSTed verbatim (the raw Graph JSON as the fire `text`) to a
   cloud routine's `/fire` endpoint (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from
   `~/.claude/alert-triage/env`, which the user creates; nothing here writes a credential).
   Everything else is archived. The judgement moved to the routine. The 0.4.0 path below
@@ -151,7 +152,7 @@ classification, nearby alerts and verdict validation. It also runs the CLI again
 `gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
 stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
 quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
-that moves nothing. The `fire` cases run against a local routine server: non-triggers archived with no call, a trigger POSTed with the bearer and beta headers then archived, a missing URL or token and a 503 left in the inbox, and three 400s archived as "Not sent".
+that moves nothing. The `fire` cases run against a local routine server: non-`[Triggered]` summaries (incl. Re-Triggered and a human reply) archived with no call, a trigger POSTed verbatim with the bearer and beta headers then archived, a missing URL or token and a 503 left in the inbox, and three 400s archived as "Not sent".
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a
