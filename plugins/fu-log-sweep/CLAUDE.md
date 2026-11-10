@@ -132,6 +132,16 @@ files a duplicate.
     so the dispatcher now installs it once, with a `/usr/local/bin/pup` wrapper.
   - 5 of the 6 files were one monitor firing, so it took 5 Sonnet agents (~85k tokens each) to reach one
     answer. The prompt now groups triggers by `monitorId`.
+- **The Authority check is a guideline with a confidence, not a rule** (measured 2026-11-10 on 30 days of prod
+  client spans). The .NET tracer marks only 4xx client responses as errors, so an upstream's 5xx is `status:ok`:
+  match `@http.status_code:[500 TO 599]`, never `status:error` alone. No answer is `status:error` with no status
+  code (`TaskCanceledException` at the client's full timeout, `HttpRequestException`). The service that alerts
+  usually does not call the Authority (a delivery service does), so the check searches by the Authority's host —
+  searching the alerting service found nothing on every run. Some Authorities return business faults as 500 every
+  day, so a 500 is only judged against the hour before. Our own egress, DNS or certificates look identical, so the
+  verdict is `likely` (corroborated, nothing on our side) or `confirmed` (the Authority says so), never certain.
+  The Authority list (`AUTHORITIES`: hosts, calling services, status page) is company data: it is filled in the
+  live routine only, and the repo prompt ships it empty.
 - **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
   monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
   `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
