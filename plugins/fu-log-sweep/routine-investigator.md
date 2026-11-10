@@ -163,7 +163,7 @@ signature marker (the orchestrator adds it):
 - `<short-sha>` <date> <author-login> — <subject> (#<pr>)
 
 ---
-*Auto-filed by the log-sweep routine. Regressions reopen this issue rather than
+*Auto-filed by fu-log-sweep (the daily sweep or a Datadog alert). Regressions reopen this issue rather than
 filing a new one. The root-cause section is a draft, not a verdict.*
 ```
 

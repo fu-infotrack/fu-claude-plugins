@@ -15,6 +15,9 @@
 //   node routine.mjs plan
 //   node routine.mjs wait investigate
 //   node routine.mjs finish
+// and, for the Datadog Ops alert routine (one alert's error, same investigator):
+//   node routine.mjs alert-candidate <input.json>
+//   node routine.mjs alert-file <sig> [--live]
 // The handoff between steps is on disk, in $HOME/.claude/log-sweep/routine/.
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -398,8 +401,97 @@ function wait(stage) {
   say(`TIMEOUT ${files.length - missing.length}/${files.length} — missing: ${missing.map((x) => path.basename(x)).join(', ')}`);
 }
 
+// ---- Datadog Ops: one alert's error through the same investigator -----------
+// The alert routine finds and classifies an error itself (from the monitor's
+// window), then hands it here so the writeup, the labels and the filing are the
+// sweep's: `alert-candidate` writes the investigator's input files and prints
+// its block; `alert-file` validates the verdict and files it. Its own directory,
+// so a sweep's `prepare` never clears it.
+const ALERT_DIR = path.join(os.homedir(), '.claude', 'log-sweep', 'alert');
+const af = (name) => path.join(ALERT_DIR, name);
+
+// The input is a JSON file the alert routine writes: {repo, classification
+// (NEW|REGRESSION), number (REGRESSION), errorKind, service, env, count,
+// message, stack, timestamp, windowStartIso, windowEndIso, bucketQuery,
+// stackPath, appNamespace, logsUrl, ddSite, versions, postFixCount}.
+function alertCandidate(inputPath) {
+  let a;
+  try { a = readJson(inputPath); } catch (e) { return say(`FAILED — input unreadable: ${firstLine(e)}`); }
+  for (const k of ['repo', 'errorKind', 'service', 'bucketQuery', 'windowStartIso', 'windowEndIso']) {
+    if (typeof a[k] !== 'string' || !a[k]) return say(`FAILED — input needs "${k}"`);
+  }
+  if (!['NEW', 'REGRESSION'].includes(a.classification)) return say('FAILED — classification must be NEW or REGRESSION');
+  if (a.classification === 'REGRESSION' && !Number.isInteger(a.number)) return say('FAILED — a REGRESSION needs the closed issue "number"');
+  const sourceDir = findClones([a.repo])[a.repo];
+  if (!sourceDir) return say(`FAILED — ${a.repo} is not attached to the routine (no clone found)`);
+
+  const appNamespace = Array.isArray(a.appNamespace) ? a.appNamespace : a.appNamespace ? [a.appNamespace] : [];
+  const { sig, frame, confidence } = buildSignature(a.errorKind, a.service, a.stack || '', a.message || '', appNamespace);
+  const errorMessage = (a.message || '').split('\n')[0];
+  const ddSite = (a.ddSite || DEFAULT_SITE).replace(/\/$/, '');
+  fs.mkdirSync(ALERT_DIR, { recursive: true });
+  const cand = {
+    sig, repo: a.repo, classification: a.classification, number: a.number ?? null,
+    errorKind: a.errorKind, service: a.service, env: a.env || 'prod', count: Number(a.count) || 1, frame, confidence,
+    errorMessage, lastSeenIso: a.timestamp || a.windowEndIso, windowStartIso: a.windowStartIso, windowEndIso: a.windowEndIso,
+    title: buildTitle(a.errorKind, frame || errorMessage), bucketQuery: a.bucketQuery,
+    stackPath: a.stackPath || 'attributes.attributes.error.stack', ddSite,
+    logsUrl: a.logsUrl || `${ddSite}/logs?query=${encodeURIComponent(a.bucketQuery)}`,
+    postFixCount: a.postFixCount ?? null, versions: a.versions ?? null,
+    candidateFile: af(`cand-${sig}.json`), sampleFile: af(`sample-${sig}.json`), outputFile: af(`inv-${sig}.json`),
+    sourceDir,
+  };
+  fs.rmSync(cand.outputFile, { force: true });
+  writeJson(cand.candidateFile, cand);
+  writeJson(cand.sampleFile, [{ timestamp: cand.lastSeenIso, message: a.message || '', stack: a.stack || '' }]);
+  say(`CANDIDATE ${sig} ${a.classification}${a.number ? ` #${a.number}` : ''} — ${cand.title}`);
+  block(`investigator ${sig}`, [
+    `Read ${path.join(PLUGIN, 'routine-investigator.md')} and follow it exactly. Your inputs:`,
+    '',
+    `CANDIDATE_FILE=${cand.candidateFile}`,
+    `SAMPLE_FILE=${cand.sampleFile}`,
+    `OUTPUT_FILE=${cand.outputFile}`,
+    `SOURCE_DIR=${cand.sourceDir}`,
+  ]);
+}
+
+// Validate the verdict and file it the sweep's way. The issue list is read
+// again first: alerts triage in parallel runs, and the daily sweep may have
+// filed the same signature since the alert routine looked.
+function alertFile(sig, live) {
+  if (!/^[0-9a-f]{8,40}$/.test(sig || '')) return say('FAILED — usage: alert-file <sig> [--live]');
+  let c;
+  try { c = readJson(af(`cand-${sig}.json`)); } catch { return say(`FAILED — no candidate for ${sig}; run alert-candidate first`); }
+  let res;
+  try { res = validateInvestigation(readJson(c.outputFile), c.classification); } catch (e) { res = { ok: false, error: `no verdict file (${firstLine(e)})` }; }
+  if (!res.ok) return say(`FAILED ${sig}: ${res.error}`);
+  const v = res.value;
+  if (!v.actionable) return say(`DROPPED ${sig}: ${v.reason}`);
+
+  let matches;
+  try { matches = issueMatchesBySig(ghPages(`repos/${c.repo}/issues?state=all&labels=datadog-logs`))[sig] || []; } catch (e) {
+    return say(`FAILED ${sig}: could not list the datadog-logs issues (${firstLine(e)}), so nothing filed`);
+  }
+  const cls = classify(matches);
+  if (cls.kind === 'ALREADY_OPEN') return say(`LINKED #${cls.number} ${sig}: opened meanwhile`);
+  if (cls.kind === 'REGRESSION' && c.classification === 'NEW') {
+    return say(`FAILED ${sig}: closed #${cls.number} appeared meanwhile; classify it as REGRESSION and run alert-candidate again`);
+  }
+  const action = c.classification === 'NEW' ? 'create' : `reopen #${c.number}`;
+  if (!live) return say(`WOULD ${action} (${v.severity}) ${sig} — ${c.title} — ${v.reason}`);
+  try { return say(`FILED ${fileOne(c, v)} — ${v.reason}`); } catch (e) {
+    say(`FAILED ${sig}: ${action} failed (${firstLine(e)}) — drafted body follows`);
+    say(v.body);
+    if (v.comment) { say('--- comment ---'); say(v.comment); }
+  }
+}
+
 const [, , cmd, ...args] = process.argv;
-const commands = { prepare: () => prepare(args), collect, plan, finish, wait: () => wait(args[0]) };
+const commands = {
+  prepare: () => prepare(args), collect, plan, finish, wait: () => wait(args[0]),
+  'alert-candidate': () => alertCandidate(args[0]),
+  'alert-file': () => alertFile(args.find((x) => !x.startsWith('--')), args.includes('--live')),
+};
 if (!commands[cmd]) {
   process.stderr.write(`unknown command: ${cmd}\n`);
   process.exit(1);

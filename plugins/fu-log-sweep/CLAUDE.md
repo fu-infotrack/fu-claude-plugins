@@ -90,7 +90,7 @@ with `pup` (npm-installed, `DD_ACCESS_TOKEN`), with no connector:
   sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 
-## Alert triage (`routines/datadog-ops.md`) — v0.6.0
+## Alert triage (`routines/datadog-ops.md`) — v0.7.0
 
 A Datadog notification rule sends each Alert-state notification of a monitor tagged
 `aiops:true` to a webhook that fires the **Datadog Ops** cloud routine — one run per alert,
@@ -147,6 +147,19 @@ duplicate of a swept error.
   note; and hands the root-cause writeup to an Opus agent (the one deep task, and rare),
   keeping Sonnet for the triage. Haiku is out: in the OneDrive batch it truncated an id and
   reported a move that never happened.
+- **The writeup is the sweep's investigator** (0.7.0). 0.6.0's Opus agent had its own brief
+  (Summary / Evidence / Root cause / Proposed fix) and the model filed with only the
+  `datadog-logs` label, so an alert's issue read differently from a swept one for the same
+  error and skipped the investigator's downstream-trace and recent-commits steps. Now the
+  run writes the group as JSON, `routine.mjs alert-candidate` signs it and writes the
+  investigator's candidate and sample files (in `~/.claude/log-sweep/alert/`, which a
+  sweep's `prepare` never clears), the run starts the printed `routine-investigator.md`
+  block as an Opus agent, and `alert-file <sig> [--live]` validates the verdict and files
+  it with the sweep's `fileOne` (marker, `auto-filed`, `sev:`; a regression's comment). The
+  investigator's own noise check runs after the alert's severity rule, so an error can
+  still end `DROPPED`. `alert-file` re-lists the issues first: an open match is `LINKED`,
+  and a closed one that appeared after the run classified the error NEW fails rather than
+  filing a duplicate.
 - **Concurrency.** Alerts now triage in parallel runs, so a run lists the issues again
   right before filing. API fires are capped at 30 an hour per routine, and Datadog does
   not retry a 4xx, so an alert storm past the cap is not triaged.
@@ -171,4 +184,7 @@ failed collection not stopping the other, a failed sample skipped, a nested
 (window from the configured issue, every call repo-scoped, create-then-close with
 the "add to `stateIssues`" hint and no label, update in place, a markerless or
 non-numeric entry never written, not saved on observe, a failed candidate or an
-unreadable issue).
+unreadable issue). The `alert:` tests cover the Datadog Ops path: `alert-candidate`
+signing and printing the investigator block with no GitHub call, bad input, `alert-file`
+observe vs live, the sweep's labels and marker, a regression's reopen comment, and an issue
+opened meanwhile, a noise verdict and a malformed verdict making no write.

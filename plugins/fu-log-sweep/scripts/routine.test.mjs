@@ -365,3 +365,73 @@ test('state: observe saves nothing', () => {
   assert.doesNotMatch(steps(t, '--observe', config()), /state saved/);
   assert.doesNotMatch(t.ghLog(), /--method/);
 });
+
+// ---- Datadog Ops: alert-candidate → the same investigator → alert-file ------
+const alertDir = (t) => path.join(path.dirname(t.dir), 'alert');
+const alertInput = (t, b, extra = {}) => {
+  const p = path.join(t.fx, `alert-${b.errorKind}.json`);
+  fs.writeFileSync(p, JSON.stringify({
+    repo: WIDGETS, classification: 'NEW', errorKind: b.errorKind, service: b.service, env: 'prod', count: 1,
+    message: b.samples[0].message, stack: b.samples[0].stack, timestamp: b.samples[0].timestamp,
+    windowStartIso: '2026-10-22T07:50:00Z', windowEndIso: '2026-10-22T08:00:00Z',
+    bucketQuery: bucketQ(b, '@error.kind'), appNamespace: NS, ...extra,
+  }));
+  return p;
+};
+const alertVerdict = (t, b, v) => fs.writeFileSync(path.join(alertDir(t), `inv-${sigOf(b)}.json`), JSON.stringify(v));
+const ISSUE = { actionable: true, reason: 'users saw a 500', severity: 'high', body: 'drafted <!-- dd-log-sig: deadbeef -->' };
+
+test('alert: alert-candidate signs the error and prints the sweep investigator block', () => {
+  const t = setup();
+  const out = t.run(['alert-candidate', alertInput(t, NEW)]);
+  assert.equal(out.split('\n')[0], `CANDIDATE ${sigOf(NEW)} NEW — [Datadog] NewError: Acme.Orders.Create`);
+  assert.deepEqual(prompts(out), [`--- investigator ${sigOf(NEW)} ---`]);
+  assert.match(out, /routine-investigator\.md and follow it exactly/);
+  assert.equal(value(out, 'SOURCE_DIR'), t.dirs[WIDGETS]);
+  const c = JSON.parse(fs.readFileSync(value(out, 'CANDIDATE_FILE'), 'utf8'));
+  assert.equal(c.frame, 'Acme.Orders.Create');
+  assert.equal(c.confidence, 'app-frame');
+  assert.equal(c.logsUrl, `https://ap2.datadoghq.com/logs?query=${encodeURIComponent(bucketQ(NEW, '@error.kind'))}`);
+  assert.equal(JSON.parse(fs.readFileSync(value(out, 'SAMPLE_FILE'), 'utf8'))[0].stack, NEW.samples[0].stack);
+  assert.equal(t.ghLog(), '', 'no GitHub call before filing');
+});
+
+test('alert: bad input fails before writing anything', () => {
+  const t = setup();
+  assert.match(t.run(['alert-candidate', alertInput(t, NEW, { classification: 'REGRESSION' })]), /^FAILED — a REGRESSION needs the closed issue "number"/);
+  assert.match(t.run(['alert-candidate', alertInput(t, NEW, { repo: 'acme/missing' })]), /^FAILED — acme\/missing is not attached/);
+  assert.match(t.run(['alert-file', sigOf(NEW), '--live']), /^FAILED — no candidate/);
+});
+
+test('alert: alert-file files a NEW issue the sweep way, live only', () => {
+  const t = setup();
+  t.run(['alert-candidate', alertInput(t, NEW)]);
+  alertVerdict(t, NEW, ISSUE);
+  assert.match(t.run(['alert-file', sigOf(NEW)]), new RegExp(`^WOULD create \\(high\\) ${sigOf(NEW)} — `));
+  assert.doesNotMatch(t.ghLog(), /--method/);
+  assert.match(t.run(['alert-file', sigOf(NEW), '--live']), /^FILED #42 created \(high\) — \[Datadog\] NewError: Acme\.Orders\.Create — users saw a 500/);
+  const created = JSON.parse(t.read('widgets/created.jsonl').trim());
+  assert.deepEqual(created.labels, ['datadog-logs', 'auto-filed', 'sev:high']);
+  assert.equal(created.body, `<!-- dd-log-sig: ${sigOf(NEW)} -->\n\ndrafted`, 'our marker only');
+});
+
+test('alert: alert-file reopens a REGRESSION with the investigator comment', () => {
+  const t = setup();
+  t.run(['alert-candidate', alertInput(t, BACK, { classification: 'REGRESSION', number: 8 })]);
+  alertVerdict(t, BACK, { ...ISSUE, comment: 'regressed' });
+  assert.match(t.run(['alert-file', sigOf(BACK), '--live']), /^FILED #8 reopened \(high\)/);
+  assert.equal(JSON.parse(t.read('widgets/comment.json')).body, 'regressed');
+});
+
+test('alert: alert-file links an issue opened meanwhile, drops noise, rejects a bad verdict', () => {
+  const t = setup();
+  t.run(['alert-candidate', alertInput(t, OPEN)]);
+  alertVerdict(t, OPEN, ISSUE);
+  assert.match(t.run(['alert-file', sigOf(OPEN), '--live']), /^LINKED #5 /);
+  t.run(['alert-candidate', alertInput(t, NEW)]);
+  alertVerdict(t, NEW, { actionable: false, reason: 'client cancelled' });
+  assert.match(t.run(['alert-file', sigOf(NEW), '--live']), /^DROPPED [0-9a-f]+: client cancelled/);
+  alertVerdict(t, NEW, { actionable: true, reason: 'x' });
+  assert.match(t.run(['alert-file', sigOf(NEW), '--live']), /^FAILED [0-9a-f]+: severity must be/);
+  assert.doesNotMatch(t.ghLog(), /--method/);
+});
