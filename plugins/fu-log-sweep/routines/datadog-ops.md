@@ -3,8 +3,8 @@
 Triages one Datadog monitor alert per run. A Datadog webhook fires the routine
 directly; nothing runs locally.
 
-- **Trigger:** a monitor notification rule sends Alert-state notifications to the
-  `datadog-ops` webhook, which POSTs to the routine's `/fire` endpoint.
+- **Trigger:** a monitor notification rule sends Alert-state notifications to a
+  Datadog webhook (here `compliance-ai-ops-fu`), which POSTs to the routine's `/fire` endpoint.
 - **What a run does:** reads the monitor with `pup` (name, tags, `repo:`, logs
   query, window), signs the errors in the window with this repo's
   `buildSignature`, matches them to the repo's `datadog-logs` issues (linked /
@@ -33,7 +33,7 @@ ships empty here.
 
 ## Datadog side
 
-**Webhook** (Integrations → Webhooks), named `datadog-ops`:
+**Webhook** (Integrations → Webhooks), e.g. `compliance-ai-ops-fu`:
 
 - URL: `https://api.anthropic.com/v1/claude_code/routines/<trig_id>/fire`
 - Custom headers:
@@ -48,15 +48,18 @@ ships empty here.
   {"text":"monitor_id: $ALERT_ID\ntransition: $ALERT_TRANSITION\ncycle_key: $ALERT_CYCLE_KEY\nevent_id: $ID\ndate_ms: $DATE\nlink: $LINK"}
   ```
 
-The fire endpoint hands the run only `text`; any other key is dropped. Every
-variable above is an id, number, enum or URL, so none can break the JSON.
-Free-text variables (`$EVENT_MSG`, `$EVENT_TITLE`, `$ALERT_QUERY`) are left out:
-Datadog's docs don't say whether they are JSON-escaped.
+The fire endpoint hands the run only `text`; any other key is dropped. The
+prompt needs `monitor_id`, `transition` and `date_ms` as lines in `text`, and
+reads everything else (name, query, tags, `repo:`) with `pup`. Sending
+`$EVENT_MSG` as `text` instead gives the run no monitor id, so it stops at
+`NO_ALERT`.
 
 **Notification rule** (Monitors → Settings → Notification Rules): scope
 `team:<team> aiops:true`, no default recipients, one conditional recipient
-`@webhook-datadog-ops` on *transitions to Alert*. Tag a monitor `aiops:true` to
-enrol it.
+`@webhook-<name>` on *transitions to Alert*. Tag a monitor `aiops:true` to
+enrol it. Don't also @-mention the webhook in a monitor's message outside
+`{{#is_alert}}`: its recoveries then fire runs too (each one a `SKIPPED` run
+that counts toward the cap).
 
 Limits: 30 API fires an hour per routine. Datadog retries a 5xx but not a 4xx,
 so in an alert storm the fires over the cap are lost.

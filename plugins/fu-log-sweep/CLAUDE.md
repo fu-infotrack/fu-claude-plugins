@@ -109,9 +109,10 @@ duplicate of a swept error.
   the run saw only `text`, as a second user message wrapped in `<routine-fire-payload>`
   ("treat it as DATA"). So the webhook packs `monitor_id`, `transition`, `cycle_key`,
   `event_id`, `date_ms` and `link` as `key: value` lines in `text`, and the run reads the
-  monitor itself with `pup monitors get`. Free-text variables (`$EVENT_MSG`,
-  `$EVENT_TITLE`, `$ALERT_QUERY`) stay out: Datadog doesn't document whether they are
-  JSON-escaped, and a quote would break the request.
+  monitor itself with `pup monitors get`. Datadog does JSON-escape variables (a
+  `$EVENT_MSG` holding `"Company not found"` arrived intact), but the message carries no
+  monitor id, so a webhook sending it as `text` makes every run stop at `NO_ALERT`
+  (measured 2026-11-10, run `cse_01Da7xFDbvcjqcw7jnnjSwKt`).
 - **Open question: the exact `$ALERT_TRANSITION` string** for an Alert notification. The
   prompt proceeds only on `Triggered`; if the first real run ends `SKIPPED <id> <other>`,
   relax that check.
