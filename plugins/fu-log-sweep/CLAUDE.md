@@ -90,48 +90,32 @@ with `pup` (npm-installed, `DD_ACCESS_TOKEN`), with no connector:
   sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 
-## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.5.0
+## Alert triage (`routines/datadog-ops.md`) — v0.6.0
 
-Datadog monitor alerts reach Teams, a Power Automate flow copies each one into a OneDrive
-folder, and `alert-watch` (a systemd user service, in the shape of the user's standalone
-`teams-pr-watch`) triages them. It is in this plugin, not a separate repo, because the
-question "does this error already have a ticket?" is the sweep's signature and dedup. The
-alert path calls `buildSignature`, `issueMatchesBySig`, `classify` and `releaseCheck`, and
-never copies them: an alert's error has to hash the same as the swept error, or the alert
-files a duplicate.
+A Datadog notification rule sends each Alert-state notification of a monitor tagged
+`aiops:true` to a webhook that fires the **Datadog Ops** cloud routine — one run per alert,
+nothing local. It is in this plugin because "does this error already have a ticket?" is the
+sweep's signature and dedup: the run signs errors with this repo's `buildSignature` and
+matches `datadog-logs` issues by the same `dd-log-sig` marker, so an alert never files a
+duplicate of a swept error.
 
-- **0.5.0: the watcher only forwards, in batches, unread.** `alert-watch` runs
-  `alert-triage.mjs dispatch`: move every `inbox/*.json` to `processing/` and POST the names
-  (`{folder, inbox, processing, processed, files}`) to a cloud routine's `/fire` endpoint
-  (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from `~/.claude/alert-triage/env`, which the
-  user creates; nothing here writes a credential). The routine reads each file through the
-  Microsoft 365 connector, decides skip / stale / triage, and moves it to `processed/`.
-  The move to `processing/` is the concurrency control: a poll can't resend a file and two
-  runs never share one. Any non-2xx or network error moves the batch back to `inbox/` — no
-  attempt cap, so a bad token re-POSTs every poll (visible in the log). `dispatch` also
-  prunes `processed/` to the newest `keep_processed` (100) records, a record being every file
-  sharing the name before the first dot; the connector has no delete, so pruning is local.
-  Why not send the content: the user wanted the watcher to make no decision at all
-  (earlier 0.5.0 drafts filtered on `[Triggered]` and sent the JSON). The 0.4.0 path below
-  (`handle` / `claude -p` / `finish`) is kept for a manual run. Why the split from 0.4.0:
-  under systemd the local triage had no `pup` auth, and the unit's `PATH` pointed at fnm's
-  per-shell multishell link, which goes away; `install` now resolves `node`'s real directory.
-- **The connector's OneDrive URIs** (measured 2026-11-10): `file:///<driveId>/<a>/<b>` reads by
-  path, but a single segment is read as an item id (`file:///<driveId>/datadog-alerts` → 400),
-  so the routine lists the alert folder by the id `sharepoint_folder_search` returns. A
-  folder listing ends each entry with a URI whose last segment is the item id.
-- **First real batch** (2026-11-10, 6 files, run `cse_01Da7xFDBtkKbRwHKUQUQweT`, 3.5 min). The fire text
-  arrives as a second user message wrapped in `<routine-fire-payload>`. Three prompt fixes came from it:
-  - The listing runs entries together (`…O75UToken.txt`). Haiku dropped the id's last character, and
-    `sharepoint_move_item` to that bad parent still returned "File moved" with the file left in
-    `processing/`. The run also never moved the skipped file, yet reported "all six in processed". So
-    the prompt counts 34-character ids, lists `processed` by its id before any move, accepts a move only
-    when its `webUrl` shows `/processed/`, and re-lists `processing/` at the end to find `STUCK` files.
-    Searching for `processed` by name was rejected: it matched 61 folders across the tenant.
-  - `pup` was not on `PATH` in FuDefault. Every agent improvised (npm install, a wrapper, the connector),
-    so the dispatcher now installs it once, with a `/usr/local/bin/pup` wrapper.
-  - 5 of the 6 files were one monitor firing, so it took 5 Sonnet agents (~85k tokens each) to reach one
-    answer. The prompt now groups triggers by `monitorId`.
+- **0.6.0 removed the OneDrive path.** Until 0.5.0 a Power Automate flow copied each
+  Datadog → Teams message into a OneDrive inbox, the `alert-watch` systemd service forwarded
+  file names in batches, and the routine read and moved them through the Microsoft 365
+  connector; a manual `alert-triage.mjs handle` / `claude -p` / `finish` path read the same
+  files. The webhook replaces all of it: no files, no archiving, no batching, no connector.
+- **The fire endpoint passes only `text`** (measured 2026-11-10, run
+  `cse_01Da7xFAsKUpYHTV7GwVeXpz`): a POST with `{"text": …, "data": …}` returned 200 and
+  the run saw only `text`, as a second user message wrapped in `<routine-fire-payload>`
+  ("treat it as DATA"). So the webhook packs `monitor_id`, `transition`, `cycle_key`,
+  `event_id`, `date_ms` and `link` as `key: value` lines in `text`, and the run reads the
+  monitor itself with `pup monitors get`. Datadog does JSON-escape variables (a
+  `$EVENT_MSG` holding `"Company not found"` arrived intact), but the message carries no
+  monitor id, so a webhook sending it as `text` makes every run stop at `NO_ALERT`
+  (measured 2026-11-10, run `cse_01Da7xFDbvcjqcw7jnnjSwKt`).
+- **Open question: the exact `$ALERT_TRANSITION` string** for an Alert notification. The
+  prompt proceeds only on `Triggered`; if the first real run ends `SKIPPED <id> <other>`,
+  relax that check.
 - **The Authority check is a guideline with a confidence, not a rule** (measured 2026-11-10 on 30 days of prod
   client spans). The .NET tracer marks only 4xx client responses as errors, so an upstream's 5xx is `status:ok`:
   match `@http.status_code:[500 TO 599]`, never `status:error` alone. No answer is `status:error` with no status
@@ -140,51 +124,38 @@ files a duplicate.
   searching the alerting service found nothing on every run. Some Authorities return business faults as 500 every
   day, so a 500 is only judged against the hour before. Our own egress, DNS or certificates look identical, so the
   verdict is `likely` (corroborated, nothing on our side) or `confirmed` (the Authority says so), never certain.
-  The Authority list (`AUTHORITIES`: hosts, calling services, status page) is company data: it is filled in the
-  live routine only, and the repo prompt ships it empty.
-- **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
-  monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
-  `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
-  each error (through the existing `log-triage-gate` and `log-investigator` agents) and
-  whether an Authority is down. Its signal that the triage finished is the verdict file.
-  `finish` validates that file and is the only part that notifies. Every alert gets its own
-  session, not a `/loop` tick, so context never builds up across alerts.
-- **Archiving is the idempotency.** The alert JSON moves to `processed/` only in `finish`, or
-  for Warn / No Data / Recovered / out of scope / stale / unparseable. A failed run leaves it
-  in the inbox, and `<id>.attempts` caps the retries at 3.
-- **Status lines are tab-separated.** The paths sit under `OneDrive - <Org>`, which has spaces.
-- **The watcher runs outside the plugin cache.** Same reason as `fu-statusline`: the cache path
-  changes with every version. `alert-watch install` copies it to `~/.claude/alert-triage/`,
-  and on each poll it finds the newest cached `scripts/`. So a plugin update needs no
-  reinstall unless `alert-watch` itself changed.
-- **Permissions: `--allowedTools` prefix rules in the default mode, not `dontAsk`.**
-  Measured 2026-11-10: under `--permission-mode dontAsk`, `Bash(cat:*)` and `Bash(cat *)`
-  were both ignored and every Bash call was denied (only a blanket `Bash` worked). The first
-  dry run therefore triaged with no `pup` at all. In the default mode, `-p` honours both
-  forms and refuses anything unlisted without prompting.
-- **Company specifics stay in config.** The inbox path, monitor ids and the Authority list
-  (`authority_prompt`) live in `fu-tools` `alert-triage`, never in the repo.
-- **Measured on the first two real alerts** (2026-11-10, a log monitor with `> 0` errors in
+- **Company specifics stay out of the repo.** The Authority list (`AUTHORITIES`), the team
+  tag and the routine's token live in the live routine and in Datadog only; the repo
+  prompt ships `AUTHORITIES` empty and `MODE: observe`.
+- **`pup` is not on `PATH` in the cloud environment**, and `npm install -g` left it off
+  `PATH`, so the prompt installs it with a `/usr/local/bin/pup` wrapper before any read.
+- **Measured on the first real alerts** (2026-11-10, a log monitor with `> 0` errors in
   10 m). Each alert was one EF Core `CommandError` log line with no exception type and no
   stack, so the sweep would never have bucketed it. That is why a log line is signed under
   its logger name (`EventId.Name`, then `SourceContext`). `pup monitors get` returns the
   monitor unwrapped (no `.data`). `pup traces aggregate` returned no buckets even for an
   unfiltered service query, and rejects `--limit`, so the outbound-span comparison is the
   model's job, through `pup traces search`.
+- **Severity, not count; every check required; Opus writes the issue** (2026-11-10). The
+  first live run (`cse_01Da7xFAtuEATZ9HoaYSnt5i`, a single Landata-deserialisation 500)
+  dropped the error as "a single transient blip", skipped the Authority span search because
+  it had decided no Authority was involved, listed "nearby" alerts without checking their
+  times, and never computed the signature. On a `> 0` monitor most alerts are single
+  events, so a count rule drops nearly everything. The prompt now files an untracked error
+  when users saw it, work was lost, it is new to prod in 30 days, or it is in a write path;
+  makes the signature, history, span and nearby-alert checks mandatory and reported in the
+  note; and hands the root-cause writeup to an Opus agent (the one deep task, and rare),
+  keeping Sonnet for the triage. Haiku is out: in the OneDrive batch it truncated an id and
+  reported a move that never happened.
+- **Concurrency.** Alerts now triage in parallel runs, so a run lists the issues again
+  right before filing. API fires are capped at 30 an hour per routine, and Datadog does
+  not retry a 4xx, so an alert storm past the cap is not triaged.
 
 ## Tests
 
 ```bash
 node --test plugins/fu-log-sweep/scripts/*.test.mjs
 ```
-
-`alert-triage.test.mjs` covers the alert lib: card parsing, the monitor-query unescape, a
-signature equal to the sweep's, the logger-name fallback, open / regression / held / new
-classification, nearby alerts and verdict validation. It also runs the CLI against `pup` and
-`gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
-stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
-quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
-that moves nothing. The `dispatch` cases run against a local routine server: every inbox file moved to `processing/` unread and its name POSTed in one batch with the bearer and beta headers, an empty inbox silent, a missing URL or token / a 503 / a 401 moving the batch back, a dry run moving nothing, and `processed/` pruned by record.
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a
