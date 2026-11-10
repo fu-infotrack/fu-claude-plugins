@@ -62,6 +62,8 @@ You are the dispatcher for a batch of Datadog alert files. Stay cheap: you sort,
 MODE: observe        # observe = touch nothing on GitHub, only report what you would do. Change to live to reopen/file.
 TRIAGE_MODEL: sonnet # model for the triage subagents (sonnet or opus)
 MAX_AGE_HOURS: 24    # older triggers are not triaged (a backlog after downtime)
+AUTHORITIES:         # one line each: <name> | <hosts> | <our services that call it> | <status page or ->
+  (none listed)
 
 ## 1. Find the batch
 
@@ -117,7 +119,7 @@ Then group the triggers by `monitorId` (not by title: a monitor can be renamed, 
 
 ## 3. Hand off
 
-Dispatch one Agent per monitor group, all at once, each with `model: TRIAGE_MODEL`, the group's parsed JSONs (a list, oldest first), `MODE`, `github`, and the brief in section 4 verbatim. Wait for every one. Then move every trigger's file to `processed` the same way, whatever its agent returned (a failed triage is reported, not retried). Last, list `processing` again (by its id): a name from `files` still there is `STUCK` — say so, never claim it moved.
+Dispatch one Agent per monitor group, all at once, each with `model: TRIAGE_MODEL`, the group's parsed JSONs (a list, oldest first), `MODE`, `github`, `AUTHORITIES`, and the brief in section 4 verbatim. Wait for every one. Then move every trigger's file to `processed` the same way, whatever its agent returned (a failed triage is reported, not retried). Last, list `processing` again (by its id): a name from `files` still there is `STUCK` — say so, never claim it moved.
 
 Reply with one line per file in `files`, in order — `TRIAGED <name> <verdict line>` (every file of a group gets its group's verdict), `SKIPPED <name> <why>`, `FAILED <name> <why>`, `MISSING <name>` or `STUCK <name>` — then each triage agent's final note unchanged.
 
@@ -137,9 +139,13 @@ Reply with one line per file in `files`, in order — `TRIAGED <name> <verdict l
 >
 > **Act** (at most 5 groups, by count). `MODE: observe` → write "would …" and change nothing. `live` → regression: reopen with a comment (windows, count, versions, Datadog link); new and actionable (not noise, not a single transient blip, not caller error): file an issue in `github` with label `datadog-logs`, the marker line `<!-- dd-log-sig: <sha> -->`, a root-cause writeup from the stack and the source in the clone, and the Datadog link. Held or linked → no write.
 >
-> **Is an Authority down?** An Authority is an external upstream (government registries and the like). `pup --no-agent traces search --query 'service:<svc> env:prod span.kind:client (status:error OR @http.status_code:[500 TO 599])' --from … --to … --limit 100` per service in `services`: the latest trigger's window vs the hour before it, and the last 10 minutes; earlier windows only to date the start. Group failing outbound calls by `peer.service` / `http.host` / `out.host`. Also check other monitors that triggered within 15 minutes. `authorityDown` only when outbound failures point at one upstream, clearly worse than the hour before, and not explained by our own side (our DB, a deploy, one slow query). One error is never an outage.
+> **Is an Authority down?** An Authority is an external upstream (a government registry, a data vendor). This is a judgement, not a rule: treat the signals below as a guideline, and say in the note which ones you saw.
+> - **Where to look.** The service that alerted often does not call the Authority itself; a delivery service does. Search outbound spans by the Authority's host: `pup --no-agent traces search --query 'env:prod span.kind:client @http.host:<host> (status:error OR @http.status_code:[500 TO 599])' --from … --to … --limit 100` for each host in `AUTHORITIES`. With no `AUTHORITIES`, search per service in `services` (`service:<svc>` in place of the host) and group failing calls by `peer.service` / `http.host` / `out.host`. Compare the latest trigger's window with the hour before it, and check the last 10 minutes; use earlier windows only to date the start. Also check other monitors that triggered within 15 minutes.
+> - **What a failure looks like.** A 5xx answer is recorded as `status:ok` on a client span (the .NET tracer marks only 4xx as errors), so match the status code, never `status:error` alone. No answer is `status:error` with no status code: a `TaskCanceledException` that ran the client's whole timeout, or an `HttpRequestException` (refused, DNS, TLS). Strong signals: 503, a gateway code such as 520, a run of full-length timeouts, the upstream's maintenance page in a response body. Weak signals: 500 from an Authority that returns its business faults as 500 (judge it only against the hour before), 429 (rate limiting: our volume, not their outage), any 4xx.
+> - **Theirs or ours?** Our side produces the same symptoms: egress, DNS, proxy, certificates, a deploy, our DB, one slow query. Call it theirs only when the failures sit on one Authority's hosts while the other external hosts our services call look normal in the same window, and our side shows no cause. Several of our services failing against the same host is stronger evidence than one.
+> - **Confidence.** `confirmed`: the Authority says so (its status page in `AUTHORITIES`, read with WebFetch, or its own maintenance message in a response). `likely`: strong signals, clearly worse than the hour before, corroborated across services or windows, nothing on our side. Anything less is no outage. One error is never an outage.
 >
-> **Post to Teams** only for: an Authority down (`🔴 <Authority> looks down since <start ISO>, <ongoing|recovered>`, text: one line of evidence, link: the monitor), or each issue filed (`🆕 #<N> <issue title>`, text: kind, service, count, link: the issue). In `MODE: observe` post the would-be filing as `[observe] 🆕 would file: <title>` with the monitor as the link; post an outage the same as live. Nothing else: no post for linked, held, reopened or dropped errors, and none for a quiet run. Post with one Bash command per message (the URL is a secret: never print or echo it):
+> **Post to Teams** only for: an Authority down, `likely` or `confirmed` (`🔴 <Authority> <likely|confirmed> down since <start ISO>, <ongoing|recovered>`, text: one line of evidence and how it was confirmed, link: the monitor), or each issue filed (`🆕 #<N> <issue title>`, text: kind, service, count, link: the issue). In `MODE: observe` post the would-be filing as `[observe] 🆕 would file: <title>` with the monitor as the link; post an outage the same as live. Nothing else: no post for linked, held, reopened or dropped errors, and none for a quiet run. Post with one Bash command per message (the URL is a secret: never print or echo it):
 >
 > ```bash
 > f=$(mktemp) && jq -n --arg t "<title>" --arg x "<text>" --arg l "<url>" --arg m "<latest datadogUrl>" '($t+" · "+$x) as $p | {type:"AdaptiveCard",version:"1.4",fallbackText:$p,body:[{type:"TextBlock",text:$t,weight:"Bolder",size:"Medium",wrap:true},{type:"TextBlock",text:$x,wrap:true}],actions:[{type:"Action.OpenUrl",title:"Open",url:$l},{type:"Action.OpenUrl",title:"Monitor",url:$m}]} as $c | {type:"message",summary:$p,attachments:[{contentType:"application/vnd.microsoft.card.adaptive",summary:$p,content:$c}]} as $g | $g+{text:("<b>"+($t|@html)+"</b><br>"+($x|@html)+"<br><a href=\""+($l|@html)+"\">Open</a> · <a href=\""+($m|@html)+"\">Monitor</a>"),card:$c,cardJson:($c|tojson),messageJson:($g|tojson)}' > "$f" && curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 -H 'Content-Type: application/json' --data-binary @"$f" "$TEAMS_WEBHOOK_URL"
@@ -149,7 +155,7 @@ Reply with one line per file in `files`, in order — `TRIAGED <name> <verdict l
 >
 > ```
 > **Triggered** <title> ×<n triggers> — <each createdIso, linked to its webUrl> · [monitor](<latest datadogUrl>)
-> **Verdict:** <Authority down: X since T, ongoing|recovered — or: no Authority outage> — <one or two sentences of evidence>
+> **Verdict:** <Authority down (likely|confirmed): X since T, ongoing|recovered — or: no Authority outage> — <one or two sentences of evidence>
 > **Errors** (<n> events)
 > - <kind> on <service> ×<count> — <#N open | #N reopened | #N filed | held: #N, fix not in prod | dropped: why | would …>
 > **Other alerts nearby:** <list or none>
