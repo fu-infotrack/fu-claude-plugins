@@ -30,8 +30,10 @@ see the same alert. This routine decides everything else:
   sweep's `dd-log-sig` marker (computed with this repo's `buildSignature`) and
   by text (hand-written issues carry no marker), links / reopens / files /
   holds, and decides whether an upstream Authority is down.
-- **Notification:** only an Authority-down verdict replies on the alert's
-  Teams message (Microsoft 365 connector). Every run ends with a note.
+- **Notification:** a bot post to the alerts channel through a Teams Workflows
+  webhook (`TEAMS_WEBHOOK_URL`) when an Authority is down or a new issue is
+  filed (in observe, when one *would* be filed, marked `[observe]`). Nothing
+  else is posted. Every run ends with a note.
 - **`MODE: observe`** at the top of the prompt: nothing written to GitHub,
   only "would …". Change it to `live` once trusted.
 
@@ -41,8 +43,8 @@ see the same alert. This routine decides everything else:
 |---|---|
 | Name | `Datadog Alert Triage` |
 | Repositories | `fu-infotrack/fu-claude-plugins` (for `buildSignature`), plus every repo a monitor's `repo:` tag can name — the triage reads its source and issues |
-| Environment | needs `node`/`npm` and the secret `DD_ACCESS_TOKEN` (a Datadog personal access token) — the [DB perf sweep](../../fu-db-sweep/routines/db-sweep.md)'s environment fits. The prompt installs `pup` itself: in the first run, `npm install -g` left it off `PATH`, so it writes a `/usr/local/bin/pup` wrapper |
-| Connectors | Microsoft 365 (reads and moves the alert files; Teams reply), GitHub; a Datadog connector only as the fallback when `pup` is missing |
+| Environment | needs `node`/`npm`, `curl`, `jq`, the secret `DD_ACCESS_TOKEN` (a Datadog personal access token) and the secret `TEAMS_WEBHOOK_URL` (a Teams Workflows "Post to a channel when a webhook request is received" URL) — the [DB perf sweep](../../fu-db-sweep/routines/db-sweep.md)'s environment fits. The prompt installs `pup` itself: in the first run, `npm install -g` left it off `PATH`, so it writes a `/usr/local/bin/pup` wrapper |
+| Connectors | Microsoft 365 (reads and moves the alert files), GitHub; a Datadog connector only as the fallback when `pup` is missing |
 | Allowed tools | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, **Agent** (without Agent the dispatcher cannot start the triage agent) |
 | Model | Haiku |
 | Trigger | API (fire). Put its URL in `alert-triage.fire_url` and its token in `~/.claude/alert-triage/env` as `ALERT_TRIAGE_FIRE_TOKEN=…` |
@@ -77,10 +79,10 @@ Every file in `files` ends in `processed`, SKIPPED ones included: move each SKIP
 Set up `pup` for the triage agents now, as one Bash command, verbatim:
 
 ```bash
-pup --version >/dev/null 2>&1 || { npm install -g @datadog/pup >/tmp/pup-install.log 2>&1; printf '#!/bin/sh\nexec node "%s/@datadog/pup/bin/pup.js" "$@"\n' "$(npm root -g)" > /usr/local/bin/pup && chmod +x /usr/local/bin/pup; }; pup --version 2>&1 | head -1; echo "DD_ACCESS_TOKEN ${DD_ACCESS_TOKEN:+set}"
+pup --version >/dev/null 2>&1 || { npm install -g @datadog/pup >/tmp/pup-install.log 2>&1; printf '#!/bin/sh\nexec node "%s/@datadog/pup/bin/pup.js" "$@"\n' "$(npm root -g)" > /usr/local/bin/pup && chmod +x /usr/local/bin/pup; }; pup --version 2>&1 | head -1; echo "DD_ACCESS_TOKEN ${DD_ACCESS_TOKEN:+set}"; echo "TEAMS_WEBHOOK_URL ${TEAMS_WEBHOOK_URL:+set}"
 ```
 
-If it prints no version or the token is not `set`, tell each triage agent `PUP: missing` (it then uses the Datadog connector).
+If it prints no version or the token is not `set`, tell each triage agent `PUP: missing` (it then uses the Datadog connector). If the webhook is not `set`, tell them `TEAMS: missing`.
 
 ## 2. Parse each trigger (mechanical — copy values, don't interpret)
 
@@ -137,7 +139,13 @@ Reply with one line per file in `files`, in order — `TRIAGED <name> <verdict l
 >
 > **Is an Authority down?** An Authority is an external upstream (government registries and the like). `pup --no-agent traces search --query 'service:<svc> env:prod span.kind:client (status:error OR @http.status_code:[500 TO 599])' --from … --to … --limit 100` per service in `services`: the latest trigger's window vs the hour before it, and the last 10 minutes; earlier windows only to date the start. Group failing outbound calls by `peer.service` / `http.host` / `out.host`. Also check other monitors that triggered within 15 minutes. `authorityDown` only when outbound failures point at one upstream, clearly worse than the hour before, and not explained by our own side (our DB, a deploy, one slow query). One error is never an outage.
 >
-> **Report.** If an Authority is down: reply on the latest trigger's Teams message (Microsoft 365 connector, reply to its `messageId` in `teamId`/`channelId`) with `🔴 <Authority> looks down since <start ISO>, <ongoing|recovered> — <one line of evidence>`. Otherwise do not post to Teams. Your final message is the note:
+> **Post to Teams** only for: an Authority down (`🔴 <Authority> looks down since <start ISO>, <ongoing|recovered>`, text: one line of evidence, link: the monitor), or each issue filed (`🆕 #<N> <issue title>`, text: kind, service, count, link: the issue). In `MODE: observe` post the would-be filing as `[observe] 🆕 would file: <title>` with the monitor as the link; post an outage the same as live. Nothing else: no post for linked, held, reopened or dropped errors, and none for a quiet run. Post with one Bash command per message (the URL is a secret: never print or echo it):
+>
+> ```bash
+> f=$(mktemp) && jq -n --arg title "<title>" --arg text "<text>" --arg link "<url>" --arg monitor "<latest datadogUrl>" '{type:"message",attachments:[{contentType:"application/vnd.microsoft.card.adaptive",contentUrl:null,content:{type:"AdaptiveCard",version:"1.4",body:[{type:"TextBlock",text:$title,weight:"Bolder",wrap:true},{type:"TextBlock",text:$text,wrap:true}],actions:[{type:"Action.OpenUrl",title:"Open",url:$link},{type:"Action.OpenUrl",title:"Monitor",url:$monitor}]}}]}' > "$f" && curl -sS -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' --data @"$f" "$TEAMS_WEBHOOK_URL"
+> ```
+>
+> A 2xx (usually 202) means posted. Anything else, or `TEAMS: missing`: note it, don't retry, and never fall back to posting as a user. Your final message is the note:
 >
 > ```
 > **Triggered** <title> ×<n triggers> — <each createdIso, linked to its webUrl> · [monitor](<latest datadogUrl>)
@@ -145,4 +153,5 @@ Reply with one line per file in `files`, in order — `TRIAGED <name> <verdict l
 > **Errors** (<n> events)
 > - <kind> on <service> ×<count> — <#N open | #N reopened | #N filed | held: #N, fix not in prod | dropped: why | would …>
 > **Other alerts nearby:** <list or none>
+> **Teams:** <posted: what, http code | not posted: why | nothing to post>
 > ```
