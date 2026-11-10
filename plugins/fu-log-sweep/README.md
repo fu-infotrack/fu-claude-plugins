@@ -41,33 +41,34 @@ Setup and the prompt to paste are in [`routines/log-sweep.md`](routines/log-swee
 
 Triages Datadog **monitor alerts** as they fire. The judgement runs in a cloud routine; its setup and prompt are in [`routines/alert-triage.md`](routines/alert-triage.md). A Power Automate flow copies
 each Datadog → Teams alert message (a Microsoft Graph channel message, JSON)
-into a OneDrive folder. `alert-watch`, a systemd user service, polls that
-folder and runs `alert-triage.mjs fire` on each file. That step is dumb on
-purpose: no card parsing, no Datadog, no local session.
+into `<folder>/inbox/` in OneDrive. `alert-watch`, a systemd user service,
+polls that folder and runs `alert-triage.mjs dispatch`, which reads no file:
 
-| Message | What happens |
-|---|---|
-| `summary` starts with `[Triggered]` | the file's raw JSON is POSTed as the routine's fire `text`, then archived |
-| anything else (`[Recovered]`, `[Re-Triggered]`, `[Warn]`, a human reply…) | archived |
-| older than `max_age_hours` | archived, "Not sent" note |
+```text
+<folder>/inbox/        the flow writes here
+   │  alert-watch: move every *.json, then POST their names in one batch
+   ▼
+<folder>/processing/   owned by the routine run it was sent to
+   │  routine (M365 connector): read, skip or triage, move
+   ▼
+<folder>/processed/    archive; alert-watch keeps the newest 100 records
+```
 
-Archiving moves the JSON to `processed/` next to `inbox/`. That move is what
-stops an alert being sent twice. The note `<id>.md` beside it links the
-routine's session. A 429, a 5xx or a network error leaves the alert in the
-inbox for the next poll. Any other refusal counts as an attempt, and after 3
-the alert is archived with a "Not sent" note.
-
-The fire payload is `{"text": "<the Graph message JSON, verbatim>"}` (about
-10 KB, most of it the Mute card). Reading the Adaptive Card — the monitor link
-and window, the monitored query, the monitor tags (`repo:…`), the count — is
-the routine's job, so a change to Datadog's card never breaks the watcher.
+The fire payload is `{"text": "{\"folder\":…,\"processing\":\"processing\",\"processed\":\"processed\",\"files\":[…]}"}`.
+Which files are alerts, which are stale, and how to read Datadog's card are all
+the routine's call, so a change to the card never breaks the watcher. The move
+to `processing/` is the claim: a later poll can't send a file twice, and two
+runs never get the same file. If the routine doesn't accept the batch (any
+non-2xx or a network error), the files go back to `inbox/` for the next poll.
+A file stays in `processing/` if its run dies before moving it; look there
+when a run failed.
 
 The routine's bearer token is read from `$ALERT_TRIAGE_FIRE_TOKEN`. The watcher
 loads it from `~/.claude/alert-triage/env` (`KEY=value` lines). Create that
 file yourself and `chmod 600` it; nothing in this plugin writes it.
 
 ```bash
-ALERT_TRIAGE_DRY_RUN=1 bash plugins/fu-log-sweep/scripts/alert-watch --once   # nothing moved, nothing sent
+ALERT_TRIAGE_DRY_RUN=1 bash plugins/fu-log-sweep/scripts/alert-watch --once   # prints the batch; nothing moved, nothing sent
 bash ~/.claude/plugins/cache/fu-claude-plugins/fu-log-sweep/<version>/scripts/alert-watch install
 loginctl enable-linger "$USER"
 tail -f ~/.claude/alert-triage/log
@@ -84,9 +85,9 @@ Config is the `fu-tools` tool key `alert-triage` (user config):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `inbox` | — (required) | the folder the flow writes to; `processed/` is its sibling |
+| `inbox` | — (required) | the folder the flow writes to; `processing/` and `processed/` are its siblings, and the parent's name is the batch's `folder` |
 | `fire_url` | — (required) | the routine's `…/routines/<trig_id>/fire` URL |
-| `max_age_hours` | `24` | older alerts (a backlog after downtime) are archived unsent |
+| `keep_processed` | `100` | records kept in `processed/` (a record is every file sharing an id) |
 
 ### Local triage (manual)
 
@@ -97,7 +98,7 @@ error logs signed with log-sweep's `buildSignature`, matched against the repo's
 `claude -p "/fu-log-sweep:alert-triage <facts>"` judges it (link, reopen or file,
 and whether an upstream Authority is down), and `alert-triage.mjs finish`
 validates the verdict, notifies (`toast`, `teams_webhook`) and archives. Its
-keys: `monitors`, `repo_root`, `mode`, `teams_webhook`, `authority_prompt`, `toast`, `model`.
+keys: `monitors`, `repo_root`, `mode`, `max_age_hours`, `teams_webhook`, `authority_prompt`, `toast`, `model`.
 
 ## Tests
 

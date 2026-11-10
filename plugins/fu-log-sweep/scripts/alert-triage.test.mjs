@@ -192,7 +192,7 @@ function setup({ config = {}, monitorTags = ['repo:widgets', 'service:orders-api
   fs.writeFileSync(path.join(fx, 'releases.json'), JSON.stringify([{ tag_name: 'v2', published_at: '2026-11-01T00:00:00Z' }]));
   const env = { ...process.env, HOME: home, FX: fx, PATH: `${bin}:${process.env.PATH}`, ALERT_TRIAGE_DRY_RUN: '' };
   const run = (cmd, file, extra = {}) => new Promise((resolve) => {
-    execFile(process.execPath, [CLI, cmd, file], { env: { ...env, ...extra }, cwd: home, encoding: 'utf8' }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
+    execFile(process.execPath, [CLI, cmd, ...(file ? [file] : [])], { env: { ...env, ...extra }, cwd: home, encoding: 'utf8' }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout: stdout.trim(), stderr }));
   });
   const put = (msg) => { const f = path.join(inbox, `${msg.id}.json`); fs.writeFileSync(f, JSON.stringify(msg)); return f; };
   const processed = path.join(root, 'alerts', 'processed');
@@ -336,66 +336,69 @@ async function routine(statuses) {
   return { got, url: `http://127.0.0.1:${server.address().port}/v1/claude_code/routines/trig_1/fire`, close: () => server.close() };
 }
 
-test('fire archives anything whose summary does not start with [Triggered], without calling the routine', async () => {
-  const rt = await routine([200]);
-  try {
-    const s = setup({ config: { fire_url: rt.url } });
-    const tok = { ALERT_TRIAGE_FIRE_TOKEN: 'tok' };
-    for (const [id, state] of [['1', 'Warn'], ['2', 'No Data'], ['3', 'Recovered'], ['6', 'Re-Triggered']]) {
-      const f = s.put(alertMsg({ id, state, createdMs: recentMs() }));
-      assert.equal((await s.run('fire', f, tok)).stdout, `ARCHIVED ${id} not [Triggered]: "[${state}] Widgets high error count"`);
-      assert.ok(fs.existsSync(path.join(s.processed, `${id}.json`)));
-    }
-    assert.equal((await s.run('fire', s.put({ id: '4', summary: null, body: { content: '<p>test</p>' } }), tok)).stdout, 'ARCHIVED 4 not [Triggered]: ""');
-    assert.equal((await s.run('fire', s.put(alertMsg({ id: '5', createdMs: Date.now() - 48 * 3600000 })), tok)).stdout, 'ARCHIVED 5 stale');
-    assert.equal(rt.got.length, 0);
-    assert.ok(!fs.existsSync(path.join(s.fx, 'pup.log')));
-  } finally { rt.close(); }
-});
+const processing = (s) => path.join(s.root, 'alerts', 'processing');
+const tok = { ALERT_TRIAGE_FIRE_TOKEN: 'tok' };
 
-test('fire POSTs a [Triggered] message to the routine verbatim, with the bearer token, then archives', async () => {
+test('dispatch moves every inbox file to processing/ unread and POSTs the names in one batch', async () => {
   const rt = await routine([200]);
   try {
     const s = setup({ config: { fire_url: rt.url } });
-    const f = s.put(alertMsg({ id: '10', createdMs: recentMs() }));
-    const raw = fs.readFileSync(f, 'utf8');
-    assert.equal((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, 'FIRED 10 https://claude.ai/code/session_1');
+    s.put(alertMsg({ id: '10', createdMs: recentMs() }));
+    s.put(alertMsg({ id: '11', state: 'Recovered' }));
+    s.put({ id: '12', summary: null, body: { content: '<p>test</p>' } });
+    fs.writeFileSync(path.join(s.inbox, 'notes.txt'), 'not json');
+    assert.equal((await s.run('dispatch', null, tok)).stdout, 'FIRED 3 https://claude.ai/code/session_1 10.json 11.json 12.json');
     assert.equal(rt.got.length, 1);
     const g = rt.got[0];
     assert.equal(g.url, '/v1/claude_code/routines/trig_1/fire');
     assert.equal(g.headers.authorization, 'Bearer tok');
     assert.equal(g.headers['anthropic-beta'], 'experimental-cc-routine-2026-04-01');
-    assert.equal(g.body.text, raw);
-    assert.ok(!fs.existsSync(f));
-    assert.match(fs.readFileSync(path.join(s.processed, '10.md'), 'utf8'), /session_1/);
+    assert.deepEqual(JSON.parse(g.body.text), { folder: 'alerts', inbox: 'inbox', processing: 'processing', processed: 'processed', files: ['10.json', '11.json', '12.json'] });
+    assert.deepEqual(fs.readdirSync(s.inbox), ['notes.txt']);
+    assert.deepEqual(fs.readdirSync(processing(s)).sort(), ['10.json', '11.json', '12.json']);
+    // An empty inbox sends nothing and prints nothing.
+    assert.equal((await s.run('dispatch', null, tok)).stdout, '');
+    assert.equal(rt.got.length, 1);
     assert.ok(!fs.existsSync(path.join(s.fx, 'pup.log')));
   } finally { rt.close(); }
 });
 
-test('fire leaves a trigger in the inbox without a URL or token, or on a 5xx', async () => {
-  const rt = await routine([503]);
+test('dispatch gives the files back to the inbox when the routine is unreachable or refuses', async () => {
+  const rt = await routine([503, 401]);
   try {
     const none = setup();
-    const f0 = none.put(alertMsg({ id: '20', createdMs: recentMs() }));
-    assert.equal((await none.run('fire', f0, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, 'RETRY 20 no alert-triage.fire_url configured');
+    none.put(alertMsg({ id: '20' }));
+    assert.equal((await none.run('dispatch', null, tok)).stdout, 'RETRY 1 no alert-triage.fire_url configured');
     const s = setup({ config: { fire_url: rt.url } });
-    const f = s.put(alertMsg({ id: '21', createdMs: recentMs() }));
-    assert.equal((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: '' })).stdout, 'RETRY 21 ALERT_TRIAGE_FIRE_TOKEN not set');
-    for (let i = 0; i < 4; i++) assert.match((await s.run('fire', f, { ALERT_TRIAGE_FIRE_TOKEN: 'tok' })).stdout, /^RETRY 21 fire http 503/);
-    assert.ok(fs.existsSync(f));
+    s.put(alertMsg({ id: '21' }));
+    assert.equal((await s.run('dispatch', null, { ALERT_TRIAGE_FIRE_TOKEN: '' })).stdout, 'RETRY 1 ALERT_TRIAGE_FIRE_TOKEN not set');
+    assert.match((await s.run('dispatch', null, tok)).stdout, /^RETRY 1 fire http 503/);
+    assert.match((await s.run('dispatch', null, tok)).stdout, /^RETRY 1 fire http 401/);
+    assert.deepEqual(fs.readdirSync(s.inbox), ['21.json']);
+    assert.deepEqual(fs.readdirSync(processing(s)), []);
   } finally { rt.close(); }
 });
 
-test('fire gives up on a trigger the routine refuses three times', async () => {
-  const rt = await routine([400]);
-  try {
-    const s = setup({ config: { fire_url: rt.url } });
-    const f = s.put(alertMsg({ id: '30', createdMs: recentMs() }));
-    const tok = { ALERT_TRIAGE_FIRE_TOKEN: 'tok' };
-    assert.match((await s.run('fire', f, tok)).stdout, /^RETRY 30 fire http 400: .* \(attempt 1\/3\)$/);
-    assert.match((await s.run('fire', f, tok)).stdout, /\(attempt 2\/3\)$/);
-    assert.match((await s.run('fire', f, tok)).stdout, /^FAILED 30 fire http 400: .*archived after 3 attempts$/);
-    assert.ok(fs.existsSync(path.join(s.processed, '30.json')));
-    assert.match(fs.readFileSync(path.join(s.processed, '30.md'), 'utf8'), /Not sent/);
-  } finally { rt.close(); }
+test('dispatch dry run prints the batch and moves nothing', async () => {
+  const s = setup({ config: { fire_url: 'http://127.0.0.1:9/never' } });
+  s.put(alertMsg({ id: '40' }));
+  const r = await s.run('dispatch', null, { ...tok, ALERT_TRIAGE_DRY_RUN: '1' });
+  assert.match(r.stdout, /^FIRED 1 dry-run \(not sent\): \{"folder":"alerts".*"files":\["40.json"\]\}$/);
+  assert.deepEqual(fs.readdirSync(s.inbox), ['40.json']);
+});
+
+test('dispatch keeps the newest keep_processed records in processed/, a record being every file of one id', async () => {
+  const s = setup({ config: { keep_processed: 2 } });
+  fs.mkdirSync(s.processed, { recursive: true });
+  const t = Date.now() / 1000;
+  for (const [id, age] of [['a', 40], ['b', 30], ['c', 20], ['d', 10]]) {
+    for (const ext of ['json', 'md']) {
+      const f = path.join(s.processed, `${id}.${ext}`);
+      fs.writeFileSync(f, 'x');
+      fs.utimesSync(f, t - age, t - age);
+    }
+  }
+  assert.equal((await s.run('dispatch', null, tok)).stdout, 'PRUNED 2');
+  assert.deepEqual(fs.readdirSync(s.processed).sort(), ['c.json', 'c.md', 'd.json', 'd.md']);
+  assert.equal((await s.run('dispatch', null, tok)).stdout, '');
 });

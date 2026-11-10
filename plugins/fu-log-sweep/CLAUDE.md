@@ -100,16 +100,26 @@ alert path calls `buildSignature`, `issueMatchesBySig`, `classify` and `releaseC
 never copies them: an alert's error has to hash the same as the swept error, or the alert
 files a duplicate.
 
-- **0.5.0: the watcher only forwards.** `alert-watch` now runs `alert-triage.mjs fire`, which
-  reads no Datadog, starts no session and parses no card: a message whose `summary` starts
-  with `[Triggered]` is POSTed verbatim (the raw Graph JSON as the fire `text`) to a
-  cloud routine's `/fire` endpoint (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from
-  `~/.claude/alert-triage/env`, which the user creates; nothing here writes a credential).
-  Everything else is archived. The judgement moved to the routine. The 0.4.0 path below
-  (`handle` / `claude -p` / `finish`) is kept for a manual run. Why the split: under systemd
-  the local triage had no `pup` auth, and the unit's `PATH` pointed at fnm's per-shell
-  multishell link, which goes away; `install` now resolves `node`'s real directory.
-  A 429 / 5xx / network error retries forever; any other refusal counts toward the 3-attempt cap.
+- **0.5.0: the watcher only forwards, in batches, unread.** `alert-watch` runs
+  `alert-triage.mjs dispatch`: move every `inbox/*.json` to `processing/` and POST the names
+  (`{folder, inbox, processing, processed, files}`) to a cloud routine's `/fire` endpoint
+  (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from `~/.claude/alert-triage/env`, which the
+  user creates; nothing here writes a credential). The routine reads each file through the
+  Microsoft 365 connector, decides skip / stale / triage, and moves it to `processed/`.
+  The move to `processing/` is the concurrency control: a poll can't resend a file and two
+  runs never share one. Any non-2xx or network error moves the batch back to `inbox/` — no
+  attempt cap, so a bad token re-POSTs every poll (visible in the log). `dispatch` also
+  prunes `processed/` to the newest `keep_processed` (100) records, a record being every file
+  sharing the name before the first dot; the connector has no delete, so pruning is local.
+  Why not send the content: the user wanted the watcher to make no decision at all
+  (earlier 0.5.0 drafts filtered on `[Triggered]` and sent the JSON). The 0.4.0 path below
+  (`handle` / `claude -p` / `finish`) is kept for a manual run. Why the split from 0.4.0:
+  under systemd the local triage had no `pup` auth, and the unit's `PATH` pointed at fnm's
+  per-shell multishell link, which goes away; `install` now resolves `node`'s real directory.
+- **The connector's OneDrive URIs** (measured 2026-11-10): `file:///<driveId>/<a>/<b>` reads by
+  path, but a single segment is read as an item id (`file:///<driveId>/datadog-alerts` → 400),
+  so the routine lists the alert folder by the id `sharepoint_folder_search` returns. A
+  folder listing ends each entry with a URI whose last segment is the item id.
 - **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
   monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
   `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
@@ -152,7 +162,7 @@ classification, nearby alerts and verdict validation. It also runs the CLI again
 `gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
 stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
 quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
-that moves nothing. The `fire` cases run against a local routine server: non-`[Triggered]` summaries (incl. Re-Triggered and a human reply) archived with no call, a trigger POSTed verbatim with the bearer and beta headers then archived, a missing URL or token and a 503 left in the inbox, and three 400s archived as "Not sent".
+that moves nothing. The `dispatch` cases run against a local routine server: every inbox file moved to `processing/` unread and its name POSTed in one batch with the bearer and beta headers, an empty inbox silent, a missing URL or token / a 503 / a 401 moving the batch back, a dry run moving nothing, and `processed/` pruned by record.
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a
