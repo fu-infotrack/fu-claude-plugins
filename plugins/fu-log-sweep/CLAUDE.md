@@ -120,6 +120,18 @@ files a duplicate.
   path, but a single segment is read as an item id (`file:///<driveId>/datadog-alerts` → 400),
   so the routine lists the alert folder by the id `sharepoint_folder_search` returns. A
   folder listing ends each entry with a URI whose last segment is the item id.
+- **First real batch** (2026-11-10, 6 files, run `cse_01Da7xFDBtkKbRwHKUQUQweT`, 3.5 min). The fire text
+  arrives as a second user message wrapped in `<routine-fire-payload>`. Three prompt fixes came from it:
+  - The listing runs entries together (`…O75UToken.txt`). Haiku dropped the id's last character, and
+    `sharepoint_move_item` to that bad parent still returned "File moved" with the file left in
+    `processing/`. The run also never moved the skipped file, yet reported "all six in processed". So
+    the prompt counts 34-character ids, lists `processed` by its id before any move, accepts a move only
+    when its `webUrl` shows `/processed/`, and re-lists `processing/` at the end to find `STUCK` files.
+    Searching for `processed` by name was rejected: it matched 61 folders across the tenant.
+  - `pup` was not on `PATH` in FuDefault. Every agent improvised (npm install, a wrapper, the connector),
+    so the dispatcher now installs it once, with a `/usr/local/bin/pup` wrapper.
+  - 5 of the 6 files were one monitor firing, so it took 5 Sonnet agents (~85k tokens each) to reach one
+    answer. The prompt now groups triggers by `monitorId`.
 - **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
   monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
   `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
