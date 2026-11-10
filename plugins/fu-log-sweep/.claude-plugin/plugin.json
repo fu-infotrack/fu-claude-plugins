@@ -1,7 +1,7 @@
 {
   "name": "fu-log-sweep",
-  "version": "0.5.0",
-  "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature. Run via /loop for a self-paced watch. alert-watch triages Datadog monitor alerts from a Teams-synced inbox against the same issues and flags upstream Authority outages.",
+  "version": "0.6.0",
+  "description": "Sweep a service's Datadog error-level Logs into de-duped GitHub issues with drafted root-cause writeups, deduping on a computed error signature. Run via /loop for a self-paced watch. The Datadog Ops cloud routine triages Datadog monitor alerts, fired by a Datadog webhook, against the same issues and flags upstream Authority outages.",
   "author": {
     "name": "fu-infotrack",
     "url": "https://github.com/fu-infotrack"
