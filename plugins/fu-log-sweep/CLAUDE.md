@@ -136,6 +136,17 @@ duplicate of a swept error.
   monitor unwrapped (no `.data`). `pup traces aggregate` returned no buckets even for an
   unfiltered service query, and rejects `--limit`, so the outbound-span comparison is the
   model's job, through `pup traces search`.
+- **Severity, not count; every check required; Opus writes the issue** (2026-11-10). The
+  first live run (`cse_01Da7xFAtuEATZ9HoaYSnt5i`, a single Landata-deserialisation 500)
+  dropped the error as "a single transient blip", skipped the Authority span search because
+  it had decided no Authority was involved, listed "nearby" alerts without checking their
+  times, and never computed the signature. On a `> 0` monitor most alerts are single
+  events, so a count rule drops nearly everything. The prompt now files an untracked error
+  when users saw it, work was lost, it is new to prod in 30 days, or it is in a write path;
+  makes the signature, history, span and nearby-alert checks mandatory and reported in the
+  note; and hands the root-cause writeup to an Opus agent (the one deep task, and rare),
+  keeping Sonnet for the triage. Haiku is out: in the OneDrive batch it truncated an id and
+  reported a move that never happened.
 - **Concurrency.** Alerts now triage in parallel runs, so a run lists the issues again
   right before filing. API fires are capped at 30 an hour per routine, and Datadog does
   not retry a 4xx, so an alert storm past the cap is not triaged.
