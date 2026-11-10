@@ -90,7 +90,7 @@ with `pup` (npm-installed, `DD_ACCESS_TOKEN`), with no connector:
   sweeps 24 h and writes nothing. No baseline
   mode in the routine (run `--baseline` locally once).
 
-## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.4.0
+## Alert triage (`scripts/alert-watch`, `commands/alert-triage.md`) — v0.5.0
 
 Datadog monitor alerts reach Teams, a Power Automate flow copies each one into a OneDrive
 folder, and `alert-watch` (a systemd user service, in the shape of the user's standalone
@@ -100,7 +100,39 @@ alert path calls `buildSignature`, `issueMatchesBySig`, `classify` and `releaseC
 never copies them: an alert's error has to hash the same as the swept error, or the alert
 files a duplicate.
 
-- **Script / headless session / script.** `alert-triage.mjs handle` does all the reading:
+- **0.5.0: the watcher only forwards, in batches, unread.** `alert-watch` runs
+  `alert-triage.mjs dispatch`: move every `inbox/*.json` to `processing/` and POST the names
+  (`{folder, inbox, processing, processed, files}`) to a cloud routine's `/fire` endpoint
+  (`fire_url`, token `$ALERT_TRIAGE_FIRE_TOKEN` from `~/.claude/alert-triage/env`, which the
+  user creates; nothing here writes a credential). The routine reads each file through the
+  Microsoft 365 connector, decides skip / stale / triage, and moves it to `processed/`.
+  The move to `processing/` is the concurrency control: a poll can't resend a file and two
+  runs never share one. Any non-2xx or network error moves the batch back to `inbox/` — no
+  attempt cap, so a bad token re-POSTs every poll (visible in the log). `dispatch` also
+  prunes `processed/` to the newest `keep_processed` (100) records, a record being every file
+  sharing the name before the first dot; the connector has no delete, so pruning is local.
+  Why not send the content: the user wanted the watcher to make no decision at all
+  (earlier 0.5.0 drafts filtered on `[Triggered]` and sent the JSON). The 0.4.0 path below
+  (`handle` / `claude -p` / `finish`) is kept for a manual run. Why the split from 0.4.0:
+  under systemd the local triage had no `pup` auth, and the unit's `PATH` pointed at fnm's
+  per-shell multishell link, which goes away; `install` now resolves `node`'s real directory.
+- **The connector's OneDrive URIs** (measured 2026-11-10): `file:///<driveId>/<a>/<b>` reads by
+  path, but a single segment is read as an item id (`file:///<driveId>/datadog-alerts` → 400),
+  so the routine lists the alert folder by the id `sharepoint_folder_search` returns. A
+  folder listing ends each entry with a URI whose last segment is the item id.
+- **First real batch** (2026-11-10, 6 files, run `cse_01Da7xFDBtkKbRwHKUQUQweT`, 3.5 min). The fire text
+  arrives as a second user message wrapped in `<routine-fire-payload>`. Three prompt fixes came from it:
+  - The listing runs entries together (`…O75UToken.txt`). Haiku dropped the id's last character, and
+    `sharepoint_move_item` to that bad parent still returned "File moved" with the file left in
+    `processing/`. The run also never moved the skipped file, yet reported "all six in processed". So
+    the prompt counts 34-character ids, lists `processed` by its id before any move, accepts a move only
+    when its `webUrl` shows `/processed/`, and re-lists `processing/` at the end to find `STUCK` files.
+    Searching for `processed` by name was rejected: it matched 61 folders across the tenant.
+  - `pup` was not on `PATH` in FuDefault. Every agent improvised (npm install, a wrapper, the connector),
+    so the dispatcher now installs it once, with a `/usr/local/bin/pup` wrapper.
+  - 5 of the 6 files were one monitor firing, so it took 5 Sonnet agents (~85k tokens each) to reach one
+    answer. The prompt now groups triggers by `monitorId`.
+- **Script / headless session / script (0.4.0, manual now).** `alert-triage.mjs handle` does all the reading:
   monitor, logs, signatures, issues, release gate and nearby alerts. It writes a facts file.
   `claude -p "/fu-log-sweep:alert-triage <facts>"` does only the judgement: what happens to
   each error (through the existing `log-triage-gate` and `log-investigator` agents) and
@@ -142,7 +174,7 @@ classification, nearby alerts and verdict validation. It also runs the CLI again
 `gh` stubs and a local webhook server. Those cases cover Warn / No Data / out of scope /
 stale / unparseable archiving, the facts file, triaging with no clone, retry-then-fail,
 quiet and Authority-down `finish`, a Recovered alert noted on its trigger, and a dry run
-that moves nothing.
+that moves nothing. The `dispatch` cases run against a local routine server: every inbox file moved to `processing/` unread and its name POSTed in one batch with the bearer and beta headers, an empty inbox silent, a missing URL or token / a 503 / a 401 moving the batch back, a dry run moving nothing, and `processed/` pruned by record.
 
 `log-sweep-lib.test.mjs` covers the pure lib, including the routine's validators.
 `routine.test.mjs` runs `prepare` → `collect` → `plan` → `wait` → `finish` with a

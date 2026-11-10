@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The deterministic half of /alert-triage: everything but the judgement.
-// alert-watch calls it once per alert file in the inbox:
+// For a manual local triage of one alert file:
 //
 //   node alert-triage.mjs handle <file>   route one alert; prints ONE status line:
 //     ARCHIVED <id> <reason>        Warn / No Data / out of scope / stale / unparseable
@@ -11,6 +11,12 @@
 //     RETRY <id> <reason>           leave it in the inbox for the next poll
 //   node alert-triage.mjs finish <file>   after the command: check its verdict,
 //     notify on an Authority-down verdict, archive. Prints DONE / RETRY / FAILED.
+//   node alert-triage.mjs dispatch        what alert-watch runs: moves every
+//     inbox file to processing/ unread and POSTs their names, in one batch, as
+//     the cloud routine's fire text (`fire_url`, bearer $ALERT_TRIAGE_FIRE_TOKEN).
+//     The routine reads, triages and moves each to processed/. Also prunes
+//     processed/ to the newest `keep_processed` (100) records. Prints
+//     FIRED <n> <session|-> <names> / RETRY <n> <reason> / PRUNED <n>, or nothing.
 //   node alert-triage.mjs config          the resolved config (JSON)
 //
 // Archiving moves the alert JSON to processed/ next to the inbox; that move is
@@ -59,6 +65,9 @@ function loadConfig() {
     authorityPrompt: c.authority_prompt || null,
     toast: c.toast !== false,
     model: c.model || null,
+    fireUrl: c.fire_url || null,
+    fireToken: process.env.ALERT_TRIAGE_FIRE_TOKEN || null,
+    keepProcessed: c.keep_processed == null ? 100 : Number(c.keep_processed),
   };
 }
 
@@ -282,8 +291,78 @@ async function finish(file, cfg) {
   return out(`DONE ${a.id} ${head}${sent.length ? ` [${sent.join('; ')}]` : ''}`);
 }
 
+// Hand every file in the inbox to the routine, unread. The move to
+// processing/ is the claim: a file there belongs to a fired run, so the next
+// poll cannot send it again and two runs never see the same alert. The routine
+// reads each file through the Microsoft 365 connector, decides what to do with
+// it, and moves it to processed/. Prints one line, or nothing when idle:
+//   FIRED <n> <session url|->     the routine accepted the batch
+//   RETRY <n> <reason>            moved back to the inbox for the next poll
+async function dispatch(cfg) {
+  const base = path.dirname(path.resolve(cfg.inbox));
+  const processing = path.join(base, 'processing');
+  const processed = path.join(base, 'processed');
+  const pruned = prune(processed, cfg.keepProcessed);
+  let names = [];
+  try { names = fs.readdirSync(cfg.inbox).filter((n) => n.endsWith('.json')).sort(); } catch { /* no inbox */ }
+  if (!names.length) return pruned ? out(`PRUNED ${pruned}`) : undefined;
+  const n = names.length;
+  if (!cfg.fireUrl) return out(`RETRY ${n} no alert-triage.fire_url configured`);
+  if (!cfg.fireToken) return out(`RETRY ${n} ALERT_TRIAGE_FIRE_TOKEN not set`);
+  const text = JSON.stringify({ folder: path.basename(base), inbox: 'inbox', processing: 'processing', processed: 'processed', files: names });
+  if (DRY) return out(`FIRED ${n} dry-run (not sent): ${text}`);
+  fs.mkdirSync(processing, { recursive: true });
+  const moved = [];
+  for (const name of names) {
+    try { fs.renameSync(path.join(cfg.inbox, name), path.join(processing, name)); moved.push(name); } catch { /* gone or locked: next poll */ }
+  }
+  if (!moved.length) return undefined;
+  const body = JSON.stringify({ text: JSON.stringify({ ...JSON.parse(text), files: moved }) });
+  let status = 0; let resText = null; let err = null;
+  try {
+    const res = await fetch(cfg.fireUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.fireToken}`, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'experimental-cc-routine-2026-04-01', 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(30000),
+    });
+    status = res.status;
+    resText = await res.text();
+  } catch (e) { err = e.name; }
+  if (status >= 200 && status < 300) {
+    let session = '-';
+    try { const j = JSON.parse(resText); session = j.claude_code_session_url || j.session_url || j.claude_code_session_id || j.session_id || '-'; } catch { /* not JSON */ }
+    return out(`FIRED ${moved.length} ${session} ${moved.join(' ')}`);
+  }
+  // Not accepted: give the files back, so the next poll sends them again.
+  for (const name of moved) { try { fs.renameSync(path.join(processing, name), path.join(cfg.inbox, name)); } catch { /* keep */ } }
+  const why = err ? `fire failed (${err})` : `fire http ${status}: ${String(resText || '').replace(/\s+/g, ' ').slice(0, 200)}`;
+  return out(`RETRY ${moved.length} ${why}`);
+}
+
+// Keep the newest `keep` records in processed/; a record is every file sharing
+// the name before the first dot (<id>.json, <id>.md, …). Returns how many went.
+function prune(dir, keep) {
+  if (DRY) return 0;
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return 0; }
+  const recs = new Map();
+  for (const n of names) {
+    const id = n.split('.')[0];
+    let m = 0;
+    try { const st = fs.statSync(path.join(dir, n)); if (!st.isFile()) continue; m = st.mtimeMs; } catch { continue; }
+    const r = recs.get(id) || { files: [], m: 0 };
+    r.files.push(n); r.m = Math.max(r.m, m);
+    recs.set(id, r);
+  }
+  const old = [...recs.values()].sort((x, y) => y.m - x.m).slice(keep);
+  for (const r of old) for (const n of r.files) { try { fs.rmSync(path.join(dir, n)); } catch { /* gone */ } }
+  return old.length;
+}
+
 const [, , cmd, file] = process.argv;
 const cfg = loadConfig();
-if (cmd === 'config') out(JSON.stringify({ ...cfg, teamsWebhook: cfg.teamsWebhook ? '<set>' : null }));
+if (cmd === 'config') out(JSON.stringify({ ...cfg, teamsWebhook: cfg.teamsWebhook ? '<set>' : null, fireToken: cfg.fireToken ? '<set>' : null }));
+else if (cmd === 'dispatch') await dispatch(cfg);
 else if ((cmd === 'handle' || cmd === 'finish') && file) await (cmd === 'handle' ? handle : finish)(file, cfg);
-else { process.stderr.write('usage: alert-triage.mjs handle|finish <alert.json> | config\n'); process.exit(2); }
+else { process.stderr.write('usage: alert-triage.mjs dispatch | handle|finish <alert.json> | config\n'); process.exit(2); }
