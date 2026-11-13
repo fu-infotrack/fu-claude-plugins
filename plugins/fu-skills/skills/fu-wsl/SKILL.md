@@ -177,7 +177,7 @@ Present the combined result as a table mapping each tool to its phase, e.g.:
 
 Then **ask the user which of the missing tools to install** — they can opt out of any they don't need (e.g. Docker, dotnet, Aspire, Azure DevOps, DevTunnel, Vault; zsh is opt-in already). Install only tools that are **both missing and not opted out**, running the phases below in order. Skip every phase whose tool is already installed or was opted out, and tell the user which phases you skipped and why.
 
-Treat the Phase 5 row (`fnm` / `node` / `yarn`) as installed only if all three probe lines report installed. Phases 2 (base update) and 3 (connectivity gate) have no tool of their own and always run. If `chromium` is already installed, still run Phase 9's **NSS trust step** (probe: `certutil -d sql:$HOME/.pki/nssdb -L -n netskope`) — an existing Chromium with an empty NSS db is exactly the `ERR_CERT_AUTHORITY_INVALID` failure.
+Treat the Phase 5 row (`fnm` / `node` / `yarn`) as installed only if all three probe lines report installed. Phases 2 (base update), 3 (connectivity gate) and 17 (certificate audit) have no tool of their own and always run. If `chromium` is already installed, still run Phase 9's **NSS trust step** (probe: `certutil -d sql:$HOME/.pki/nssdb -L -n netskope`) — an existing Chromium with an empty NSS db is exactly the `ERR_CERT_AUTHORITY_INVALID` failure.
 
 ## Phase 2 — Base update
 
@@ -189,19 +189,35 @@ Update, then install the base tooling later phases assume — the minimal Debian
 
 ## Phase 3 — Connectivity gate (Netskope cert + VPN)
 
-Add the Netskope CA cert (batched `sudo` hand-off):
+Netskope re-signs every outbound HTTPS cert with its own CA, so each TLS stack in the distro must trust that CA. Two layers:
+
+1. **System store** — OpenSSL/GnuTLS (`curl`, `wget`, apt, git, python's `ssl`, pip ≥ 24.2 via truststore), Go (`gh`, `vault`, `pup`, docker daemon), and .NET read `/etc/ssl/certs/ca-certificates.crt`. Linking the cert in and running `update-ca-certificates` covers all of them.
+2. **Tools with their own root store** need an env var pointing at that system bundle:
+   - `NODE_EXTRA_CA_CERTS` — Node, npm, yarn, **bun**, Claude Code, playwright-cli's Node side.
+   - `REQUESTS_CA_BUNDLE` — python `requests` with bundled certifi, notably **`az`** (its private Python at `/opt/az`).
+   - `SSL_CERT_FILE` — **`uv`** (ships rustls + webpki roots; fails `invalid peer certificate: UnknownIssuer` without it), httpx and other certifi/rustls users. Safe globally: it names the bundle OpenSSL already uses by default.
+
+Set them in **three places**, because WSL shells differ in what they read: `/etc/profile.d/netskope-ca.sh` (login shells — `bash -l`, Windows Terminal, VS Code's env resolution), `~/.bashrc` (interactive shells), `/etc/environment` (PAM sessions only — `ssh`, `su -l`; **wsl.exe does not read it**, so it is not sufficient alone). A plain non-interactive non-login `wsl -- bash -c '…'` reads none of these — that's inherent; pass the vars inline there if a tool needs them.
+
+System part (Claude can run via `-u root`, dropping `sudo`, or hand off — values contain no `$`, so `printf`/`echo` is transport-safe):
 
 ```
-! wsl -d $DISTRO -- bash -lc 'sudo ln -sf /mnt/c/ProgramData/NetskopeCACerts/netskope-cacert.pem /usr/local/share/ca-certificates/netskope.crt && sudo update-ca-certificates && echo "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" | sudo tee -a /etc/environment'
+! wsl -d $DISTRO -- bash -lc 'sudo ln -sf /mnt/c/ProgramData/NetskopeCACerts/netskope-cacert.pem /usr/local/share/ca-certificates/netskope.crt && sudo update-ca-certificates && printf "%s\n" "# Netskope SSL inspection: point every TLS stack at the system bundle (includes the Netskope CA)." "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" "export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" "export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" | sudo tee /etc/profile.d/netskope-ca.sh >/dev/null && for v in NODE_EXTRA_CA_CERTS SSL_CERT_FILE REQUESTS_CA_BUNDLE; do grep -q "^$v=" /etc/environment || echo "$v=/etc/ssl/certs/ca-certificates.crt" | sudo tee -a /etc/environment >/dev/null; done'
 ```
 
-Add the Node CA export to `~/.bashrc` (no sudo; Claude may run this):
+(If the transport blanks the `for` loop's `$v`, append the three `/etc/environment` lines individually — each is a literal.)
+
+User part — the same three exports in `~/.bashrc` (no sudo; Claude may run this, one literal line each):
 
 ```powershell
-wsl -d $DISTRO -u $USER -- bash -lc 'grep -q NODE_EXTRA_CA_CERTS ~/.bashrc || echo "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" >> ~/.bashrc'
+wsl -d $DISTRO -u $USER -- bash -lc 'grep -q NODE_EXTRA_CA_CERTS ~/.bashrc || echo "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" >> ~/.bashrc; grep -q REQUESTS_CA_BUNDLE ~/.bashrc || echo "export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt" >> ~/.bashrc; grep -q SSL_CERT_FILE ~/.bashrc || echo "export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> ~/.bashrc'
 ```
 
-This covers `curl`, apt, git and Node. **Chromium does not use the system store** — it gets its own NSS import in Phase 9.
+**Not covered by any of the above — handled elsewhere:**
+- **Chromium** validates against its own per-user NSS db, not the system store → Phase 9's `certutil` import.
+- **Docker containers and image builds** see their own image's trust store, not the host's. The daemon's `pull` works (system store), but `curl`/`apt`/`npm` *inside* a container fail — Netskope resets the connection (`Connection reset by peer`) or the cert is untrusted. For ad-hoc runs mount the host bundle: `docker run -v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro …`. For builds, `COPY` the Netskope PEM into the image and run the image's `update-ca-certificates` (or set the env vars above to it) — that's per-project, not this skill's job.
+
+Verify with the bundled audit — see **Phase 17**.
 
 A **corporate VPN** (e.g. wsl-vpnkit — see https://github.com/sakai135/wsl-vpnkit) is required to reach internal resources and is set up separately.
 
@@ -618,6 +634,31 @@ winget install --id Microsoft.Sqlcmd -e
 
 Then it is usable from WSL as `sqlcmd.exe -S <server> -d <database>`.
 
+## Phase 17 — Certificate audit (every tool, through Netskope)
+
+Run after installs (and any time a tool reports a cert error). The bundled `scripts/wsl-cert-check.sh` makes **one real public HTTPS request per installed tool** — curl, wget, openssl, git, gh, python3, pip, uv, node, npm, yarn, bun, dotnet, az, docker (pull), vault, chromium — and prints `PASS` / `FAIL-TLS` (cert not trusted) / `FAIL` (other: auth, network) / `SKIP` (not installed). It is read-only apart from pulling `hello-world`, and first prints the CA env it sees plus pypi.org's issuer (should be `…goskope.com` — if not, Netskope isn't intercepting and a PASS proves nothing).
+
+The plugin cache is on the Windows host; translate this skill's install path to the WSL view (`C:\Users\<u>\…` → `/mnt/c/Users/<u>/…`). Claude runs it **in both shell modes** — an interactive and a login shell must each pass (`-q` prints only failures):
+
+```powershell
+$chk = '/mnt/c/Users/<user>/.claude/plugins/cache/fu-claude-plugins/fu-skills/<version>/scripts/wsl-cert-check.sh'
+wsl -d $DISTRO -u $USER -- bash -ic "bash $chk -q"   # interactive (~/.bashrc)
+wsl -d $DISTRO -u $USER -- bash -lc "bash $chk -q"   # login (/etc/profile.d)
+```
+
+Fix map for a `FAIL-TLS`:
+
+| Tool | Trust source | Fix |
+|---|---|---|
+| curl, wget, git, openssl, python3, pip, dotnet, gh, vault, docker pull | system store | Phase 3 `update-ca-certificates`; check the `netskope.crt` symlink resolves |
+| node, npm, yarn, bun, claude | bundled roots | `NODE_EXTRA_CA_CERTS` (Phase 3) |
+| az | private Python + certifi | `REQUESTS_CA_BUNDLE` (Phase 3) |
+| uv | rustls + webpki roots | `SSL_CERT_FILE` (Phase 3) |
+| chromium / playwright-cli | `~/.pki/nssdb` | Phase 9 `certutil` import |
+| anything inside a container | the image's store | mount or `COPY` the bundle (Phase 3 note) |
+
+Fails only under one shell mode → the env var is missing from that mode's file (`~/.bashrc` vs `/etc/profile.d/netskope-ca.sh`). Not covered by the script (no public endpoint / not in this toolset): `psql` (internal DBs aren't proxied), `pup` (Go, same system store as `gh`). If the user has extra tools — Java (`keytool -importcert` into the JDK `cacerts`), AWS CLI (`AWS_CA_BUNDLE`), Ruby/gem (`SSL_CERT_FILE`), Rust/cargo (`CARGO_HTTP_CAINFO`) — configure and spot-check those too.
+
 ## Optional — zsh
 
 Ask the user once whether they want zsh (the guide marks it optional; default skip). If yes — set the shell with **`sudo chsh`**, substituting `<user>`: a plain `chsh` authenticates the *user's* password and **fails on the passwordless account** Phase 1 can create (`chsh: PAM: Authentication failure`); `sudo chsh -s /usr/bin/zsh <user>` needs no user password. The literal `/usr/bin/zsh` (confirmed present in `/etc/shells`) avoids `$(which zsh)`, which the transport blanks. Claude can run via `-u root`, or hand off:
@@ -634,6 +675,8 @@ wsl -d $DISTRO -u $USER -- bash -lc 'echo "source /usr/share/zsh-autosuggestions
 
 ```sh
 export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export VAULT_ADDR="<vault-addr>"
 export PATH="$HOME/.local/bin:$HOME/.dotnetup:$HOME/.local/share/dotnet:$HOME/.aspire/bin:$HOME/.local/share/fnm/aliases/default/bin:$PATH"
 if [ -d "$HOME/.local/share/fnm" ]; then export PATH="$HOME/.local/share/fnm:$PATH"; eval "$(fnm env --shell zsh)"; fi
