@@ -177,7 +177,7 @@ Present the combined result as a table mapping each tool to its phase, e.g.:
 
 Then **ask the user which of the missing tools to install** — they can opt out of any they don't need (e.g. Docker, dotnet, Aspire, Azure DevOps, DevTunnel, Vault; zsh is opt-in already). Install only tools that are **both missing and not opted out**, running the phases below in order. Skip every phase whose tool is already installed or was opted out, and tell the user which phases you skipped and why.
 
-Treat the Phase 5 row (`fnm` / `node` / `yarn`) as installed only if all three probe lines report installed. Phases 2 (base update) and 3 (connectivity gate) have no tool of their own and always run.
+Treat the Phase 5 row (`fnm` / `node` / `yarn`) as installed only if all three probe lines report installed. Phases 2 (base update) and 3 (connectivity gate) have no tool of their own and always run. If `chromium` is already installed, still run Phase 9's **NSS trust step** (probe: `certutil -d sql:$HOME/.pki/nssdb -L -n netskope`) — an existing Chromium with an empty NSS db is exactly the `ERR_CERT_AUTHORITY_INVALID` failure.
 
 ## Phase 2 — Base update
 
@@ -200,6 +200,8 @@ Add the Node CA export to `~/.bashrc` (no sudo; Claude may run this):
 ```powershell
 wsl -d $DISTRO -u $USER -- bash -lc 'grep -q NODE_EXTRA_CA_CERTS ~/.bashrc || echo "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt" >> ~/.bashrc'
 ```
+
+This covers `curl`, apt, git and Node. **Chromium does not use the system store** — it gets its own NSS import in Phase 9.
 
 A **corporate VPN** (e.g. wsl-vpnkit — see https://github.com/sakai135/wsl-vpnkit) is required to reach internal resources and is set up separately.
 
@@ -392,9 +394,27 @@ wsl -d $DISTRO -u $USER -- bash -lc 'systemctl is-active docker'
 
 ## Phase 9 — Chromium
 
+Install Chromium plus `libnss3-tools` (provides `certutil`, needed for the trust step below). Claude can run via `-u root`, or hand off:
+
 ```
-! wsl -d $DISTRO -- bash -lc 'sudo apt install -y chromium'
+! wsl -d $DISTRO -- bash -lc 'sudo apt install -y chromium libnss3-tools'
 ```
+
+**Trust the Netskope CA in Chromium's NSS database.** Phase 3 put the Netskope cert in the **system** store, which `curl` uses — but Chromium on Linux ignores that store and validates against its own per-user NSS db at `~/.pki/nssdb`. With that db empty, every external HTTPS request through Netskope fails with `ERR_CERT_AUTHORITY_INVALID` (Auth0 sign-in, Google Fonts, GTM…), so sign-in pages never load while `curl` works fine. Import the same cert as a TLS-only CA (`-t C,,` — trusted to sign server certs, not email/code), so Chromium trusts exactly what `curl` trusts. It applies to every Chromium launch using this db, **including all `playwright-cli` profiles**.
+
+Run as **`$USER`, never root** (the db lives in `~`). Idempotent — skips if the `netskope` nickname is already present, and creates the db if Chromium has never run:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'mkdir -p "$HOME/.pki/nssdb" && { [ -f "$HOME/.pki/nssdb/cert9.db" ] || certutil -d "sql:$HOME/.pki/nssdb" -N --empty-password; } && { certutil -d "sql:$HOME/.pki/nssdb" -L -n netskope >/dev/null 2>&1 || certutil -d "sql:$HOME/.pki/nssdb" -A -t "C,," -n netskope -i /mnt/c/ProgramData/NetskopeCACerts/netskope-cacert.pem; } && certutil -d "sql:$HOME/.pki/nssdb" -L'
+```
+
+(`certutil -A` imports only the **first** cert of the PEM — the `ca.infotrack.au.goskope.com` issuing CA — which is the one that signs the re-issued site certs, so that's sufficient; NSS accepts a non-self-signed trust anchor.) Verify headless Chromium loads an external page (expect `<title>Google</title>`, not an `ERR_CERT_*`):
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'timeout 40 chromium --headless=new --no-sandbox --disable-gpu --dump-dom https://www.google.com 2>/dev/null | grep -o -m1 -E "<title>[^<]*</title>|ERR_CERT[A-Z_]*"'
+```
+
+To undo: `certutil -d sql:$HOME/.pki/nssdb -D -n netskope`. If Netskope rotates its CA, delete and re-import (the system-store symlink from Phase 3 follows the file automatically; the NSS copy does not).
 
 ## Phase 10 — dotnet
 
