@@ -432,6 +432,55 @@ wsl -d $DISTRO -u $USER -- bash -lc 'timeout 40 chromium --headless=new --no-san
 
 To undo: `certutil -d sql:$HOME/.pki/nssdb -D -n netskope`. If Netskope rotates its CA, delete and re-import (the system-store symlink from Phase 3 follows the file automatically; the NSS copy does not).
 
+### playwright-cli — drive the system Chromium, never download a browser
+
+`playwright-cli` (npm `@playwright/cli`) is the browser-automation CLI Claude uses here. Point it at the **system Chromium** just installed, so it inherits the NSS trust above and **no Playwright browser download is ever needed**.
+
+**Never run `playwright install`, `npx playwright install`, or `playwright-cli install-browser` on WSL2.** Playwright's downloader **hangs mid-extraction** (it stalls writing `libwidevinecdm.so` and never finishes), leaving a broken, part-installed browser — and each playwright-core minor wants its own ~380 MB revision that nothing else shares. The `executablePath` config below exists precisely so none of that is needed.
+
+Probe (needs the fnm Node on `PATH` — see Phase 5):
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'export PATH="$HOME/.local/share/fnm/aliases/default/bin:$PATH"; command -v playwright-cli && playwright-cli --version; cat ~/.playwright/cli.config.json 2>/dev/null || echo no-config'
+```
+
+If missing, install it globally into the fnm default Node (no sudo; Claude may run this). It lives in that Node version's global `node_modules`, so **after switching the fnm default to a new Node major, reinstall it**:
+
+```powershell
+wsl -d $DISTRO -u $USER -- bash -lc 'export PATH="$HOME/.local/share/fnm/aliases/default/bin:$PATH"; npm install -g @playwright/cli && playwright-cli --version'
+```
+
+Write the config if absent — `chromium` via `/usr/bin/chromium`, **headed** (`headless: false`; WSLg shows the window, and headed is what interactive logins need). Write it from the host over UNC (JSON quoting through the transport is fragile), LF endings, and don't overwrite an existing file — show it to the user instead:
+
+```powershell
+$d = "\\wsl.localhost\$DISTRO\home\$USER\.playwright"; $f = "$d\cli.config.json"
+if (-not (Test-Path -LiteralPath $f)) {
+  New-Item -ItemType Directory -Force -Path $d | Out-Null
+  $json = '{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "executablePath": "/usr/bin/chromium",
+      "headless": false
+    }
+  }
+}'
+  [System.IO.File]::WriteAllText($f, ($json -replace "`r`n", "`n") + "`n")
+}
+```
+
+Then fix ownership if the UNC write landed it root-owned (it normally lands as `$USER`): `wsl -d $DISTRO -u root -- chown -R <user>:<user> /home/<user>/.playwright`.
+
+Verify — open an external HTTPS page through Netskope in a throwaway session, read the title, close it. Run from a cwd **under `$HOME`** (`--cd ~`): playwright-cli namespaces its session daemon by cwd, and one outside `$HOME` won't see saved profiles. Expect `Page Title: Google`:
+
+```powershell
+wsl -d $DISTRO -u $USER --cd ~ -- bash -ic 'playwright-cli -s=fuwslcheck open https://www.google.com >/dev/null 2>&1; playwright-cli -s=fuwslcheck eval "document.title" 2>&1 | grep -E "Page Title|ERR_"; playwright-cli -s=fuwslcheck close >/dev/null 2>&1'
+```
+
+An `ERR_CERT_AUTHORITY_INVALID` here means the NSS import above is missing; a "browser not found / please run playwright install" means the config isn't being read — fix the config, **don't** install a browser.
+
+**Escape hatch** — only if a project's own Playwright config ignores this (e.g. `npx playwright test` with a pinned browser revision) and a bundled browser is genuinely required: download that revision's zip yourself, extract it with `unzip` into the expected `~/.cache/ms-playwright/<browser>-<rev>/` directory, then `touch INSTALLATION_COMPLETE DEPENDENCIES_VALIDATED` inside it. The normal installer will not complete.
+
 ## Phase 10 — dotnet
 
 Probe:
