@@ -481,6 +481,47 @@ An `ERR_CERT_AUTHORITY_INVALID` here means the NSS import above is missing; a "b
 
 **Escape hatch** — only if a project's own Playwright config ignores this (e.g. `npx playwright test` with a pinned browser revision) and a bundled browser is genuinely required: download that revision's zip yourself, extract it with `unzip` into the expected `~/.cache/ms-playwright/<browser>-<rev>/` directory, then `touch INSTALLATION_COMPLETE DEPENDENCIES_VALIDATED` inside it. The normal installer will not complete.
 
+**Seed the house rules into the WSL user `CLAUDE.md`.** The config above only makes playwright-cli *work*; future Claude sessions in this distro also need to know *not* to undo it (install a browser, launch `chromium` directly, pass `--browser`). Append the block below to the distro's **`~/.claude/CLAUDE.md`** — the WSL one, not the Windows host's. The guard skips it if a `## Browser automation` heading is already there (the file is the user's own; never rewrite existing content), and creates the file if absent. It's `$`/backtick-heavy, so write from the host over UNC with a single-quoted here-string and LF endings (Claude may run this; tell the user it was added):
+
+```powershell
+$d = "\\wsl.localhost\$DISTRO\home\$USER\.claude"; $f = "$d\CLAUDE.md"
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+$cur = if (Test-Path -LiteralPath $f) { [System.IO.File]::ReadAllText($f) } else { '' }
+if ($cur -notmatch '(?m)^## Browser automation') {
+  $block = @'
+## Browser automation — playwright-cli only
+
+These house rules override the external `playwright-cli` skill's examples where they differ:
+
+- **`playwright-cli` is the only way to launch a browser.** Never run `/usr/bin/chromium` /
+  `chromium` directly (no `--headless --screenshot`/`--dump-dom` one-shots, no
+  `--remote-debugging-port`), and no ad-hoc Node/playwright-core `chromium.launch()` scripts.
+  Use `playwright-cli screenshot` / `snapshot`.
+- **Don't pass `--browser` or `--headed`** — `~/.playwright/cli.config.json` already sets both
+  (system `/usr/bin/chromium`, `headless: false`).
+- **Never touch the default Chromium profile** (`~/.config/chromium`) — no automation uses it.
+- **Logins: `-s=<target> --persistent`**, one fixed session name per target, and run from a cwd
+  under `$HOME` — a cwd outside it (e.g. `/tmp/...`) resolves to a different daemon namespace and
+  won't see the saved profile. A bare `-s=<name>` without `--persistent` is in-memory and loses
+  everything on close. Session-only cookies are lost even with `--persistent`; if a login depends
+  on them, use `state-save` / `state-load`.
+- The `ud-<name>-chromium` profiles under `~/.cache/ms-playwright/daemon/` hold live login
+  cookies — treat them as credentials.
+
+### Do not install browsers
+
+**Never run `playwright install`, `playwright-cli install-browser`, or `npx playwright install`
+here.** Playwright's downloader hangs mid-extraction on WSL2 (it stalls writing
+`libwidevinecdm.so`), leaving a broken part-installed browser. A "browser not found" error means
+the config isn't being read — fix the config, don't install. If a project's own Playwright config
+genuinely needs a bundled browser, download the zip, extract it with `unzip`, then
+`touch INSTALLATION_COMPLETE DEPENDENCIES_VALIDATED` in the browser directory.
+'@
+  $sep = if ($cur.Trim()) { "`n`n" } else { '' }
+  [System.IO.File]::WriteAllText($f, $cur.TrimEnd() + $sep + ($block -replace "`r`n", "`n").TrimEnd() + "`n")
+}
+```
+
 ## Phase 10 — dotnet
 
 Probe:
