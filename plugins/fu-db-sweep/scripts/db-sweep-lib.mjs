@@ -317,8 +317,9 @@ export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
 // The issue index: {fp: [{number, state, closedAt, notPlanned, value, rule,
 // db, sig}]}, from the REST listing of `datadog-dbm` issues. Markers written
 // before 0.5.0 carry no rule or db; a query issue's body still names its
-// signature in the DBM link, which reviewOpen uses to identify it.
-const DBM_LINK_RE = /DBM: \[query ([0-9a-f]+)\]/;
+// signature in the DBM link — some investigators wrapped it in backticks — or
+// in a `querySignature: `<sig>`` line, which reviewOpen uses to identify it.
+const DBM_LINK_RE = /(?:DBM: `*\[query |querySignature:\s*`)([0-9a-f]+)/;
 export function indexIssues(issues) {
   const out = {};
   for (const it of issues || []) {
