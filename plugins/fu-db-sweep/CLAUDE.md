@@ -86,7 +86,21 @@ orchestrator copying printed prompts) are explained in
     `<!-- dd-dbm-unreleased: <fixSha> -->` marker dedups it per fix across runs;
     observe mode puts it in the summary as a draft.
   - With neither a close commit nor a closing PR (closed by hand), the
-    deployed commit's date against the close still decides.
+    deployed commit's date against the close still decides. That is also the
+    path for an issue the sweep closed as stale (below).
+- **Stale close** (`reviewOpen`): an open issue closes after
+  `closeAfterClearRuns` (default 2) consecutive complete runs in which it is
+  clear. **Not firing is not clear** for regression and step: they compare
+  against a baseline that moves, so a regression stops firing once the
+  regressed weeks are the baseline, fixed or not — they must re-measure at or
+  below the filed value ÷ the rule's ratio. Anything that fired — including a
+  rule the finding only `alsoBreached`, or one a neighbour's pressure
+  `suppressed` — is not clear. The count is `clear_runs` in the state marker,
+  so it is only saved, and issues only closed, on a complete live run.
+  - Since 0.5.0 the `dd-dbm` marker also carries `rule` and `db` (additive; the
+    fingerprint is unchanged). An older query issue is identified by matching
+    its body's `DBM: [query <sig>]` link against the fingerprints; an older
+    table or pressure issue is identified only while it is still measured.
 
 ## Tests
 
@@ -96,13 +110,15 @@ node --test plugins/fu-db-sweep/scripts/*.test.mjs
 
 `db-sweep-lib.test.mjs` covers windows, every rule, overrides, strict collector
 parsing, the marker, the DBM query link, classify, the gate and the verdict
-validator. `collect.test.mjs` runs `collectDb` against a fake metric reader: the
+validator, and `reviewOpen` (each rule's notion of clear, the moving-baseline
+regression that must not close, legacy markers). `collect.test.mjs` runs `collectDb` against a fake metric reader: the
 `_other` attribution and the instance stats. `routine.test.mjs` runs `prepare` →
 `collect` → `plan` → `finish` with a throwaway `$HOME`, fake clones under
 `DB_SWEEP_SEARCH_ROOT`, the same proxy-faithful `gh` stub as fu-log-sweep, and a
 `pup` stub (DBM samples served, metric queries failing): live filing with the
 candidate's DBM SQL, held vs reopened (closed by commit and by a merged PR,
-released or not, and the once-per-fix "not released yet" comment), accepted and already-open, observe
+released or not, and the once-per-fix "not released yet" comment), accepted and already-open, the stale
+close (counted, closed on the second run, never while firing, not on an incomplete run, drafted in observe), observe
 (summary with drafts, no filing, no state), per-repo summaries and state, a
 failed collection failing only its repo, every repo failing, a bad verdict, the
 per-repo cap, NO_WORK, state-issue bootstrap, skipped pairs, two instances, and

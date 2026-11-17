@@ -73,6 +73,9 @@ on every target repo.
     days. Numbers, not strings. Observe runs post a repo's summary only once
     its entry is set.
   - `ddSite` — default `https://ap2.datadoghq.com`, used for links.
+  - `closeAfterClearRuns` — default `2`: an open issue the sweep filed closes
+    after that many consecutive complete runs in which it is clear (see the
+    README). `0` never closes one.
 
 ## Prompt
 

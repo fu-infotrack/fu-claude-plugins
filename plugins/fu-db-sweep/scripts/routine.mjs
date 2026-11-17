@@ -4,7 +4,7 @@
 // each candidate's SQL from a DBM query sample. The model does only the
 // judgement step, in sub-agents (one investigator per candidate); this script
 // does everything else: config, collection, the issue index, the rules, dedup,
-// the cap, the reopen gate, filing, the summary and the run state. GitHub is REST only (`gh api`, explicit pages):
+// the cap, the reopen gate, filing, closing stale issues, the summary and the run state. GitHub is REST only (`gh api`, explicit pages):
 // cloud sessions answer GraphQL with 403, their proxy rejects `--paginate`'s
 // links, and every path must sit under repos/{owner}/{repo}/ of an attached repo.
 //
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import {
   windows, parseConfig, parseCollectorOutput, evaluate, indexIssues, classify, rankFindings,
   composeIssueBody, withDbmPointer, gateDecision, closingFix, unreleasedComment, saidUnreleased,
-  validateVerdict, parseSweepState, buildStateBody,
+  validateVerdict, parseSweepState, buildStateBody, observations, firedFingerprints, reviewOpen, staleComment,
 } from './db-sweep-lib.mjs';
 import { collectDb, pupScalar, dbmStatement } from './collect.mjs';
 
@@ -84,11 +84,11 @@ function findClones(repos) {
 }
 
 function readState(repo, number) {
-  if (number === undefined) return { readable: true, issue: null, lastTick: null };
+  if (number === undefined) return { readable: true, issue: null, lastTick: null, clearRuns: {} };
   try {
     const state = parseSweepState(JSON.parse(gh([`repos/${repo}/issues/${number}`])).body);
     if (!state) return { readable: false, issue: null, lastTick: null, error: `#${number} holds no state marker` };
-    return { readable: true, issue: number, lastTick: state.last_successful_tick };
+    return { readable: true, issue: number, lastTick: state.last_successful_tick, clearRuns: state.clear_runs };
   } catch (e) { return { readable: false, issue: null, lastTick: null, error: firstLine(e) }; }
 }
 
@@ -125,7 +125,7 @@ function report(run, repo, summary, { advance }) {
   } catch (e) { notes.push(`${repo}: summary not posted (${firstLine(e)})`); }
   if (advance && run.mode === 'live' && g.state.readable) {
     try {
-      gh([`repos/${repo}/issues/${st.issue}`, '--method', 'PATCH', '--input', '-'], JSON.stringify({ body: buildStateBody(Date.parse(g.spans.window.to)) }));
+      gh([`repos/${repo}/issues/${st.issue}`, '--method', 'PATCH', '--input', '-'], JSON.stringify({ body: buildStateBody(Date.parse(g.spans.window.to), g.stale?.counts ?? {}) }));
       notes.push(`${repo}: state advanced to ${g.spans.window.to}`);
     } catch (e) { notes.push(`${repo}: state not advanced (${firstLine(e)}) — the next run reads this window again`); }
   }
@@ -162,7 +162,7 @@ function prepare(args) {
       }
     }
     const state = g.skip ? { readable: false, issue: null, lastTick: null, error: g.skip } : readState(repo, cfg.stateIssues[repo]);
-    g.state = { readable: state.readable, issue: state.issue, error: state.error || null };
+    g.state = { readable: state.readable, issue: state.issue, error: state.error || null, clearRuns: state.clearRuns || {} };
     g.spans = windows(state.lastTick, nowMs);
     if (!g.skip) {
       g.notes.push(`window ${g.spans.window.from} → ${g.spans.window.to} vs ${g.spans.baseline.from} → ${g.spans.baseline.to} (${
@@ -174,7 +174,7 @@ function prepare(args) {
     ...p, id: `p${i}`, sourceDir: clones[p.repo] || null, active: !repos[p.repo].skip,
     outputFile: f(`collect-p${i}.json`),
   }));
-  const run = { mode, ddSite: cfg.ddSite, nowIso: new Date(nowMs).toISOString(), pairs, repos, index };
+  const run = { mode, ddSite: cfg.ddSite, closeAfter: cfg.closeAfter, nowIso: new Date(nowMs).toISOString(), pairs, repos, index };
   writeJson(f('run.json'), run);
   const active = pairs.filter((p) => p.active);
   const skipped = repoNames.filter((r) => repos[r].skip).map((r) => `${r}: ${repos[r].skip}`);
@@ -253,9 +253,15 @@ async function plan() {
     const perPair = [];
     const counts = { findings: 0, alreadyOpen: 0, accepted: 0 };
     const queue = [];
+    const fired = new Set();
+    const suppressed = new Set();
+    const observed = {};
     for (const p of pairs) {
-      const { findings, notes: n } = evaluate(p, data[p.id], g.spans, p.thresholds);
+      const { findings, notes: n, suppressed: held } = evaluate(p, data[p.id], g.spans, p.thresholds);
       notes.push(...n.map((x) => `${p.db}: ${x}`));
+      for (const x of firedFingerprints(findings)) fired.add(x);
+      for (const x of held) suppressed.add(x);
+      Object.assign(observed, observations(p, data[p.id], g.spans));
       counts.findings += findings.length;
       let open = 0;
       for (const fd of findings) {
@@ -266,6 +272,16 @@ async function plan() {
       }
       perPair.push(`${p.db}: ${data[p.id].instances.length} instance(s), ${data[p.id].queries.length} queries, ${findings.length} finding(s), ${open} already open`);
     }
+    // Open issues that were clear this run count toward a stale close; the
+    // close itself waits for report time, so it only happens on a complete run.
+    const open = Object.entries(run.index[repo]).flatMap(([fp, ms]) => ms.filter((m) => m.state === 'OPEN').map((m) => ({ ...m, fp })));
+    g.stale = reviewOpen({
+      open, fired, suppressed, observed, prev: g.state.clearRuns, closeAfter: run.closeAfter,
+      pairs: pairs.map((p) => ({ db: p.db, thresholds: p.thresholds, instances: data[p.id].instances })),
+    });
+    notes.push(...g.stale.notes);
+    writeJson(f('run.json'), run);
+
     const ranked = rankFindings(queue.map((x) => ({ ...x.fd, _x: x }))).map((r) => r._x);
     for (const x of ranked.slice(CAP)) notes.push(`over the ${CAP}-per-repo cap: ${x.fd.severity} ${x.fd.rule} ${x.pair.db} ${x.fd.querySignature || x.fd.table || x.fd.instance} — ${x.fd.why}`);
     const picked = [];
@@ -285,7 +301,12 @@ async function plan() {
     out.push(line);
     if (!picked.length) {
       quietRepos++;
-      out.push(...report(run, repo, summaryText(run, repo, 'nothing to file', [...perPair.map((x) => `- ${x}`), ...bullets('Notes', notes)]), { advance: true }));
+      const drafts = [];
+      const stale = closeStale(run, repo, { complete: true, drafts });
+      out.push(...stale.map((l) => `  ${l}`));
+      out.push(...report(run, repo, summaryText(run, repo, 'nothing to file', [
+        ...perPair.map((x) => `- ${x}`), ...bullets('Stale', stale), ...bullets('Notes', notes), ...draftBlocks(drafts),
+      ]), { advance: true }));
       continue;
     }
     candidates.push(...picked);
@@ -345,6 +366,33 @@ function tellUnreleased(c, g, deployedSha, run, drafts) {
     return ' — commented';
   } catch (e) { return ` — comment failed (${firstLine(e)})`; }
 }
+
+// Close the open issues that have been clear for closeAfter runs, as completed
+// with a comment saying why. Only a complete run closes (a failed candidate
+// keeps the state, so its counts are not saved either); a close that fails
+// keeps its count, so the next complete run tries again. Returns summary lines.
+function closeStale(run, repo, { complete, drafts }) {
+  const st = run.repos[repo].stale;
+  if (!st) return [];
+  const lines = [];
+  for (const c of st.clear) {
+    if (!c.close) { lines.push(`#${c.number} clear ${c.count}/${run.closeAfter}: ${c.why}`); continue; }
+    const text = staleComment(c);
+    if (run.mode !== 'live') { drafts.push({ title: `close #${c.number}: not seen for ${c.count} runs`, text }); lines.push(`would close #${c.number}: ${c.why}`); continue; }
+    if (!complete) { st.counts[c.fp] = c.count - 1; lines.push(`#${c.number} not closed: this run is incomplete`); continue; }
+    try {
+      gh([`repos/${repo}/issues/${c.number}/comments`, '--method', 'POST', '--input', '-'], JSON.stringify({ body: text }));
+      gh([`repos/${repo}/issues/${c.number}`, '--method', 'PATCH', '--input', '-'], JSON.stringify({ state: 'closed', state_reason: 'completed' }));
+      lines.push(`closed #${c.number}: not seen for ${c.count} runs — ${c.why}`);
+    } catch (e) {
+      st.counts[c.fp] = c.count;
+      lines.push(`#${c.number} close failed (${firstLine(e)})`);
+    }
+  }
+  return lines;
+}
+
+const draftBlocks = (drafts) => drafts.flatMap((d) => ['', `<details><summary>${d.title}</summary>`, '', d.text, '', '</details>']);
 
 function newBody(c, v) { return withDbmPointer(c.finding, v.body, c.ddSite, c.window); }
 
@@ -414,14 +462,14 @@ function finish() {
     }
     const verb = run.mode === 'live' ? 'filed' : 'would-file';
     const head = `${run.mode === 'live' ? 'SWEPT' : 'OBSERVED'} — ${verb}=${n.filed} held=${n.held} dropped=${n.dropped} failed=${n.failed}`;
+    const stale = closeStale(run, repo, { complete: !n.failed, drafts });
     const body = summaryText(run, repo, head, [
-      ...perPair.map((x) => `- ${x}`), ...bullets('Candidates', lines), ...bullets('Notes', notes),
-      ...drafts.flatMap((d) => ['', `<details><summary>${d.title}</summary>`, '', d.text, '', '</details>']),
+      ...perPair.map((x) => `- ${x}`), ...bullets('Candidates', lines), ...bullets('Stale', stale), ...bullets('Notes', notes), ...draftBlocks(drafts),
     ]);
     // A failed candidate keeps the repo's state where it was, so its next run
     // reads this window again; what this run did file dedups as already open.
     const posted = report(run, repo, body, { advance: !n.failed });
-    out.push(`${repo}: ${head}`, ...lines.map((l) => `  ${l}`), ...posted.map((l) => `  ${l}`));
+    out.push(`${repo}: ${head}`, ...lines.map((l) => `  ${l}`), ...stale.map((l) => `  ${l}`), ...posted.map((l) => `  ${l}`));
     if (n.failed && run.mode === 'live') out.push(`  ${repo}: state not advanced: ${n.failed} failed`);
     for (const k of Object.keys(total)) total[k] += n[k];
   }
