@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   windows, thresholdsFor, parseCollectorOutput, evaluate, fingerprint, indexIssues, classify,
   composeIssueBody, withDbmPointer, parseMarker, gateDecision, closingFix, unreleasedComment, saidUnreleased, validateVerdict, parseConfig, rankFindings,
-  parseSweepState, buildStateBody, DEFAULT_THRESHOLDS,
+  parseSweepState, buildStateBody, DEFAULT_THRESHOLDS, observations, firedFingerprints, reviewOpen, staleComment,
 } from './db-sweep-lib.mjs';
 
 const NOW = Date.parse('2026-10-27T00:00:00Z');
@@ -295,6 +295,107 @@ test('rank: severity first, then total time', () => {
 });
 
 test('state marker round-trips', () => {
-  assert.deepEqual(parseSweepState(buildStateBody(NOW)), { last_successful_tick: NOW });
+  assert.deepEqual(parseSweepState(buildStateBody(NOW)), { last_successful_tick: NOW, clear_runs: {} });
+  assert.deepEqual(parseSweepState(buildStateBody(NOW, { abc: 1 })).clear_runs, { abc: 1 });
+  // a state written before clear_runs existed
+  assert.deepEqual(parseSweepState(`<!-- fu-db-sweep-state: {"last_successful_tick":${NOW}} -->`), { last_successful_tick: NOW, clear_runs: {} });
   assert.equal(parseSweepState('no marker'), null);
+});
+
+test('config: closeAfterClearRuns defaults to 2, 0 turns closing off', () => {
+  const pairs = '"pairs":[{"repo":"a/b","db":"x"}]';
+  assert.equal(parseConfig(`{${pairs}}`).closeAfter, 2);
+  assert.equal(parseConfig(`{"closeAfterClearRuns":0,${pairs}}`).closeAfter, 0);
+  assert.throws(() => parseConfig(`{"closeAfterClearRuns":1.5,${pairs}}`), /whole number/);
+});
+
+test('marker: carries rule and db, and the index reads them (and a legacy body\'s DBM signature)', () => {
+  const fd = { fingerprint: 'f00', rule: 'regression', db: 'x', measure: { name: 'avgMs', value: 50 } };
+  assert.deepEqual(parseMarker(composeIssueBody(fd, 'b')), { fp: 'f00', measure: 'avgMs', value: 50, rule: 'regression', db: 'x' });
+  const legacy = { number: 1, state: 'open', labels: [], body: '<!-- dd-dbm: {"fp":"f01","measure":"avgMs","value":5} -->\n\nDBM: [query 9b67ccf583e62815](https://x)' };
+  assert.deepEqual(indexIssues([legacy]).f01[0], { number: 1, state: 'OPEN', closedAt: null, notPlanned: false, value: 5, rule: null, db: null, sig: '9b67ccf583e62815' });
+});
+
+// ---- Stale open issues ---------------------------------------------------------
+const STALE_PAIR = { ...PAIR, thresholds: T };
+// A filler keeps any one query's share of the database's time below the heavy-share rule.
+const staleFiller = q('filler', stats(1e7, 0.1), stats(1e7, 0.1));
+const staleData = (queries, extra = {}) => ({ ...PROD_FIXTURE, instanceStats: [], tables: [], queries: [...queries, staleFiller], ...extra });
+function review(data, open, { prev = {}, closeAfter = 2 } = {}) {
+  const { findings, suppressed } = evaluate(STALE_PAIR, data, SPANS, T);
+  return reviewOpen({
+    open, fired: firedFingerprints(findings), suppressed: new Set(suppressed), observed: observations(STALE_PAIR, data, SPANS),
+    pairs: [{ db: PAIR.db, thresholds: T, instances: [PROD] }], prev, closeAfter,
+  });
+}
+const openIssue = (number, rule, key, value, extra = {}) => ({
+  number, fp: fingerprint(rule, PROD, PAIR.db, key), value, rule, db: PAIR.db, sig: null, ...extra,
+});
+
+test('stale: a heavy query that no longer breaches is clear; closes on the second run', () => {
+  const fixed = staleData([q('c985631ee7416fa1', stats(245, 4, 900), stats(245, 4, 900))]);
+  const open = [openIssue(7, 'heavy', 'c985631ee7416fa1', 75373)];
+  const first = review(fixed, open);
+  assert.deepEqual(first.clear.map((c) => [c.number, c.count, c.close]), [[7, 1, false]]);
+  assert.deepEqual(first.counts, { [open[0].fp]: 1 });
+  const second = review(fixed, open, { prev: first.counts });
+  assert.deepEqual(second.clear.map((c) => [c.number, c.count, c.close]), [[7, 2, true]]);
+  assert.deepEqual(second.counts, {}); // closed: nothing left to count
+  assert.match(staleComment(second.clear[0]), /not seen this for 2 runs in a row — no longer breaches the heavy rule/);
+});
+
+test('stale: still firing, or firing a more severe rule on the same query, is not clear and resets the count', () => {
+  const open = [openIssue(7, 'heavy', 'c985631ee7416fa1', 75373)];
+  const prev = { [open[0].fp]: 1 };
+  assert.deepEqual(review(PROD_FIXTURE, open, { prev }), { clear: [], counts: {}, notes: [] });
+  // regressed 10× and still heavy: the finding is the regression; heavy is alsoBreached
+  const both = staleData([q('c985631ee7416fa1', stats(2000, 104, 75373), stats(2000, 10, 75373))]);
+  const { findings } = evaluate(STALE_PAIR, both, SPANS, T);
+  assert.equal(findings[0].rule, 'regression');
+  assert.deepEqual(review(both, open, { prev }).clear, []);
+});
+
+test('stale: a regression that stopped firing only because the baseline caught up is not clear', () => {
+  // filed at 50 ms; still 50 ms, but the baseline is now the regressed weeks too
+  const still = staleData([q('regress000000001', stats(1400, 50), stats(1400, 50))]);
+  const open = [openIssue(8, 'regression', 'regress000000001', 50)];
+  assert.equal(evaluate(STALE_PAIR, still, SPANS, T).findings.length, 0);
+  assert.deepEqual(review(still, open).clear, []);
+  // back to 8 ms: at or below 50 ÷ 2
+  const back = staleData([q('regress000000001', stats(1400, 8), stats(1400, 50))]);
+  assert.match(review(back, open).clear[0].why, /^8 ms avg now vs 50 ms avg when filed$/);
+});
+
+test('stale: a step is clear only when calls fell back by the step ratio', () => {
+  const open = [openIssue(9, 'step', 'step000000000001', 1000)];
+  const high = staleData([q('step000000000001', stats(7000, 20), stats(7000, 20))]);
+  assert.deepEqual(review(high, open).clear, []);
+  const low = staleData([q('step000000000001', stats(2100, 20), stats(7000, 20))]);
+  assert.equal(review(low, open).clear.length, 1);
+});
+
+test('stale: a query no longer collected is clear; a missing table cannot be told; another pair\'s issue is left alone', () => {
+  const none = staleData([]);
+  assert.match(review(none, [openIssue(7, 'heavy', 'gone000000000001', 30000)]).clear[0].why, /no longer among the collected/);
+  assert.deepEqual(review(none, [openIssue(12, 'hygiene', 'outbox.inbox_state', 140000)]).clear, []);
+  assert.equal(review(staleData([], { tables: [{ instance: PROD, table: 'outbox.inbox_state', deadRows: 10, liveRows: 100 }] }),
+    [openIssue(12, 'hygiene', 'outbox.inbox_state', 140000)]).clear.length, 1);
+  assert.deepEqual(review(none, [openIssue(7, 'heavy', 'gone000000000001', 30000, { db: 'other_db' })]).clear, []);
+});
+
+test('stale: a sampled query\'s regression cannot be told; neighbour-suppressed pressure is not clear', () => {
+  const sampled = staleData([{ ...q('regress000000001', stats(1400, 1), stats(1400, 1)), sampled: true }]);
+  assert.deepEqual(review(sampled, [openIssue(8, 'regression', 'regress000000001', 50)]).clear, []);
+  // PROD_FIXTURE: the text_resource neighbour blocking the instance
+  const pressure = { number: 3, fp: fingerprint('pressure', PROD, PAIR.db), value: 1, rule: 'pressure', db: PAIR.db, sig: null };
+  assert.deepEqual(review(PROD_FIXTURE, [pressure]).clear, []);
+  assert.equal(review(staleData([], { instanceStats: [{ ...PROD_FIXTURE.instanceStats[0], maxBlocked: 0 }] }), [pressure]).clear.length, 1);
+});
+
+test('stale: a legacy marker is identified from its DBM signature; none at all is a note', () => {
+  const legacy = openIssue(7, 'heavy', 'gone000000000001', 30000, { rule: null, db: null, sig: 'gone000000000001' });
+  assert.equal(review(staleData([]), [legacy]).clear.length, 1);
+  const bare = { ...legacy, sig: null };
+  assert.deepEqual(review(staleData([]), [bare]).notes, ['#7: cannot tell whether it is still seen (no rule or db in its marker)']);
+  assert.deepEqual(review(staleData([]), [legacy], { closeAfter: 0 }), { clear: [], counts: {}, notes: [] });
 });

@@ -80,7 +80,7 @@ const COLLECTED = {
 const fp = (rule, key, inst = INST) => fingerprint(rule, inst, 'compliance_mono', key);
 const marked = (number, rule, key, value, extra = {}) => ({
   number, state: 'open', labels: [{ name: 'datadog-dbm' }],
-  body: composeIssueBody({ fingerprint: fp(rule, key), measure: { name: 'x', value } }, 'filed earlier'), ...extra,
+  body: composeIssueBody({ fingerprint: fp(rule, key), rule, db: 'compliance_mono', measure: { name: 'x', value } }, 'filed earlier'), ...extra,
 });
 
 // Both repos are cloned and have issues; compliance's state issue is #5, billing's #6.
@@ -409,4 +409,76 @@ test('wait: READY once every investigator output exists, TIMEOUT naming the miss
   assert.match(s.run('wait', 'investigate'), /^TIMEOUT 0\/\d+ — missing: inv-/);
   writeVerdicts(s);
   assert.match(s.run('wait', 'investigate'), /^READY (\d+)\/\1/);
+});
+
+// An open issue on a query that is no longer collected is clear; it closes on
+// the second consecutive complete run, counted in the state issue.
+const STALE = marked(20, 'heavy', 'gone000000000001', 30000);
+const staleFp = fp('heavy', 'gone000000000001');
+const withClearRuns = (s, n) => fs.writeFileSync(path.join(s.fx, 'compliance', 'issue-5.json'),
+  JSON.stringify({ number: 5, body: buildStateBody(LAST_TICK, { [staleFp]: n }) }));
+const stateOf = (s) => JSON.parse(JSON.parse(s.read('patch-5.json')).body.match(/fu-db-sweep-state: (\{.*\})/)[1]);
+
+test('stale: the first clear run counts it in the state; the second closes it as completed with a comment', () => {
+  const s = setup({ issues: [...STANDARD_ISSUES, STALE] });
+  s.run('prepare', '--live', CONFIG());
+  writeCollectors(s, quiet);
+  assert.match(s.run('plan'), /#20 clear 1\/2: its query is no longer among the collected ones/);
+  assert.equal(stateOf(s).clear_runs[staleFp], 1);
+  assert.equal(s.read('patch-20.json'), '');
+
+  const t = setup({ issues: [...STANDARD_ISSUES, STALE] });
+  withClearRuns(t, 1);
+  t.run('prepare', '--live', CONFIG());
+  writeCollectors(t, quiet);
+  assert.match(t.run('plan'), /closed #20: not seen for 2 runs/);
+  assert.deepEqual(JSON.parse(t.read('patch-20.json')), { state: 'closed', state_reason: 'completed' });
+  assert.match(t.read('comments.jsonl'), /Closing: the DB perf sweep has not seen this for 2 runs in a row/);
+  assert.match(t.read('comments.jsonl'), /### Stale\\n(- .*\\n)*- closed #20: not seen for 2 runs/);
+  assert.equal(stateOf(t).clear_runs[staleFp], undefined);
+  // #10 fires in COLLECTED but its query is absent from quiet: first clear run
+  assert.equal(stateOf(t).clear_runs[fp('heavy', '9b67ccf583e62815')], 1);
+});
+
+test('stale: an open issue that still fires is never counted', () => {
+  const s = setup({ issues: [...STANDARD_ISSUES, STALE] });
+  withClearRuns(s, 1);
+  s.run('prepare', '--live', CONFIG());
+  writeCollectors(s);
+  s.run('plan');
+  writeVerdicts(s);
+  const fin = s.run('finish');
+  assert.match(fin, /closed #20/);
+  assert.doesNotMatch(fin, /#10 clear/);
+  assert.equal(s.read('patch-10.json'), '');
+  assert.deepEqual(stateOf(s).clear_runs, {});
+});
+
+test('stale: a run with a failed candidate closes nothing and keeps the state', () => {
+  const s = setup({ issues: [STALE] });
+  withClearRuns(s, 1);
+  s.run('prepare', '--live', CONFIG());
+  writeCollectors(s);
+  s.run('plan');
+  writeVerdicts(s, { NEW: { actionable: true, reason: 'r', title: 't', body: 'short' } });
+  assert.match(s.run('finish'), /#20 not closed: this run is incomplete/);
+  assert.equal(s.read('patch-20.json'), '');
+  assert.equal(s.read('patch-5.json'), '');
+});
+
+test('stale: observe drafts the close; closeAfterClearRuns 0 never closes', () => {
+  const s = setup({ issues: [STALE] });
+  withClearRuns(s, 1);
+  s.run('prepare', '--observe', CONFIG());
+  writeCollectors(s, quiet);
+  assert.match(s.run('plan'), /would close #20/);
+  assert.match(s.read('comments.jsonl'), /<details><summary>close #20: not seen for 2 runs/);
+  assert.equal(s.read('patch-20.json'), '');
+
+  const t = setup({ issues: [STALE] });
+  withClearRuns(t, 5);
+  t.run('prepare', '--live', CONFIG({ closeAfterClearRuns: 0 }));
+  writeCollectors(t, quiet);
+  assert.doesNotMatch(t.run('plan'), /#20/);
+  assert.equal(t.read('patch-20.json'), '');
 });

@@ -27,6 +27,22 @@ Queries the Datadog agent runs (`user:datadog`) are never counted. A query
 signature that also runs in another database is only partly attributable, so it
 is judged on pages per call alone (see `CLAUDE.md`).
 
+## Closing stale issues
+
+An open issue the sweep filed is closed (as completed, with a comment saying
+why) after **2 consecutive complete runs** in which it is clear;
+`closeAfterClearRuns` in `CONFIG` changes that, `0` turns it off. Clear means
+it did not fire, and:
+
+- regression / step: re-measured at or below the filed value ÷ the rule's ratio
+  (its baseline moves, so not firing alone proves nothing);
+- heavy / hygiene / pressure: nothing more — those rules are absolute;
+- or its query is no longer among the collected ones.
+
+A sampled query's regression, a missing table or instance, or a neighbour's
+pressure holding a finding back is never clear, and resets the count. Each
+run's summary lists the issues on their way to a close under **Stale**.
+
 ## Tests
 
 ```bash

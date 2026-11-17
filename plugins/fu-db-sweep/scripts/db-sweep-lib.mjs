@@ -123,6 +123,9 @@ export function evaluate(pair, data, spans, t) {
   const baseDays = daysOf(spans.baseline);
   const findings = [];
   const notes = [];
+  // Fingerprints a neighbour's pressure kept from filing: still breaching, so
+  // an open issue on one is not clear (see reviewOpen).
+  const suppressed = [];
 
   const neighbourPressure = new Set();
   // Instance pressure — an issue only when this database is the main load on
@@ -148,6 +151,7 @@ export function evaluate(pair, data, spans, t) {
       });
     } else {
       neighbourPressure.add(s.instance);
+      suppressed.push(fingerprint('pressure', s.instance, pair.db));
       notes.push(`neighbour pressure on ${s.instance}: ${reasons.join(', ')} — busiest database ${top ?? 'unknown'} (${top ? aas(s.timeNsByDb[top]) : '?'} active sessions), ${pair.db} at ${aas(ours)}`);
     }
   }
@@ -226,6 +230,7 @@ export function evaluate(pair, data, spans, t) {
     if (neighbourPressure.has(q.instance)) {
       for (const h of hits.filter((x) => x.rule === 'regression' || x.measure.name === 'shareOfDbTime')) {
         notes.push(`${h.rule} on ${q.querySignature} not filed: ${h.why}, during neighbour pressure on ${q.instance}`);
+        suppressed.push(fingerprint(h.rule, q.instance, pair.db, q.querySignature));
         hits.splice(hits.indexOf(h), 1);
       }
     }
@@ -251,7 +256,7 @@ export function evaluate(pair, data, spans, t) {
       });
     }
   }
-  return { findings, notes };
+  return { findings, notes, suppressed };
 }
 
 // ---- Fingerprint, marker, dedup -------------------------------------------------
@@ -265,7 +270,9 @@ export function fingerprint(rule, instance, db, key) {
 const MARKER_RE = /<!--\s*dd-dbm:\s*(\{.*?\})\s*-->/s;
 
 export function buildMarker(finding) {
-  return `<!-- dd-dbm: ${JSON.stringify({ fp: finding.fingerprint, measure: finding.measure.name, value: finding.measure.value })} -->`;
+  return `<!-- dd-dbm: ${JSON.stringify({
+    fp: finding.fingerprint, measure: finding.measure.name, value: finding.measure.value, rule: finding.rule, db: finding.db,
+  })} -->`;
 }
 
 export function parseMarker(body) {
@@ -307,8 +314,11 @@ export function dbmQueryUrl({ querySignature: qs, instance }, ddSite, span) {
   return `${ddSite}/databases/queries?${p.toString().replace(/\+/g, '%20')}`;
 }
 
-// The issue index: {fp: [{number, state, closedAt, notPlanned, value}]}, from
-// the REST listing of `datadog-dbm` issues.
+// The issue index: {fp: [{number, state, closedAt, notPlanned, value, rule,
+// db, sig}]}, from the REST listing of `datadog-dbm` issues. Markers written
+// before 0.5.0 carry no rule or db; a query issue's body still names its
+// signature in the DBM link, which reviewOpen uses to identify it.
+const DBM_LINK_RE = /DBM: \[query ([0-9a-f]+)\]/;
 export function indexIssues(issues) {
   const out = {};
   for (const it of issues || []) {
@@ -319,6 +329,7 @@ export function indexIssues(issues) {
     (out[mk.fp] ||= []).push({
       number: it.number, state: it.state === 'open' ? 'OPEN' : 'CLOSED', closedAt: it.closed_at || null,
       notPlanned: it.state_reason === 'not_planned' || labels.includes('wontfix'), value: mk.value ?? null,
+      rule: mk.rule ?? null, db: mk.db ?? null, sig: (it.body || '').match(DBM_LINK_RE)?.[1] ?? null,
     });
   }
   return out;
@@ -344,6 +355,97 @@ export function classify(matches, value, t) {
 export function rankFindings(list) {
   return [...list].sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity]
     || (b.metrics?.totalSeconds ?? 0) - (a.metrics?.totalSeconds ?? 0));
+}
+
+// ---- Stale open issues ------------------------------------------------------------
+// An open issue the sweep filed closes after `closeAfter` consecutive complete
+// runs in which it is clear. "Did not fire" alone is not clear: regression and
+// step compare against a baseline that moves, so a regression stops firing once
+// the regressed weeks become the baseline, fixed or not. So:
+//   - fired this run (as the finding, or one it also breached), or held back by
+//     a neighbour's pressure → not clear;
+//   - regression / step → clear only when re-measured at or below the filed
+//     value ÷ the rule's ratio (a sampled query's numbers are noise: not clear);
+//   - heavy / hygiene / pressure → absolute rules: not firing is clear;
+//   - a query no longer among the collected ones (below every rule's floor, or
+//     no longer run) → clear; a missing table or instance → cannot tell.
+// An issue whose db is not one of the repo's pairs is left alone. Anything not
+// clear resets the count: the runs must be consecutive.
+const QUERY_RULES = new Set(['regression', 'heavy', 'step']);
+
+// What this run measured for one pair, by the fingerprint each rule would give.
+export function observations(pair, data, spans) {
+  const days = daysOf(spans.window);
+  const out = {};
+  const put = (rule, inst, key, o) => { out[fingerprint(rule, inst, pair.db, key)] = { rule, db: pair.db, ...o }; };
+  for (const q of data.queries) {
+    const k = q.querySignature;
+    put('heavy', q.instance, k, {});
+    put('regression', q.instance, k, q.sampled ? { sampled: true } : { value: avgMs(q.window) });
+    put('step', q.instance, k, q.sampled ? { sampled: true } : { value: q.window.calls / days });
+  }
+  for (const tb of data.tables) put('hygiene', tb.instance, tb.table, {});
+  for (const s of data.instanceStats) put('pressure', s.instance, undefined, {});
+  return out;
+}
+
+// What fired: each finding's fingerprint plus the rules it also breached.
+export function firedFingerprints(findings) {
+  const out = new Set();
+  for (const fd of findings) {
+    out.add(fd.fingerprint);
+    for (const r of fd.alsoBreached || []) out.add(fingerprint(r, fd.instance, fd.db, fd.querySignature));
+  }
+  return out;
+}
+
+// open: [{number, fp, value, rule, db, sig}]; pairs: [{db, thresholds,
+// instances}]; prev: {fp: clear runs so far}. Returns {clear: [{number, fp,
+// count, close, why}], counts: {fp: n} to keep in the state, notes}.
+export function reviewOpen({ open, fired, suppressed, observed, pairs, prev = {}, closeAfter }) {
+  const clear = [];
+  const counts = {};
+  const notes = [];
+  if (!closeAfter) return { clear, counts, notes };
+  for (const it of open) {
+    let id = it.rule && it.db ? { rule: it.rule, db: it.db } : observed[it.fp] ?? null;
+    if (!id && it.sig) {
+      for (const p of pairs) {
+        for (const inst of p.instances) {
+          const rule = [...QUERY_RULES].find((r) => fingerprint(r, inst, p.db, it.sig) === it.fp);
+          if (rule) id = { rule, db: p.db };
+        }
+      }
+    }
+    if (!id) { notes.push(`#${it.number}: cannot tell whether it is still seen (no rule or db in its marker)`); continue; }
+    const pair = pairs.find((p) => p.db === id.db);
+    if (!pair || fired.has(it.fp) || suppressed.has(it.fp)) continue;
+    const o = observed[it.fp];
+    let why = null;
+    if (!o) {
+      if (QUERY_RULES.has(id.rule)) why = 'its query is no longer among the collected ones';
+    } else if (id.rule === 'regression' || id.rule === 'step') {
+      const ratio = id.rule === 'regression' ? pair.thresholds.regressionRatio : pair.thresholds.stepRatio;
+      const unit = id.rule === 'regression' ? ' ms avg' : '/day';
+      if (!o.sampled && typeof it.value === 'number' && it.value > 0 && o.value <= it.value / ratio) {
+        why = `${round(o.value, 1)}${unit} now vs ${round(it.value, 1)}${unit} when filed`;
+      }
+    } else why = `no longer breaches the ${id.rule} rule`;
+    if (!why) continue;
+    const count = (prev[it.fp] || 0) + 1;
+    const close = count >= closeAfter;
+    if (!close) counts[it.fp] = count;
+    clear.push({ number: it.number, fp: it.fp, count, close, why });
+  }
+  return { clear, counts, notes };
+}
+
+export function staleComment({ why, count }) {
+  return [
+    `Closing: the DB perf sweep has not seen this for ${count} run${count === 1 ? '' : 's'} in a row — ${why}.`,
+    '',
+    'If it comes back, the sweep reopens it once a deploy newer than this close is serving it.',
+  ].join('\n');
 }
 
 // ---- Reopen gate ------------------------------------------------------------------
@@ -432,11 +534,15 @@ export function parseSweepState(body) {
   if (!m) return null;
   try {
     const s = JSON.parse(m[1]);
-    return Number.isFinite(s.last_successful_tick) ? { last_successful_tick: s.last_successful_tick } : null;
+    if (!Number.isFinite(s.last_successful_tick)) return null;
+    const clear = s.clear_runs && typeof s.clear_runs === 'object' ? s.clear_runs : {};
+    return { last_successful_tick: s.last_successful_tick, clear_runs: clear };
   } catch { return null; }
 }
 
-export function buildStateBody(lastTickMs) {
+// clear_runs: {fp: consecutive clear runs} for open issues on their way to a
+// stale close (reviewOpen).
+export function buildStateBody(lastTickMs, clearRuns = {}) {
   return [
     'State for the DB perf sweep cloud routine (fu-db-sweep): when its last completed sweep ended.',
     'The next run reads Datadog DBM from that point (at least 7 days back, at most 28).',
@@ -444,12 +550,14 @@ export function buildStateBody(lastTickMs) {
     '',
     `Last completed sweep: ${new Date(lastTickMs).toISOString()}`,
     '',
-    `<!-- fu-db-sweep-state: ${JSON.stringify({ last_successful_tick: lastTickMs })} -->`,
+    `<!-- fu-db-sweep-state: ${JSON.stringify({ last_successful_tick: lastTickMs, clear_runs: clearRuns })} -->`,
   ].join('\n');
 }
 
 // ---- Config -----------------------------------------------------------------------
-// {stateIssues?: {"<owner>/<repo>": N}, ddSite?, pairs: [{repo, db, overrides?}]}.
+// {stateIssues?: {"<owner>/<repo>": N}, ddSite?, closeAfterClearRuns?, pairs: [{repo, db, overrides?}]}.
+// closeAfterClearRuns (default 2, 0 = never) closes an open issue after that
+// many consecutive complete runs in which it is clear.
 // Each repo keeps its own state issue (window + weekly summary); repo keys are
 // matched case-insensitively and normalised to the spelling the pairs use.
 export function parseConfig(raw) {
@@ -479,5 +587,7 @@ export function parseConfig(raw) {
     if (!Number.isInteger(n) || n < 1) throw new Error(`CONFIG.stateIssues["${repo}"] must be an issue number`);
     stateIssues[canonical] = n;
   }
-  return { stateIssues, ddSite: (c.ddSite || 'https://ap2.datadoghq.com').replace(/\/$/, ''), pairs };
+  const closeAfter = c.closeAfterClearRuns ?? 2;
+  if (!Number.isInteger(closeAfter) || closeAfter < 0) throw new Error('CONFIG.closeAfterClearRuns must be a whole number (0 = never close)');
+  return { stateIssues, closeAfter, ddSite: (c.ddSite || 'https://ap2.datadoghq.com').replace(/\/$/, ''), pairs };
 }
