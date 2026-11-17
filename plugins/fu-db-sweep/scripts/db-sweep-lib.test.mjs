@@ -314,6 +314,11 @@ test('marker: carries rule and db, and the index reads them (and a legacy body\'
   assert.deepEqual(parseMarker(composeIssueBody(fd, 'b')), { fp: 'f00', measure: 'avgMs', value: 50, rule: 'regression', db: 'x' });
   const legacy = { number: 1, state: 'open', labels: [], body: '<!-- dd-dbm: {"fp":"f01","measure":"avgMs","value":5} -->\n\nDBM: [query 9b67ccf583e62815](https://x)' };
   assert.deepEqual(indexIssues([legacy]).f01[0], { number: 1, state: 'OPEN', closedAt: null, notPlanned: false, value: 5, rule: null, db: null, sig: '9b67ccf583e62815' });
+  // as filed in prod: the link in backticks, or only the finding's signature line
+  const sigOf = (body) => indexIssues([{ ...legacy, body: `<!-- dd-dbm: {"fp":"f01"} -->\n\n${body}` }]).f01[0].sig;
+  assert.equal(sigOf('DBM: ``[query 4102189aaa2091b](https://x)``'), '4102189aaa2091b');
+  assert.equal(sigOf('- querySignature: `18c63baa1e3bd327`'), '18c63baa1e3bd327');
+  assert.equal(sigOf('no signature here'), null);
 });
 
 // ---- Stale open issues ---------------------------------------------------------
