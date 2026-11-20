@@ -436,5 +436,25 @@ has_no "no eleventh NIT" "[NIT] n11" "$(posted_body)"
 has "a SINGLE prompt carries the cap" "  MAX_NITS = 10" "$(PR_FILES=src/a.cs one 7 --routine; out)"
 has "a merger prompt carries the cap" "  MAX_NITS = 10" "$(FILE_LINES=500 one 7 --routine; sed -n '/^--- merger/,$p' "$SANDBOX/out")"
 
+echo "== shared routine: routine_attach_check gates add_repo =="
+new_sandbox
+attach() { bash -c 'source "$1"; shift; routine_attach_check "$@"' _ "$LIB" "$@" 2>/dev/null; }
+eq "requested by name → attach" "ATTACH InfoTrackGlobal Repo" "$(attach InfoTrackGlobal/Repo 7)"
+eq "a '#' PR is accepted" "ATTACH InfoTrackGlobal Repo" "$(attach InfoTrackGlobal/Repo '#7')"
+eq "requested from someone else → skip before the clone" \
+  "SKIP — InfoTrackGlobal/Repo PR #7: review not requested from bot by name" \
+  "$(REQUESTED=carol attach InfoTrackGlobal/Repo 7)"
+has "another org → skip" "SKIP — 'evil/Repo' is not a repository" "$(attach evil/Repo 7)"
+has "a path-like repo → skip" "SKIP — 'InfoTrackGlobal/a/b' is not" "$(attach InfoTrackGlobal/a/b 7)"
+has "shell text in the repo → skip" "SKIP —" "$(attach 'InfoTrackGlobal/x;id' 7)"
+eq "no PR → skip" "SKIP — no PR number for InfoTrackGlobal/Repo" "$(attach InfoTrackGlobal/Repo '')"
+cat >"$SANDBOX/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "$2" = user ] && { echo bot; exit 0; }
+echo "HTTP 404" >&2; exit 1
+STUB
+chmod +x "$SANDBOX/bin/gh"
+eq "an unreadable PR (repo not attached yet) → attach" "ATTACH InfoTrackGlobal Repo" "$(attach InfoTrackGlobal/Repo 7)"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

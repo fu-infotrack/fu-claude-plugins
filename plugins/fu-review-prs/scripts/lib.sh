@@ -1378,6 +1378,34 @@ requested_from_me() {
         --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>/dev/null | grep -qx true
 }
 
+# The shared routine's first step, before it attaches the event's repo with
+# add_repo and clones it. The repo and PR come from the GitHub trigger context,
+# copied by the orchestrator model, so they are validated here: only the orgs
+# in ROUTINE_ORGS, and a numeric PR. Most events are requests to someone else;
+# when gh can read the PR without the repo attached and it does not request
+# us by name, this SKIPs before the clone. A failed read is not a SKIP: the
+# repo may need add_repo first, and pr_review_one's own guard runs after it.
+# Prints "SKIP — <reason>" or "ATTACH <owner> <name>".
+ROUTINE_ORGS="InfoTrackGlobal"
+routine_attach_check() {
+    local repo=$1 pr=${2#\#} org me req
+    org=${repo%%/*}
+    if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || [[ " $ROUTINE_ORGS " != *" $org "* ]]; then
+        echo "SKIP — '$repo' is not a repository of $ROUTINE_ORGS"; return 0
+    fi
+    if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+        echo "SKIP — no PR number for $repo"; return 0
+    fi
+    me=$(get_gh_user)
+    if [ -n "$me" ] \
+        && req=$(gh api "repos/$repo/pulls/$pr" \
+            --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>/dev/null) \
+        && [ "$req" = false ]; then
+        echo "SKIP — $repo PR #$pr: review not requested from $me by name"; return 0
+    fi
+    echo "ATTACH $org ${repo#*/}"
+}
+
 # A /review-pr SKIP carries its reason on the same line — the last thing logged,
 # which every skip path writes just before it. A cloud run's log file dies with
 # its sandbox, so this line is the only record of why it skipped.
