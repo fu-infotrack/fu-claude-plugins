@@ -172,7 +172,9 @@ routine's, unchanged.
   attached per run: the orchestrator reads `Repository:` and `PR: #<n>` from the
   `<github-trigger-context>` block, `routine_attach_check` validates them (only
   `ROUTINE_ORGS`, a numeric PR) and SKIPs a request to someone else when `gh` can
-  read the PR. Otherwise the orchestrator calls the `add_repo` tool with `push`
+  read the PR. When it cannot read it, `ATTACH` is followed by a
+  `(guard unread: …)` line naming the failed `gh` call and its error, so the
+  run's transcript shows why the run did not skip before the clone. Otherwise the orchestrator calls the `add_repo` tool with `push`
   access (so `gh` can post as you) and clones the repo in full. A
   fresh sandbox per run means every run attaches and clones again.
 - **One trigger per repo**, all on the same routine: `create_webhook_trigger`
@@ -234,7 +236,8 @@ fi
 ```
 
 - Output starts with `SKIP` → **stop**. Reply with that line and nothing else.
-- Output is `ATTACH <owner> <name>` → go to Step 2.
+- First line is `ATTACH <owner> <name>` → go to Step 2. A second line
+  `(guard unread: …)` is information only: ignore it.
 
 ### Step 2 — Attach and clone
 
