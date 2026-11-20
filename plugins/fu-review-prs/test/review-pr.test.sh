@@ -451,10 +451,22 @@ eq "no PR → skip" "SKIP — no PR number for InfoTrackGlobal/Repo" "$(attach I
 cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 [ "$2" = user ] && { echo bot; exit 0; }
-echo "HTTP 404" >&2; exit 1
+echo "HTTP 404: Not Found" >&2; exit 1
 STUB
 chmod +x "$SANDBOX/bin/gh"
-eq "an unreadable PR (repo not attached yet) → attach" "ATTACH InfoTrackGlobal Repo" "$(attach InfoTrackGlobal/Repo 7)"
+eq "an unreadable PR (repo not attached yet) → attach, with the reason" \
+  "ATTACH InfoTrackGlobal Repo
+(guard unread: gh api repos/InfoTrackGlobal/Repo/pulls/7: HTTP 404: Not Found)" \
+  "$(attach InfoTrackGlobal/Repo 7)"
+cat >"$SANDBOX/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf 'HTTP 401: Bad credentials\n(https://api.github.com/user)\n' >&2; exit 1
+STUB
+chmod +x "$SANDBOX/bin/gh"
+eq "no gh user → attach, naming the user read" \
+  "ATTACH InfoTrackGlobal Repo
+(guard unread: gh api user: HTTP 401: Bad credentials (https://api.github.com/user))" \
+  "$(attach InfoTrackGlobal/Repo 7)"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

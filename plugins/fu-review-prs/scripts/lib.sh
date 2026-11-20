@@ -1385,10 +1385,12 @@ requested_from_me() {
 # when gh can read the PR without the repo attached and it does not request
 # us by name, this SKIPs before the clone. A failed read is not a SKIP: the
 # repo may need add_repo first, and pr_review_one's own guard runs after it.
-# Prints "SKIP — <reason>" or "ATTACH <owner> <name>".
+# Prints "SKIP — <reason>" or "ATTACH <owner> <name>". When the check could not
+# decide, a second line "(guard unread: <which read>: <gh's error>)" follows:
+# a cloud run's transcript is the only place that reason can show up.
 ROUTINE_ORGS="InfoTrackGlobal"
 routine_attach_check() {
-    local repo=$1 pr=${2#\#} org me req
+    local repo=$1 pr=${2#\#} org me req why="" errf
     org=${repo%%/*}
     if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || [[ " $ROUTINE_ORGS " != *" $org "* ]]; then
         echo "SKIP — '$repo' is not a repository of $ROUTINE_ORGS"; return 0
@@ -1396,14 +1398,28 @@ routine_attach_check() {
     if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
         echo "SKIP — no PR number for $repo"; return 0
     fi
-    me=$(get_gh_user)
-    if [ -n "$me" ] \
-        && req=$(gh api "repos/$repo/pulls/$pr" \
-            --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>/dev/null) \
-        && [ "$req" = false ]; then
+    errf=$(mktemp)
+    if ! me=$(gh api user --jq '.login' 2>"$errf") || [ -z "$me" ]; then
+        why="gh api user: $(attach_err "$errf")"
+    elif ! req=$(gh api "repos/$repo/pulls/$pr" \
+            --jq "any(.requested_reviewers[]?; .login == \"$me\")" 2>"$errf"); then
+        why="gh api repos/$repo/pulls/$pr: $(attach_err "$errf")"
+    elif [ "$req" = false ]; then
+        rm -f "$errf"
         echo "SKIP — $repo PR #$pr: review not requested from $me by name"; return 0
+    elif [ "$req" != true ]; then
+        why="unexpected answer '${req:0:80}' from repos/$repo/pulls/$pr"
     fi
+    rm -f "$errf"
     echo "ATTACH $org ${repo#*/}"
+    [ -z "$why" ] || echo "(guard unread: $why)"
+}
+
+# gh's stderr for routine_attach_check: one line, at most 200 characters.
+attach_err() {
+    local e
+    e=$(tr -s '\n\t' '  ' < "$1" | sed 's/ *$//' | cut -c1-200)
+    echo "${e:-no error output}"
 }
 
 # A /review-pr SKIP carries its reason on the same line — the last thing logged,
