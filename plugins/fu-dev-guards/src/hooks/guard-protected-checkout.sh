@@ -6,9 +6,11 @@
 #   protected_dirs        list of absolute dir roots to protect (empty = guard off)
 #   protected_dir_exempt  list of regex; a cwd matching any is allowed
 #                         (default: /.claude/, so switching inside a worktree is fine)
+# The dir comes from cmd_dir (hook input cwd + leading `cd`s), not the hook's $PWD.
 # Env overrides (tests): PROTECTED_DIRS / PROTECTED_DIR_EXEMPT / GUARD_CWD.
 
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
+input=$(cat)
+cmd=$(jq -r '.tool_input.command // ""' <<<"$input" 2>/dev/null)
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Segment + head-match so chained/wrapped forms can't slip past a start-anchor:
@@ -25,7 +27,7 @@ fu_get() { [ -f "$fu_config" ] && bash "$fu_config" dev-guards "$1" 2>/dev/null 
 
 [ -n "$PROTECTED_DIRS" ] || exit 0
 
-cwd="${GUARD_CWD:-$PWD}/"
+cwd="$(cmd_dir "$input" "$cmd" 'git checkout' 'git switch' 'gh pr checkout')/"
 
 in_protected=0
 while IFS= read -r d; do

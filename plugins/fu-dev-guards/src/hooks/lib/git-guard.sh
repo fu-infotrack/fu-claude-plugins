@@ -219,3 +219,39 @@ cmd_invokes() {
 
   return 1
 }
+
+# Print the directory the guarded verb in a Bash command runs in.
+# Usage: cmd_dir "$hook_input_json" "$cmd" 'git commit' ...
+#
+# A hook process's own $PWD is NOT where the command runs — Claude Code may start
+# hooks in the project root even when the session has moved into a worktree. So
+# start from GUARD_CWD (test seam), else the hook input's `cwd`, else $PWD, then
+# apply each `cd <dir>` segment that precedes the first segment invoking a verb.
+# Approximate by design: subshell scoping and `cd -` are not modelled.
+cmd_dir() {
+  local input=$1 cmd=$2; shift 2
+  local dir seg target verb
+  dir=${GUARD_CWD:-$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)}
+  [ -n "$dir" ] || dir=$PWD
+
+  while IFS= read -r seg; do
+    seg=$(_gg_strip "$seg")
+    [ -n "$seg" ] || continue
+    for verb in "$@"; do
+      case "$seg " in "$verb "*) break 2 ;; esac
+    done
+    case $seg in
+      cd|'cd ~') dir=$HOME ;;
+      'cd -'*) ;;
+      cd\ *)
+        target=${seg#cd }; target=${target%% *}
+        case $target in
+          /*)    dir=$target ;;
+          '~'/*) dir=$HOME/${target#'~/'} ;;
+          *)     dir=$dir/$target ;;
+        esac ;;
+    esac
+  done <<< "$(_gg_segments "$cmd")"
+
+  (cd "$dir" 2>/dev/null && pwd) || printf '%s' "$dir"
+}
