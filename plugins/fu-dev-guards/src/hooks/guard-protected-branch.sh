@@ -7,13 +7,17 @@
 # Env overrides PROTECTED_BRANCHES / REPO_FILTER take precedence (used by tests).
 DEFAULT_BRANCHES='^(main|master|develop)$'
 
-cmd=$(jq -r '.tool_input.command // ""' 2>/dev/null)
+input=$(cat)
+cmd=$(jq -r '.tool_input.command // ""' <<<"$input" 2>/dev/null)
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Segment + head-match so a chained commit (`git fetch && git commit -m x`) or a
 # wrapped one can't slip past a start-anchored grep.
 source "$here/lib/git-guard.sh"
 cmd_invokes "$cmd" 'git commit' || exit 0
+
+# Check the repo the commit runs in, not the hook process's own cwd.
+dir=$(cmd_dir "$input" "$cmd" 'git commit')
 
 # Resolve config from fu-tools unless the matching env var is already set.
 fu_config="$here/../../scripts/fu-config.sh"
@@ -26,11 +30,11 @@ fu_get() { [ -f "$fu_config" ] && bash "$fu_config" dev-guards "$1" 2>/dev/null 
 
 # Scope to matching repos when a filter is set; empty filter = every repo.
 if [ -n "${REPO_FILTER:-}" ]; then
-  remote=$(git remote get-url origin 2>/dev/null)
+  remote=$(git -C "$dir" remote get-url origin 2>/dev/null)
   echo "$remote" | grep -qiE "$REPO_FILTER" || exit 0
 fi
 
-branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
 
 if echo "$branch" | grep -qE "$PROTECTED_BRANCHES"; then
   jq -nc --arg b "$branch" '{

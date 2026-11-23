@@ -29,6 +29,9 @@ source "$here/lib/git-guard.sh"
 cmd_invokes "$cmd" 'git commit' || exit 0
 echo "$cmd" | grep -qE '\bgit\s+commit\b.*--amend' && exit 0
 
+# Format the repo the commit runs in, not the hook process's own cwd.
+cd "$(cmd_dir "$input" "$cmd" 'git commit')" 2>/dev/null || exit 0
+
 project_file=""
 dir=$(pwd)
 for _ in 1 2 3 4 5 6; do

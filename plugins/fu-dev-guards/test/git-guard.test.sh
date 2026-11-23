@@ -172,7 +172,48 @@ git -C "$tmp" commit -q --allow-empty -m init
   exit $?
 )
 [ "$?" -eq 0 ] && ok || bad "branch: non-commit command on main should be ALLOWED"
-rm -rf "$tmp"
+
+echo "== cmd_dir: where the guarded verb runs =="
+# should_dir <desc> <expected> <input-json> <cmd>
+should_dir() {
+  local got; got=$(cmd_dir "$3" "$4" 'git commit')
+  [ "$got" = "$2" ] && ok || bad "cmd_dir — $1 :: expected <$2> got <$got>"
+}
+should_dir "input cwd wins over hook PWD" "$tmp" "{\"cwd\":\"$tmp\"}" 'git commit -m x'
+should_dir "leading cd (absolute)"        "$tmp" '{"cwd":"/"}' "cd $tmp && git commit -m x"
+should_dir "leading cd (relative)"        "$tmp" "{\"cwd\":\"$(dirname "$tmp")\"}" "cd $(basename "$tmp") && git commit"
+should_dir "quoted cd target"             "$tmp" '{"cwd":"/"}' "cd \"$tmp\" && git add . && git commit"
+should_dir "cd AFTER the verb is ignored" "/"    '{"cwd":"/"}' "git commit -m x && cd $tmp"
+should_dir "no cwd falls back to PWD"     "$PWD" '{}' 'git commit -m x'
+
+echo "== e2e: guard-protected-branch.sh resolves the command's repo, not the hook PWD =="
+# Reproduces the real failure: hooks start in the main checkout (on main) while
+# the session works in a worktree on a feature branch.
+feat=$(mktemp -d)
+git -C "$tmp" worktree add -q -b feature "$feat"
+branch_hook() { # <hook-PWD> <json>  -> rc
+  ( cd "$1" && printf '%s' "$2" \
+      | env PROTECTED_BRANCHES='^main$' REPO_FILTER='' bash "$HOOKS/guard-protected-branch.sh" >/dev/null 2>&1 )
+}
+branch_hook "$tmp" "{\"cwd\":\"$feat\",\"tool_input\":{\"command\":\"git commit -m x\"}}"
+[ "$?" -eq 0 ] && ok || bad "branch: commit in feature worktree (hook PWD on main) should be ALLOWED"
+branch_hook "$feat" "{\"cwd\":\"$tmp\",\"tool_input\":{\"command\":\"git commit -m x\"}}"
+[ "$?" -eq 2 ] && ok || bad "branch: commit with session cwd on main should be DENIED"
+branch_hook "$feat" "{\"cwd\":\"$feat\",\"tool_input\":{\"command\":\"cd $tmp && git commit -m x\"}}"
+[ "$?" -eq 2 ] && ok || bad "branch: cd into main checkout then commit should be DENIED"
+
+echo "== e2e: guard-protected-checkout.sh uses the input cwd =="
+run_hook guard-protected-checkout.sh \
+  "{\"cwd\":\"$tmp/.claude/worktrees/x\",\"tool_input\":{\"command\":\"git switch -c y\"}}" \
+  PROTECTED_DIRS="$tmp"
+[ "$RC" -eq 0 ] && ok || bad "checkout: switch with session cwd in a worktree should be ALLOWED (rc=$RC)"
+run_hook guard-protected-checkout.sh \
+  "{\"cwd\":\"$tmp/.claude/worktrees/x\",\"tool_input\":{\"command\":\"cd $tmp && git switch -c y\"}}" \
+  PROTECTED_DIRS="$tmp"
+[ "$RC" -eq 2 ] && ok || bad "checkout: cd into protected root then switch should be DENIED (rc=$RC)"
+
+git -C "$tmp" worktree remove --force "$feat"
+rm -rf "$tmp" "$feat"
 
 echo
 printf 'PASS %d  FAIL %d\n' "$pass" "$fail"
