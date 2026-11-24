@@ -259,6 +259,32 @@ has "rendered on one line" "**Door:** two-way · **Blast radius:** local — Onl
 eq "not carried" '{"findings":[]}' "$(jq -c . "$STATE/last-findings-7.json")"
 cleanup
 
+echo "== answers annotate a blocker, still count, and are carried =="
+new_sandbox
+finish '{"findings":[
+  {"severity":"BLOCKER","text":"Known: paging","answer":{"status":"deferred","by":"octo","reason":"Lands\nin the follow-up.","link":"#412"}},
+  {"severity":"BLOCKER","text":"Race","where":"a.cs:1","answer":{"status":"acknowledged","by":"amy","reason":"Single writer."}}]}'
+eq "still blocks" "COMMENT" "$(posted_event)"
+has "deferred rendered" $'1. [BLOCKER] Known: paging\n   ↳ Deferred by `octo` (#412): Lands in the follow-up.' "$(posted_body)"
+has "acknowledged rendered" $'2. [BLOCKER] Race — `a.cs:1`\n   ↳ Acknowledged by `amy`: Single writer.' "$(posted_body)"
+eq "carried with the answers" \
+  '[{"status":"deferred","by":"octo","reason":"Lands in the follow-up.","link":"#412"},{"status":"acknowledged","by":"amy","reason":"Single writer."}]' \
+  "$(jq -c '[.findings[].answer]' "$STATE/last-findings-7.json")"
+cleanup
+
+# A bad answer is dropped, never the review: it cannot change the verdict.
+echo "== a bad answer is dropped and logged; the finding still posts =="
+new_sandbox
+finish '{"findings":[
+  {"severity":"NIT","text":"Nit","answer":{"status":"acknowledged","by":"a","reason":"r"}},
+  {"severity":"BLOCKER","text":"No link","answer":{"status":"deferred","by":"a","reason":"later"}},
+  {"severity":"BLOCKER","text":"Bad status","answer":{"status":"fine","by":"a","reason":"r"}}]}'
+eq "posted" "COMMENT" "$(posted_event)"
+has_no "no answer rendered" "↳" "$(posted_body)"
+has "findings kept" "3. [BLOCKER] Bad status" "$(posted_body)"
+has "drop logged" "dropped 3 invalid answer(s)" "$(cat "$LOG")"
+cleanup
+
 echo "== no findings file at all: the same retry path =="
 new_sandbox
 eq "status token" "NO_FINDINGS" "$(lib 'record_write pending 7 deadbeef cafef00d; pr_review_finish 7')"

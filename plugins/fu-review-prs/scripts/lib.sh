@@ -84,7 +84,9 @@ mkdir -p "$STATE_DIR"
 #   oneway    oneway-<pr>.txt           `clear`, or the first PR path on the one-way
 #                                       list (classify_one_way_files)
 #   approval  approval-<pr>.txt         `approved <commit>` when the user approved this
-#                                       PR by hand before, else `none` (prior_manual_approval)
+#                                       PR by hand before, else `none` (prior_manual_approval);
+#                                       then `approved_base=`/`head_base=` lines when that
+#                                       commit is not the head (prepare_since_approval)
 #   empty     empty-<pr>                record of a head at which the PR changes no
 #                                       file — detection skips it until the tree moves
 #   mode      mode-<pr>                 a /review-pr run's mode: `single`, plus
@@ -167,8 +169,9 @@ pr_clear() {
 # review sub-agent's prompt (the sub-agent must not derive its own).
 pr_review_paths() {
     local pr=$1
-    printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nFINDINGS_FILE=%s\n' \
-        "$(pr_path scope "$pr")" "$(pr_path prior "$pr")" "$(pr_path findings "$pr")"
+    printf 'SCOPE_FILE=%s\nPRIOR_FILE=%s\nAPPROVAL_FILE=%s\nFINDINGS_FILE=%s\n' \
+        "$(pr_path scope "$pr")" "$(pr_path prior "$pr")" "$(pr_path approval "$pr")" \
+        "$(pr_path findings "$pr")"
 }
 
 rotate_log() {
@@ -306,23 +309,57 @@ def danger_errors:
     + (if (.why | type) == "string" and (.why | test("\\S")) then []
        else ["why must be a non-empty string"] end)
     end;
+def nonempty: type == "string" and test("\\S");
+def answer_errors:
+    if type != "object" then ["answer must be an object"] else
+      (if .status | IN("deferred", "acknowledged") then []
+       else ["answer.status must be deferred or acknowledged"] end)
+    + (if .by | nonempty then [] else ["answer.by must be a non-empty string"] end)
+    + (if .reason | nonempty then [] else ["answer.reason must be a non-empty string"] end)
+    + (if .status != "deferred" or (.link | nonempty) then []
+       else ["a deferred answer needs a link"] end)
+    end;
+def since_errors:
+    if type != "object" then ["since_approval must be an object"] else
+      (if .commit | nonempty then [] else ["commit must be a non-empty string"] end)
+    + (if (.intent_changed | type) == "boolean" then [] else ["intent_changed must be true or false"] end)
+    + (if .why | nonempty then [] else ["why must be a non-empty string"] end)
+    end;
 def flat: gsub("[\\r\\n]+"; " ") | sub("^\\s+"; "") | sub("\\s+$"; "");
+# An answer annotates a BLOCKER only. It never changes the verdict, so a bad one
+# is dropped (and counted) rather than rejecting the file, like merge_danger.
+def has_answer: (.answer // null) != null;
+def answer_ok: has_answer and .severity == "BLOCKER" and (.answer | answer_errors | length) == 0;
 def clean: {severity, text: (.text | flat)}
-         + ((.where // "" | flat) as $w | if $w != "" then {where: $w} else {} end);
+         + ((.where // "" | flat) as $w | if $w != "" then {where: $w} else {} end)
+         + (if answer_ok then {answer: (.answer
+               | {status, by: (.by | flat), reason: (.reason | flat | .[:200])}
+               + (if .status == "deferred" then {link: (.link | flat)} else {} end))}
+            else {} end);
 def normalize:
-    {findings: [.findings[] | clean],
-     prior: [.prior // [] | .[] | {status} + clean]}
+    ([(.findings[], (.prior // [])[]) | select(has_answer and (answer_ok | not))] | length) as $bad
+    | {findings: [.findings[] | clean],
+       prior: [.prior // [] | .[] | {status} + clean]}
+    + (if $bad > 0 then {answers_dropped: $bad} else {} end)
     + (if has("merge_danger") | not then {}
        elif (.merge_danger | danger_errors | length) > 0
        then {merge_danger_invalid: (.merge_danger | danger_errors | join("; "))}
-       else {merge_danger: (.merge_danger | {door, blast_radius, why: (.why | flat)})} end);
+       else {merge_danger: (.merge_danger | {door, blast_radius, why: (.why | flat)})} end)
+    + (if has("since_approval") | not then {}
+       elif (.since_approval | since_errors | length) > 0
+       then {since_approval_invalid: (.since_approval | since_errors | join("; "))}
+       else {since_approval: (.since_approval | {commit: (.commit | flat), intent_changed, why: (.why | flat)})} end);
 # Every BLOCKER, then the first $n NITs, in the order of the file (the merger ranks them).
 def cap_nits($n): .findings = ([.findings[] | select(.severity == "BLOCKER")]
                              + ([.findings[] | select(.severity == "NIT")] | .[:$n]));
 def live_prior: [.prior[] | select(.status != "RESOLVED")];
 def blockers: [(.findings + live_prior)[] | select(.severity == "BLOCKER")] | length;
 def carried: {findings: (.findings + [live_prior[] | del(.status)])};
-def line: "[\(.severity)] \(.text)" + (if .where then " — `\(.where)`" else "" end);
+def answer_line: if .answer then .answer
+        | "\n   ↳ \(if .status == "deferred" then "Deferred" else "Acknowledged" end) by `\(.by)`"
+          + (if .link then " (\(.link))" else "" end) + ": \(.reason)"
+    else "" end;
+def line: "[\(.severity)] \(.text)" + (if .where then " — `\(.where)`" else "" end) + answer_line;
 def numbered: to_entries | map("\(.key + 1). \(.value)") | join("\n");
 def body($pr):
     "### Code review — PR #\($pr)\n"
@@ -334,11 +371,19 @@ def body($pr):
     + (if .merge_danger then .merge_danger
          | "\n\n**Door:** \(.door) · **Blast radius:** \(.blast_radius) — \(.why)"
        elif .merge_danger_invalid then "\n\n**Door / blast radius:** not judged (invalid: \(.merge_danger_invalid))"
+       else "" end)
+    + (if .since_approval then .since_approval
+         | "\n\n**Since your approval at `\(.commit[:7])`:** intent \(if .intent_changed then "changed" else "unchanged" end) — \(.why)"
+       elif .since_approval_invalid then "\n\n**Since your approval:** not judged (invalid: \(.since_approval_invalid))"
        else "" end);
 # "<door> <blast_radius>"; "invalid: <why>" for a bad label; nothing when unjudged.
 def danger: if .merge_danger then .merge_danger | "\(.door) \(.blast_radius)"
             elif .merge_danger_invalid then "invalid: \(.merge_danger_invalid)"
             else empty end;
+# "<commit> <true|false>"; "invalid: <why>" for a bad judgement; nothing when unjudged.
+def since: if .since_approval then .since_approval | "\(.commit) \(.intent_changed)"
+           elif .since_approval_invalid then "invalid: \(.since_approval_invalid)"
+           else empty end;
 '
 
 # Validate and normalize a findings file. Prints the normalized JSON, or returns
@@ -366,6 +411,7 @@ findings_body()     { jq -r --arg pr "$1" "$FINDINGS_JQ"'body($pr)'; }   # findi
 # ones still open or reintroduced. A RESOLVED finding is done with.
 findings_carried()  { jq -c "$FINDINGS_JQ"'carried'; }
 findings_danger()   { jq -r "$FINDINGS_JQ"'danger'; }
+findings_since()    { jq -r "$FINDINGS_JQ"'since'; }
 
 # Write prior-<pr>.json for the sub-agent: {"findings": [...]}, from the findings
 # carried by our last posted review. A review posted before findings were carried
@@ -723,9 +769,10 @@ fetch_prior_findings() {
 # code pushed after it. The latest such decisive review wins: APPROVED, or
 # DISMISSED (how a push-dismissed approval reads — GitHub keeps no original state,
 # so a dismissed changes-request reads the same; rare, accepted), and a later
-# CHANGES_REQUESTED cancels it. COMMENTED reviews are ignored. Rebases and pushes
-# since the approval are deliberately not inspected: the user trusts the team, and
-# this review still has to find zero blockers. Returns 1 on a failed lookup
+# CHANGES_REQUESTED cancels it. COMMENTED reviews are ignored. What changed since
+# the approval is judged by the reviewer (since_approval.intent_changed, with
+# prepare_since_approval's merge bases); finish re-approves only when that says
+# the intent is unchanged. Returns 1 on a failed lookup
 # (pre-flight then writes no record, which finish reads as "no").
 # prior_manual_approval <pr>
 prior_manual_approval() {
@@ -974,6 +1021,31 @@ pr_review_checkout_head() {
     log "PR #$pr: review worktree at $commit"
 }
 
+# When the approval record names an earlier head, make that commit readable in
+# the review worktree and append the two merge bases the reviewer diffs from:
+# `approved_base=<merge-base of base branch and the approved commit>` and
+# `head_base=<merge-base of base branch and the head>`. Any failure appends
+# nothing, which the briefs read as "cannot judge" → intent_changed true, so the
+# re-approval fails closed. prepare_since_approval <pr> <head-commit> <base-ref>
+prepare_since_approval() {
+    local pr=$1 head=$2 base=${3:-main} file approved ab hb git_err
+    file=$(pr_path approval "$pr")
+    approved=$(sed -n '1s/^approved //p' "$file" 2>/dev/null)
+    [ -n "$approved" ] && [ "$approved" != "$head" ] || return 0
+    git_err=$(git -C "$REVIEW_DIR" fetch --quiet origin \
+            "+refs/heads/$base:refs/remotes/origin/$base" "$approved" 2>&1) || {
+        log "WARNING: PR #$pr: could not fetch the approved commit $approved: $git_err"
+        return 0
+    }
+    ab=$(git -C "$REVIEW_DIR" merge-base "origin/$base" "$approved" 2>/dev/null)
+    hb=$(git -C "$REVIEW_DIR" merge-base "origin/$base" "$head" 2>/dev/null)
+    if [ -z "$ab" ] || [ -z "$hb" ]; then
+        log "WARNING: PR #$pr: no merge base with origin/$base for the approved commit or the head"
+        return 0
+    fi
+    printf 'approved_base=%s\nhead_base=%s\n' "$ab" "$hb" >> "$file"
+}
+
 # Acquire lock, setup, purge stale files, detect queued PRs. Pass the command's
 # arguments through (`pr_review_init $ARGUMENTS`) — `--auto-approve` is the only
 # one recognised, and it is recorded on disk for this tick.
@@ -1093,9 +1165,11 @@ pr_review_preflight() {
 
     local pr_info pr_author pr_state
     pr_info=$(gh api "repos/$REPO/pulls/$pr" \
-        --jq '{author: {login: .user.login}, state: (.state | ascii_upcase)}' 2>/dev/null || echo '{}')
+        --jq '{author: {login: .user.login}, state: (.state | ascii_upcase), base: .base.ref}' 2>/dev/null || echo '{}')
     pr_author=$(jq -r '.author.login // empty' <<< "$pr_info")
     pr_state=$(jq -r '.state // empty' <<< "$pr_info")
+    local pr_base
+    pr_base=$(jq -r '.base // "main"' <<< "$pr_info")
 
     if [ -z "$pr_author" ]; then
         log "PR #$pr: could not fetch info, skipping"
@@ -1148,6 +1222,7 @@ pr_review_preflight() {
     }
 
     pr_review_checkout_head "$pr" "$current_commit" || true
+    prepare_since_approval "$pr" "$current_commit" "$pr_base"
 
     # 👀 only once we know a review will run — a SKIP tick must not re-add it to
     # a PR whose posted review already cleared it (pr_review_finish).
@@ -1208,6 +1283,9 @@ pr_review_finish() {
         status=NO_FINDINGS
     else
         local decision=COMMENT blockers review_body downgraded=0 nits
+        local dropped
+        dropped=$(jq -r '.answers_dropped // 0' <<< "$findings")
+        [ "$dropped" = 0 ] || log "PR #$pr: dropped $dropped invalid answer(s) (an answer is BLOCKER-only and needs status, by, reason, and a link when deferred)"
         if mode_has "$pr" routine; then
             nits=$(findings_nits <<< "$findings")
             if [ "$nits" -gt "$ROUTINE_MAX_NITS" ]; then
@@ -1226,19 +1304,25 @@ pr_review_finish() {
             downgraded=1
         fi
         # Second gate: a docs/tests/UI-only PR (LOW_RISK_PATHS_DEFAULT), a PR
-        # the user approved by hand before (prior_manual_approval — whatever was
-        # pushed or rebased since), or one the review judged a two-way door with
-        # a contained or local blast radius and that touches nothing on the
-        # one-way list (ONE_WAY_PATHS_DEFAULT). A missing record or judgement
-        # fails closed.
-        local gate="" oneway="" danger="" approval="" reapproved=""
+        # the user approved by hand before whose changes since keep its intent
+        # (prior_manual_approval + the reviewer's since_approval; an approval of
+        # this very head needs no judgement), or one the review judged a two-way
+        # door with a contained or local blast radius and that touches nothing
+        # on the one-way list (ONE_WAY_PATHS_DEFAULT). A missing record or
+        # judgement fails closed.
+        local gate="" oneway="" danger="" approval="" approved_at="" since="" reapproved=""
         if [ "$decision" = "APPROVE" ]; then
             gate=$(head -n 1 "$(pr_path gate "$pr")" 2>/dev/null)
             approval=$(head -n 1 "$(pr_path approval "$pr")" 2>/dev/null)
-            if [ "$gate" != low-risk ] && [[ "$approval" == "approved "?* ]]; then
-                reapproved=${approval#approved }
-                log "PR #$pr: no blockers found, and you approved it by hand before (at $reapproved) — re-approving"
+            [[ "$approval" == "approved "?* ]] && approved_at=${approval#approved }
+            since=$(findings_since <<< "$findings")
+            if [ "$gate" != low-risk ] && [ -n "$approved_at" ] &&
+                    { [ "$approved_at" = "$commit" ] || [ "$since" = "$approved_at false" ]; }; then
+                reapproved=$approved_at
+                log "PR #$pr: no blockers found, and you approved it by hand before (at $reapproved) with its intent unchanged since — re-approving"
             elif [ "$gate" != low-risk ]; then
+                [ -n "$approved_at" ] &&
+                    log "PR #$pr: you approved it by hand at $approved_at, but not re-approving: ${since:-intent since then not judged}"
                 danger=$(findings_danger <<< "$findings")
                 oneway=$(head -n 1 "$(pr_path oneway "$pr")" 2>/dev/null)
                 if { [ "$danger" = "two-way contained" ] || [ "$danger" = "two-way local" ]; } && [ "$oneway" = clear ]; then
@@ -1263,7 +1347,7 @@ pr_review_finish() {
 *No blockers found. Posted as a comment, not an approval — auto-approve is off.*"
         elif [ "$downgraded" = 2 ]; then
             footer="$footer
-*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes, PRs you approved before, or two-way doors with a contained or local blast radius, are auto-approved.*"
+*No blockers found. Posted as a comment, not an approval — only docs, tests and UI changes, PRs you approved before whose intent has not changed since, or two-way doors with a contained or local blast radius, are auto-approved.*"
         elif [ "$downgraded" = 3 ]; then
             footer="$footer
 *No blockers found. Posted as a comment, not an approval — \`$oneway\` is on the one-way list, so this PR is never auto-approved.*"
@@ -1555,6 +1639,7 @@ routine_reviewer_block() {
     printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
     if [ "$dim" = all ]; then
         printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"
+        printf '  APPROVAL_FILE = %s\n' "$(pr_path approval "$pr")"
         printf '  MAX_NITS = %s\n' "$ROUTINE_MAX_NITS"
     fi
     printf '  OUTPUT_FILE = %s\n' "$out"
@@ -1586,6 +1671,7 @@ routine_prompts() {
     printf 'Use these absolute paths verbatim — do not construct your own:\n'
     printf '  SCOPE_FILE = %s\n' "$(pr_path scope "$pr")"
     printf '  PRIOR_FILE = %s\n' "$(pr_path prior "$pr")"
+    printf '  APPROVAL_FILE = %s\n' "$(pr_path approval "$pr")"
     for d in $ROUTINE_DIMENSIONS; do
         printf '  PART_FILE_%s = %s\n' "$(tr '[:lower:]' '[:upper:]' <<< "$d")" "$(pr_path "part_$d" "$pr")"
     done
