@@ -15,8 +15,8 @@ a plugin command.
   candidates (`SINGLE`). Anything larger gets four finders, one per angle group
   — `diff` (line by line, removed behavior), `trace` (callers, contracts,
   language pitfalls, wrappers, security), `cleanup` (reuse, simplification,
-  efficiency, altitude), `intent` (scope, repo rules, the `Mint` house rule,
-  docs) — and an Opus merger that dedupes, votes CONFIRMED / PLAUSIBLE /
+  efficiency, altitude), `intent` (scope, test evidence, known problems in the
+  PR body, repo rules, docs) — and an Opus merger that dedupes, votes CONFIRMED / PLAUSIBLE /
   REFUTED on every candidate, grades it and re-checks prior findings
   (`FANOUT`). A review posts every BLOCKER and at most 10 NITs, the most
   important first. Generated files (`*.Designer.cs`, `*.g.cs`, lock files) do
@@ -31,9 +31,10 @@ a plugin command.
   when the merger (SINGLE: the reviewer) judges it a two-way door with a
   `contained` or `local` blast radius and no PR file is on the one-way list
   (`ONE_WAY_PATHS_DEFAULT`: migrations, contracts, infrastructure, CI/CD
-  pipelines and Docker files), or when you approved the PR by hand at any
-  earlier head (a rebase since does not matter; a later changes-request from
-  you cancels it). The fu-tools
+  pipelines and Docker files), or when you approved the PR by hand at an
+  earlier head and the merger (SINGLE: the reviewer) judges that the changes
+  since keep its intent (`since_approval`; a later changes-request from you
+  cancels the approval). The fu-tools
   overrides of both lists do not reach a cloud session. Everything else posts
   as a COMMENT.
 

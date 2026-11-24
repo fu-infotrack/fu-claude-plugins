@@ -103,12 +103,13 @@ trap cleanup EXIT
 # GATE is pre-flight's file check (default `low-risk`; `none` seeds no file), and
 # ONEWAY its one-way-list check (default `clear`; `none` seeds no file), and
 # APPROVAL its prior-manual-approval check (default `none`: no file). DANGER
-# adds a merge_danger object to the findings.
+# adds a merge_danger object to the findings, SINCE a since_approval object.
 # run <pr> <APPROVE|COMMENT> <shell-snippet>
 run() {
   local pr=$1 findings='{"findings":[]}' snippet=$3
   [ "$2" = COMMENT ] && findings='{"findings":[{"severity":"BLOCKER","text":"Boom"}]}'
   [ -n "${DANGER:-}" ] && findings=$(jq -c --argjson d "$DANGER" '. + {merge_danger: $d}' <<< "$findings")
+  [ -n "${SINCE:-}" ] && findings=$(jq -c --argjson d "$SINCE" '. + {since_approval: $d}' <<< "$findings")
   bash -c '
     set -uo pipefail
     source "$1"
@@ -328,15 +329,53 @@ eq "nothing deleted" "" "$(cat "$GH_DEL" 2>/dev/null)"
 cleanup
 
 prior='approved abc1234def5678'
+export SINCE='{"commit":"abc1234def5678","intent_changed":false,"why":"Only a rebase."}'
+changed='{"commit":"abc1234def5678","intent_changed":true,"why":"Adds a retry setting."}'
 
-echo "== --auto-approve: a code PR you approved by hand before is re-approved =="
+echo "== --auto-approve: a code PR you approved by hand before, intent unchanged, is re-approved =="
 new_sandbox
 out=$(GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
 eq "status token" "POSTED APPROVE" "$out"
 has "footer names the earlier approval" 'Re-approved: you approved this PR by hand before (at `abc1234`)' "$(posted_body)"
+has "body shows the judgement" 'Since your approval at `abc1234`:** intent unchanged — Only a rebase.' "$(posted_body)"
 cleanup
 
-echo "== a prior approval re-approves even past the one-way list (the user's call) =="
+echo "== a prior approval whose intent changed since is not re-approved =="
+new_sandbox
+out=$(SINCE=$changed GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
+has_no "no re-approve note" "Re-approved" "$(posted_body)"
+has "body shows why" "intent changed — Adds a retry setting." "$(posted_body)"
+cleanup
+
+echo "== a prior approval with no judgement is not re-approved (fails closed) =="
+new_sandbox
+out=$(SINCE= GATE=src/a.cs APPROVAL=$prior run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
+cleanup
+
+echo "== a judgement of a different commit does not count =="
+new_sandbox
+out=$(SINCE='{"commit":"0ther","intent_changed":false,"why":"x"}' GATE=src/a.cs APPROVAL=$prior \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
+cleanup
+
+echo "== an invalid judgement does not count, and the findings still post =="
+new_sandbox
+out=$(SINCE='{"commit":"abc1234def5678","intent_changed":"no","why":"x"}' GATE=src/a.cs APPROVAL=$prior \
+  run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED COMMENT" "$out"
+has "body says not judged" "**Since your approval:** not judged (invalid: intent_changed must be true or false)" "$(posted_body)"
+cleanup
+
+echo "== an approval of this very head re-approves with no judgement =="
+new_sandbox
+out=$(SINCE= GATE=src/a.cs APPROVAL='approved deadbeef' run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7')
+eq "status token" "POSTED APPROVE" "$out"
+cleanup
+
+echo "== a prior approval with intent unchanged re-approves even past the one-way list (the user's call) =="
 new_sandbox
 GATE=src/Migrations/1_add.cs ONEWAY=src/Migrations/1_add.cs APPROVAL=$prior \
   run 7 APPROVE 'pr_review_set_mode --auto-approve; pr_review_finish 7' >/dev/null

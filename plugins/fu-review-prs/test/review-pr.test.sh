@@ -318,6 +318,7 @@ eq "token line" "SINGLE 7 acme/widgets" "$(first)"
 eq "one reviewer block" "--- reviewer all ---" "$(headers)"
 has "the reviewer brief" "$ROOT/routine-reviewer.md and follow it exactly. Review PR #7, angle group: all." "$(out)"
 has "it re-checks the priors" "  PRIOR_FILE = $STATE/prior-7.json" "$(out)"
+has "it judges the changes since an approval" "  APPROVAL_FILE = $STATE/approval-7.txt" "$(out)"
 has "it writes the findings file itself" "  OUTPUT_FILE = $STATE/findings-7.json" "$(out)"
 has "the review worktree" "  REVIEW_DIR = $HOME/.claude/pr-review/worktrees/acme-widgets" "$(out)"
 eq "mode" "single
@@ -372,6 +373,7 @@ eq "only the merger re-checks priors" "1" "$(grep -c 'PRIOR_FILE' "$SANDBOX/out"
 has "the merger brief" "$ROOT/routine-merger.md and follow it exactly. Merge the reviews of PR #7." "$(out)"
 has "the merger reads every part" "  PART_FILE_INTENT = $STATE/findings-7.intent.json" "$(out)"
 has "the merger writes the findings file" "  FINDINGS_FILE = $STATE/findings-7.json" "$(out)"
+has "the merger judges the changes since an approval" "  APPROVAL_FILE = $STATE/approval-7.txt" "$(out)"
 eq "mode" "single
 routine
 fanout" "$(cat "$STATE/mode-7" 2>/dev/null)"

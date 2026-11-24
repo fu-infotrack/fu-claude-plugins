@@ -39,7 +39,7 @@ new_sandbox() {
   #   FILES_FAIL_PAGE — fail only that page of the file list
   #   COMPARE_FILES / COMPARE_FAIL — the compare's files, or make it fail;
   #                the compare's range is recorded in $GH_COMPARE
-  export GH_COMPARE="$SANDBOX/gh-compare.txt" GH_PAGES="$SANDBOX/gh-pages.txt"
+  export GH_COMPARE="$SANDBOX/gh-compare.txt" GH_PAGES="$SANDBOX/gh-pages.txt" GIT_FETCH="$SANDBOX/git-fetch.txt"
   cat >"$SANDBOX/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # REST endpoints answer raw JSON and apply --jq with the real jq, as gh does, so
@@ -108,13 +108,20 @@ STUB
 for a in "$@"; do [ "$a" = "remote.origin.url" ] && { echo "https://github.com/acme/widgets.git"; exit 0; }; done
 for a in "$@"; do [ "$a" = "--is-inside-work-tree" ] && exit 1; done
 for a in "$@"; do [ "$a" = "rev-parse" ] && { echo "/nonexistent/review-clone"; exit 0; }; done
+# prepare_since_approval: FETCH_FAIL fails a fetch that names APPROVED_SHA; each
+# such fetch's args go to $GIT_FETCH. MERGE_BASE answers every merge-base.
+if [[ " $* " == *" fetch "* ]] && [ -n "${APPROVED_SHA:-}" ] && [[ " $* " == *" $APPROVED_SHA"* ]]; then
+  echo "$*" >> "$GIT_FETCH"
+  [ -n "${FETCH_FAIL:-}" ] && { echo "fatal: not our ref" >&2; exit 1; }
+fi
+for a in "$@"; do [ "$a" = "merge-base" ] && { [ -n "${MERGE_BASE:-}" ] && echo "$MERGE_BASE"; exit 0; }; done
 exit 0
 STUB
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/git"
   export PATH="$SANDBOX/bin:$PATH"
   # Let lib.sh resolve review-task.md beside itself, not from an installed plugin.
   unset PR_STATE HEAD_FAIL HEAD_TREE PR_FILES FILES_FAIL FILES_FAIL_PAGE COMPARE_FILES COMPARE_FAIL \
-        REVIEWS REVIEWS_FAIL \
+        REVIEWS REVIEWS_FAIL APPROVED_SHA FETCH_FAIL MERGE_BASE \
         CLAUDE_PLUGIN_ROOT REVIEW_TASK_FILE
   STATE="$HOME/.claude/pr-review/state/acme-widgets"
 }
@@ -147,6 +154,7 @@ Read $ROOT/review-task.md and follow it exactly. Review PR #7.
 Use these absolute paths verbatim — do not construct your own:
   SCOPE_FILE = $STATE/scope-7.txt
   PRIOR_FILE = $STATE/prior-7.json
+  APPROVAL_FILE = $STATE/approval-7.txt
   FINDINGS_FILE = $STATE/findings-7.json
   REVIEW_DIR = $HOME/.claude/pr-review/worktrees/acme-widgets"
 eq "stdout is PROCEED + prompt" "$expected" "$(out)"
@@ -416,6 +424,44 @@ new_sandbox
 REVIEWS_FAIL=1 preflight 7 review_requested
 eq "no record" "(no record)" "$(approval)"
 eq "pre-flight still proceeds" "PROCEED" "$(out | head -n 1)"
+cleanup
+
+echo "== since approval: an earlier approved head gets its merge bases =="
+new_sandbox
+APPROVED_SHA=0ldc0mm1t MERGE_BASE=ba5e REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t)") \
+  preflight 7 review_requested
+eq "record + bases" "approved 0ldc0mm1t
+approved_base=ba5e
+head_base=ba5e" "$(approval)"
+eq "fetched the base branch and the approved commit" \
+  "-C $HOME/.claude/pr-review/worktrees/acme-widgets fetch --quiet origin +refs/heads/main:refs/remotes/origin/main 0ldc0mm1t" \
+  "$(cat "$GIT_FETCH" 2>/dev/null)"
+eq "stdout still PROCEED + prompt" "PROCEED" "$(out | head -n 1)"
+eq "stderr is empty" "" "$(err)"
+cleanup
+
+echo "== since approval: an approval of the head itself needs no bases =="
+new_sandbox
+APPROVED_SHA=deadbeef MERGE_BASE=ba5e REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z deadbeef)") \
+  preflight 7 review_requested
+eq "record only" "approved deadbeef" "$(approval)"
+eq "nothing fetched" "" "$(cat "$GIT_FETCH" 2>/dev/null)"
+cleanup
+
+echo "== since approval: an unfetchable approved commit appends no bases (fails closed) =="
+new_sandbox
+APPROVED_SHA=0ldc0mm1t FETCH_FAIL=1 MERGE_BASE=ba5e REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t)") \
+  preflight 7 review_requested
+eq "record only" "approved 0ldc0mm1t" "$(approval)"
+eq "pre-flight still proceeds" "PROCEED" "$(out | head -n 1)"
+eq "stderr is empty" "" "$(err)"
+cleanup
+
+echo "== since approval: no merge base appends no bases =="
+new_sandbox
+APPROVED_SHA=0ldc0mm1t REVIEWS=$(reviews "$(rv bot APPROVED 2026-10-01T00:00:00Z 0ldc0mm1t)") \
+  preflight 7 review_requested
+eq "record only" "approved 0ldc0mm1t" "$(approval)"
 cleanup
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
