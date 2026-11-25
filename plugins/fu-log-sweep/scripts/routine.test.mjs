@@ -396,6 +396,16 @@ test('alert: alert-candidate signs the error and prints the sweep investigator b
   assert.equal(t.ghLog(), '', 'no GitHub call before filing');
 });
 
+test('alert: alert-repo finds an attached clone, asks to attach the rest, refuses a bad tag', () => {
+  const t = setup();
+  assert.equal(t.run(['alert-repo', 'widgets', 'acme']), `CLONED acme/widgets ${t.dirs[WIDGETS]}\n`);
+  assert.equal(t.run(['alert-repo', 'repo:acme/missing', 'Acme other']), 'ATTACH Acme missing\n');
+  assert.equal(t.run(['alert-repo', 'evil/widgets', 'acme']), 'NO_REPO — evil is not an allowed org (acme)\n');
+  assert.equal(t.run(['alert-repo', 'widgets']), 'NO_REPO — no org allowed (REPO_ORGS is empty)\n');
+  assert.equal(t.run(['alert-repo', '', 'acme']), 'NO_REPO — no repo tag\n');
+  assert.equal(t.ghLog(), '', 'no GitHub call');
+});
+
 test('alert: bad input fails before writing anything', () => {
   const t = setup();
   assert.match(t.run(['alert-candidate', alertInput(t, NEW, { classification: 'REGRESSION' })]), /^FAILED — a REGRESSION needs the closed issue "number"/);

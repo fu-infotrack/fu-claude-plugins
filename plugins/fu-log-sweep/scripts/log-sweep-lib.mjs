@@ -69,6 +69,27 @@ export function parseRepoFromRemote(url) {
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
+// A Datadog monitor's `repo:` tag → the repository the alert routine attaches.
+// The tag is untrusted data (anyone who can edit a monitor sets it), so only a
+// plain `name` or `owner/name` of an allowed org passes. A bare name takes the
+// first org. Datadog lowercases tags; GitHub resolves names case-insensitively,
+// and an `owner/` prefix is matched to the allowed org's own spelling.
+const REPO_PART = /^[A-Za-z0-9_.-]+$/;
+export function resolveAlertRepo(tag, orgs) {
+  const allowed = (orgs || []).map((o) => String(o).trim()).filter((o) => REPO_PART.test(o));
+  if (!allowed.length) return { ok: false, error: 'no org allowed (REPO_ORGS is empty)' };
+  const t = String(tag ?? '').trim().replace(/^repo:/i, '');
+  if (!t) return { ok: false, error: 'no repo tag' };
+  const parts = t.split('/');
+  const name = parts.at(-1);
+  if (parts.length > 2 || !REPO_PART.test(name) || /^\.+$/.test(name) || (parts.length === 2 && !REPO_PART.test(parts[0]))) {
+    return { ok: false, error: `'${t.slice(0, 80)}' is not a repository name` };
+  }
+  const owner = parts.length === 2 ? allowed.find((o) => o.toLowerCase() === parts[0].toLowerCase()) : allowed[0];
+  if (!owner) return { ok: false, error: `${parts[0]} is not an allowed org (${allowed.join(' ')})` };
+  return { ok: true, owner, name, repo: `${owner}/${name}` };
+}
+
 // Distinct, order-preserving, empties removed.
 export function collectServices(appNames) {
   const seen = new Set();

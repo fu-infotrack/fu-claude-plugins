@@ -160,6 +160,18 @@ duplicate of a swept error.
   still end `DROPPED`. `alert-file` re-lists the issues first: an open match is `LINKED`,
   and a closed one that appeared after the run classified the error NEW fails rather than
   filing a duplicate.
+- **The run attaches the tagged repo itself** (0.8.0). Until then every repo a monitor's
+  `repo:` tag could name had to be attached to the routine, so each run cloned all of them
+  to use one. Now only this repo is attached; `routine.mjs alert-repo <tag> <orgs>`
+  validates the tag in code (it is untrusted: anyone who can edit a monitor sets it) —
+  a plain `name` or `owner/name` of a `REPO_ORGS` org, a bare name taking the first — and
+  prints `CLONED` (already attached, so a statically attached repo still works), `ATTACH`
+  or `NO_REPO`. On `ATTACH` the run calls `add_repo` with push access and clones into
+  `/home/user/<name>` alone in its own Bash call, the shared PR-review routine's shape
+  (`fu-review-prs/CLAUDE.md`, v0.20.0), and `alert-candidate`'s `findClones` finds it
+  there. `REPO_ORGS` is company data, so it ships empty, which means no repo is attached.
+  Push access because `POST issues` silently drops labels without it. Not yet measured
+  live: that `gh api` reaches a repo attached mid-run (the PR-review routine posts that way).
 - **Concurrency.** Alerts now triage in parallel runs, so a run lists the issues again
   right before filing. API fires are capped at 30 an hour per routine, and Datadog does
   not retry a 4xx, so an alert storm past the cap is not triaged.
@@ -184,7 +196,8 @@ failed collection not stopping the other, a failed sample skipped, a nested
 (window from the configured issue, every call repo-scoped, create-then-close with
 the "add to `stateIssues`" hint and no label, update in place, a markerless or
 non-numeric entry never written, not saved on observe, a failed candidate or an
-unreadable issue). The `alert:` tests cover the Datadog Ops path: `alert-candidate`
+unreadable issue). The `alert:` tests cover the Datadog Ops path: `alert-repo` (a clone found, attach,
+a disallowed org, no orgs, no tag; `resolveAlertRepo` itself in the lib suite), `alert-candidate`
 signing and printing the investigator block with no GitHub call, bad input, `alert-file`
 observe vs live, the sweep's labels and marker, a regression's reopen comment, and an issue
 opened meanwhile, a noise verdict and a malformed verdict making no write.
