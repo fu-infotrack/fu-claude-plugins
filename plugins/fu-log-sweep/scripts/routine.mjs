@@ -16,6 +16,7 @@
 //   node routine.mjs wait investigate
 //   node routine.mjs finish
 // and, for the Datadog Ops alert routine (one alert's error, same investigator):
+//   node routine.mjs alert-repo <repo tag> <allowed org>...
 //   node routine.mjs alert-candidate <input.json>
 //   node routine.mjs alert-file <sig> [--live]
 // The handoff between steps is on disk, in $HOME/.claude/log-sweep/routine/.
@@ -28,6 +29,7 @@ import {
   windowStartMs, classify, buildTitle, buildSignature, releaseCheck,
   parseCollectorOutput, issueMatchesBySig, buildBucketQuery,
   validateInvestigation, composeIssueBody, parseSweepState, buildStateBody,
+  resolveAlertRepo,
 } from './log-sweep-lib.mjs';
 import { pupRunner, collectRepo, bucketVersions } from './collect.mjs';
 
@@ -455,6 +457,19 @@ function alertCandidate(inputPath) {
   ]);
 }
 
+// Which repository an alert belongs to, from the monitor's `repo:` tag (or a
+// name the run inferred from the service). Prints one line:
+//   CLONED <owner/name> <dir>   already attached and cloned (nothing to do)
+//   ATTACH <owner> <name>       attach it with add_repo, then clone it
+//   NO_REPO — <why>             triage without a repository
+// The tag is untrusted, so the check is here and not the model's.
+function alertRepo(tag, orgs) {
+  const r = resolveAlertRepo(tag, orgs.flatMap((o) => o.split(/[\s,]+/)));
+  if (!r.ok) return say(`NO_REPO — ${r.error}`);
+  const dir = findClones([r.repo])[r.repo];
+  say(dir ? `CLONED ${r.repo} ${dir}` : `ATTACH ${r.owner} ${r.name}`);
+}
+
 // Validate the verdict and file it the sweep's way. The issue list is read
 // again first: alerts triage in parallel runs, and the daily sweep may have
 // filed the same signature since the alert routine looked.
@@ -489,6 +504,7 @@ function alertFile(sig, live) {
 const [, , cmd, ...args] = process.argv;
 const commands = {
   prepare: () => prepare(args), collect, plan, finish, wait: () => wait(args[0]),
+  'alert-repo': () => alertRepo(args[0], args.slice(1)),
   'alert-candidate': () => alertCandidate(args[0]),
   'alert-file': () => alertFile(args.find((x) => !x.startsWith('--')), args.includes('--live')),
 };

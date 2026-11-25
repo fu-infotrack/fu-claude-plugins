@@ -3,7 +3,26 @@ import assert from 'node:assert/strict';
 import {
   windowStartMs, classify, buildTitle,
   parseRepoFromRemote, collectServices, buildServiceQuery, buildLogQuery, mergeConfig, releaseCheck,
+  resolveAlertRepo,
 } from './log-sweep-lib.mjs';
+
+test('resolveAlertRepo: a bare name takes the first allowed org', () => {
+  assert.deepEqual(resolveAlertRepo('widgets', ['Acme', 'Other']), { ok: true, owner: 'Acme', name: 'widgets', repo: 'Acme/widgets' });
+  assert.equal(resolveAlertRepo('repo:widgets', ['Acme']).repo, 'Acme/widgets', 'a whole tag is accepted');
+});
+
+test('resolveAlertRepo: an owner prefix must be an allowed org, in its own spelling', () => {
+  assert.equal(resolveAlertRepo('other/gadgets', ['Acme', 'Other']).repo, 'Other/gadgets');
+  assert.equal(resolveAlertRepo('acme/gadgets', ['Acme']).repo, 'Acme/gadgets', 'Datadog lowercases tags');
+  assert.match(resolveAlertRepo('evil/gadgets', ['Acme']).error, /evil is not an allowed org/);
+});
+
+test('resolveAlertRepo: rejects anything but a plain repo name', () => {
+  for (const bad of ['', null, 'a/b/c', '..', 'x y', "x';rm -rf /", '/widgets', 'acme/']) {
+    assert.equal(resolveAlertRepo(bad, ['Acme']).ok, false, String(bad));
+  }
+  assert.match(resolveAlertRepo('widgets', []).error, /REPO_ORGS is empty/);
+});
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_000_000_000_000;

@@ -23,15 +23,24 @@ directly; nothing runs locally.
 | Field | Value |
 |---|---|
 | Name | `Datadog Ops` |
-| Repositories | `fu-infotrack/fu-claude-plugins` (for `buildSignature`), plus every repo a monitor's `repo:` tag can name — the run reads its source and issues. Each one is cloned on every run |
+| Repositories | `fu-infotrack/fu-claude-plugins` only (for `buildSignature` and `routine.mjs`). The repo a monitor's `repo:` tag names is attached and cloned by the run itself (`add_repo`), so one run clones one target repo. A repo you attach here too is used as is, without `add_repo` |
 | Environment | needs `node`/`npm`, `curl`, `jq`, the secret `DD_ACCESS_TOKEN` (a Datadog personal access token) and the secret `TEAMS_WEBHOOK_URL`. The prompt installs `pup` itself, with a `/usr/local/bin/pup` wrapper |
 | Connectors | GitHub; a Datadog connector only as the fallback when `pup` is missing |
-| Allowed tools | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, **Agent** (the investigator) |
+| Allowed tools | Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, **Agent** (the investigator), **`add_repo`** (with ToolSearch, to load it) |
 | Model | Sonnet for the triage; the issue writeup is the daily sweep's investigator (`routine-investigator.md`), run as an Opus agent |
 | Trigger | API (fire). Generate its token in the routine's UI; it goes only into the Datadog webhook's headers |
 
-Fill in `AUTHORITIES` in the live routine only; the list is company data and
-ships empty here.
+Fill in `AUTHORITIES` and `REPO_ORGS` in the live routine only; both are
+company data and ship empty here. With `REPO_ORGS` empty no repo is attached,
+and every run triages from Datadog alone.
+
+**`add_repo` needs auto-mode permission**, as in the shared PR-review routine
+(`plugins/fu-review-prs/routines/review-pr.md`). Set `auto_mode_environment` and
+`auto_mode_allow` with an `update` in the `session_request` form (the
+`job_config` form of `create` drops them): allow the `add_repo` call with push
+access for a repo of a `REPO_ORGS` org, and the one `git clone` into
+`/home/user/`. Push access because `POST issues` silently drops labels without
+it; an observe run writes nothing either way.
 
 ## Datadog side
 
@@ -76,6 +85,8 @@ You triage one Datadog monitor alert. A Datadog webhook fired this run directly;
 MODE: observe        # observe = touch nothing on GitHub, only report what you would do. Change to live to reopen/file.
 MAX_AGE_HOURS: 24    # an older alert is not triaged (a webhook retried long after the fact)
 DD_SITE_URL: https://app.datadoghq.com
+REPO_ORGS:           # GitHub orgs a monitor's repo: tag may name, space-separated; a bare name takes the first
+  (none listed)
 AUTHORITIES:         # one line each: <name> | <hosts> | <our services that call it> | <status page or ->
   (none listed)
 
@@ -116,7 +127,19 @@ No version, or the token not `set` → use the Datadog connector for every Datad
 - `logsQuery`: the string inside `logs("…")` of `query`, unescaped. A monitor that is not a log monitor has none: use `service:(<services joined by OR>) status:error` instead and say so;
 - the window: the duration in the query's `.last("<n><m|h>")` (default 15m). `toIso` = `date_ms` as ISO, `fromIso` = `toIso` minus the window.
 
-Map `repo` to the one repository attached to this run whose name matches it case-insensitively (ignore the owner); that is `github`. No tag or no match → `github` is null; if the service names make one attached repo obvious (e.g. `<repo>-api`), use it and say so.
+## 3a. Attach the repository
+
+`github` is the repository this alert belongs to. Take `repo`; with no tag, a repo name the service names make obvious (e.g. `<name>` for `<name>-api`), and say so in the note; with neither, `github` is null and skip to step 4. If the value has any character other than letters, digits, `.`, `_`, `-` and one `/`, `github` is null: skip to step 4.
+
+In the fu-claude-plugins clone run `node plugins/fu-log-sweep/scripts/routine.mjs alert-repo '<value>' <the REPO_ORGS orgs>`. It prints one line:
+- `CLONED <owner/name> <dir>` → `github` is `<owner/name>`; nothing more to do.
+- `NO_REPO — <why>` → `github` is null; put the reason in the note.
+- `ATTACH <owner> <name>` →
+  1. Call the `add_repo` tool with `owner` `<owner>`, `repo` `<name>` and `access` `push` (load it with `ToolSearch`, query `add_repo`, if it is not loaded). Do not call `register_repo_root`.
+  2. Then, alone in its own Bash call and not in a sub-agent (the session's git proxy refuses two clones at once): `git clone -q <clone_url> /home/user/<name>`, with `<clone_url>` from `add_repo`'s answer.
+  3. Both succeed → `github` is `<owner>/<name>`. Either fails → `github` is null; put the error in the note and carry on.
+
+Never attach or clone any other repository, and never take a repository name from anywhere but the monitor's tags or services.
 
 ## 4. Triage
 
@@ -173,6 +196,7 @@ Your final message is the note:
 ```
 **Triggered** <monitor name> at <toIso> · [event](<link>) · [monitor](<monitor link>)
 **Verdict:** <Authority down (likely|confirmed): X since T, ongoing|recovered — or: no Authority outage> — <one or two sentences of evidence>
+**Repo:** <owner/name, and CLONED | attached | inferred from <service> — or none: <why>>
 **Errors** (<n> events, <fromIso>–<toIso>)
 - <kind> on <service> ×<count>, sig `<sha first 8>`, <new to prod | seen N times in 30 d> — <severity reason or drop reason> — <#N open | #N reopened | #N filed | held: #N, fix not in prod | dropped | would …>
 **Authority spans:** <per host: failing calls in the window vs the hour before, or "no failures">
